@@ -1,0 +1,38 @@
+package: comms
+version: 0.1.0
+label: Communication
+description: Mail (accounts, threaded communications on any record, templates, inbound mail, newsletters), team chat and calendars with ICS.
+depends: [core]
+
+modules:
+  - name: communication
+    label: Communication
+    icon: mail
+    order: 40
+    items: [Communication, CalendarEvent, EmailTemplate, EmailAccount, EmailGroup, EmailGroupMember, Newsletter, ChatChannel, ChatMessage,
+            CommsSettings, report:email_activity, report:newsletter_performance, report:chat_activity]
+
+roles:
+  - name: Comms User
+    description: Sends mail from the records they can read, chats with colleagues and keeps a calendar.
+    permissions:
+      # Their own communications; record timelines (/api/app/comms) follow access to the record.
+      - {entity: Communication, read: true, write: true, create: true, if_owner: true}
+      - {entity: EmailTemplate, read: true}
+      - {entity: CalendarEvent, read: true, write: true, create: true, delete: true, if_owner: true}
+  - name: Comms Manager
+    description: Email accounts and their credentials, templates, mailing lists, newsletters and every communication.
+    permissions:
+      - {entity: Communication, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: EmailAccount, read: true, write: true, create: true, delete: true}
+      - {entity: EmailTemplate, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: EmailGroup, read: true, write: true, create: true, delete: true}
+      - {entity: EmailGroupMember, read: true, write: true, create: true, delete: true, export: true, import: true}
+      - {entity: Newsletter, read: true, write: true, create: true, delete: true}
+      - {entity: CommsSettings, read: true, write: true, create: true}
+      - {entity: Company, read: true}
+  - name: Chat Admin
+    description: Moderates team chat through the generic API (every channel and message, private ones included).
+    permissions:
+      - {entity: ChatChannel, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: ChatMessage, read: true, write: true, create: true, delete: true, export: true}

@@ -1,0 +1,61 @@
+- name: CalendarEventAttendee
+  label: Attendee
+  kind: child
+  fields:
+    - {name: email, type: email, required: true, in_list: true, description: "A colleague's sign-in email or an outside address (outside guests get an invitation email)"}
+    - {name: attendee_name, type: data, in_list: true}
+    - {name: response, type: select, options: [Needs Action, Accepted, Declined, Tentative], default: Needs Action, required: true, in_list: true}
+
+- name: CalendarEventReminder
+  label: Reminder
+  kind: child
+  fields:
+    - {name: minutes_before, type: int, required: true, default: 15, min: 0, max: 40320, in_list: true}
+
+- name: CalendarEvent
+  label: Event
+  label_plural: Events
+  kind: master
+  module: communication
+  title_field: subject
+  description: "Calendar event; times are stored in UTC and recurrences repeat in UTC. Attendees see the events they are invited to; only the organizer edits them."
+  owner_fields: [owner, attendees.email]
+  fields:
+    - {name: subject, type: data, required: true, in_list: true}
+    - {name: starts_at, type: datetime, required: true, in_list: true}
+    - {name: ends_at, type: datetime, required: true, in_list: true}
+    - {name: all_day, type: check, description: "Whole days: starts_at and ends_at are midnights (UTC), ends_at exclusive"}
+    - {name: timezone, type: data, description: "IANA time zone the organizer works in (e.g. Asia/Kolkata), for display"}
+    - {name: location, type: data}
+    - {name: meeting_link, type: url}
+    - {name: description, type: text}
+    - {name: category, type: data, in_filter: true}
+    - {name: color, type: color}
+    - {name: owner, type: email, label: Organizer, read_only: true, in_list: true, in_filter: true}
+    - {name: visibility, type: select, options: [Private, Public], default: Private, required: true, in_filter: true, description: "Public events show on everyone's calendar; private ones only to the organizer and attendees (others see busy time)"}
+    - {name: status, type: select, options: [Confirmed, Tentative, Cancelled], default: Confirmed, required: true, in_list: true, in_filter: true}
+    - {name: attendees, type: table, of: CalendarEventAttendee}
+    - {name: recurrence, type: data, max_length: 500, description: "RRULE: FREQ=DAILY|WEEKLY|MONTHLY|YEARLY with INTERVAL, BYDAY, BYMONTHDAY, COUNT or UNTIL, e.g. FREQ=WEEKLY;BYDAY=MO,WE;COUNT=10"}
+    - {name: recurrence_exceptions, type: json, description: "Occurrences to skip: their start dates (YYYY-MM-DD) or start times (RFC 3339)"}
+    - {name: reminders, type: table, of: CalendarEventReminder}
+    - {name: reference_entity, type: data}
+    - {name: reference_id, type: data}
+    - {name: ical_uid, type: data, label: iCalendar UID, read_only: true, no_copy: true}
+    - {name: sequence, type: int, read_only: true, no_copy: true}
+  unique: [[owner, ical_uid]]
+  indexes: [[starts_at]]
+  form:
+    - {label: Event, fields: [subject, starts_at, ends_at, all_day, timezone, location, meeting_link, status, visibility]}
+    - {label: People, fields: [owner, attendees]}
+    - {label: Repeat & Remind, collapsible: true, fields: [recurrence, recurrence_exceptions, reminders]}
+    - {label: Details, collapsible: true, fields: [description, category, color, reference_entity, reference_id, ical_uid, sequence]}
+  list: {columns: [starts_at, subject, owner, status], sort: starts_at desc}
+
+- name: CalendarFeed
+  label: Calendar Feed
+  kind: master
+  title_field: person
+  description: "A person's secret calendar feed address, managed through /api/app/comms/calendar/feed."
+  fields:
+    - {name: person, type: email, required: true, unique: true, in_list: true}
+    - {name: token, type: secret, read_only: true}

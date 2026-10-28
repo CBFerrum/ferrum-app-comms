@@ -1,0 +1,14 @@
+id: comms
+name: Mail, Chat and Calendar
+version: 0.1.0
+publisher: cbferrum
+summary: Email accounts (SMTP/IMAP), threaded communications on any record, templates, newsletters, team chat and calendars with ICS
+description: README.md
+categories: [communication, productivity]
+license: AGPL-3.0-only
+homepage: https://github.com/CBFerrum/ferrum-app-comms
+support: https://github.com/CBFerrum/ferrum-app-comms/issues
+runtime: native
+platform: ">=0.3, <0.4"
+packages: [comms]
+uninstall: ask

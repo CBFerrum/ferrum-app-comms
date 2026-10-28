@@ -1,0 +1,42 @@
+- name: ChatChannelMember
+  label: Channel Member
+  kind: child
+  fields:
+    - {name: member, type: email, required: true, in_list: true, description: Email the member signs in with}
+    - {name: role, type: select, options: [Owner, Member], default: Member, required: true, in_list: true}
+    - {name: last_read_at, type: datetime, in_list: true}
+
+- name: ChatChannel
+  label: Chat Channel
+  kind: master
+  module: communication
+  title_field: channel_name
+  description: "Team chat channel. People use chat through /api/app/comms/chat, which enforces membership; this generic view is for chat administrators."
+  fields:
+    - {name: channel_name, type: data, required: true, unique: true, max_length: 80, in_list: true}
+    - {name: channel_type, type: select, options: [Public, Private, Direct], default: Public, required: true, in_list: true, in_filter: true}
+    - {name: topic, type: text, max_length: 500}
+    - {name: members, type: table, of: ChatChannelMember}
+    - {name: archived, type: check, in_list: true, in_filter: true}
+    - {name: direct_key, type: data, unique: true, read_only: true, hidden: true, no_copy: true}
+    - {name: last_message_at, type: datetime, read_only: true, no_copy: true, in_list: true}
+  list: {columns: [channel_name, channel_type, archived, last_message_at], sort: channel_name asc}
+
+- name: ChatMessage
+  label: Chat Message
+  kind: master
+  module: communication
+  description: "Markdown message (at most 4 KB) in a channel; replies point at their thread's first message."
+  search_fields: [body]
+  fields:
+    - {name: channel, type: link, to: ChatChannel, required: true, on_delete: cascade, in_list: true, in_filter: true}
+    - {name: sender, type: email, read_only: true, in_list: true}
+    - {name: body, type: markdown, max_length: 4096, in_list: true}
+    - {name: parent_message, type: link, to: ChatMessage, on_delete: cascade, in_filter: true, description: First message of the thread this replies to}
+    - {name: mentions, type: json, description: Emails of the members mentioned}
+    - {name: attachments, type: json, description: "[{id, file_name, content_type, size, url}]: files from /api/files"}
+    - {name: posted_at, type: datetime, read_only: true, no_copy: true, in_list: true}
+    - {name: edited_at, type: datetime, read_only: true, no_copy: true}
+    - {name: deleted, type: check, read_only: true, in_filter: true}
+  indexes: [[channel, posted_at], [parent_message, posted_at]]
+  list: {columns: [posted_at, channel, sender, body], sort: posted_at desc}

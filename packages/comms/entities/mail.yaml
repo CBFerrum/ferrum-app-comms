@@ -1,0 +1,171 @@
+- name: CommsSettings
+  label: Communication Settings
+  kind: settings
+  module: communication
+  fields:
+    - {name: public_url, type: url, label: Public URL, description: "Address this server is reached at from the internet (e.g. https://erp.example.com); used in unsubscribe links, inbound webhook and calendar feed URLs"}
+    - {name: newsletter_hourly_limit, type: int, default: 500, min: 1, max: 1000000, description: "Newsletter mails sent per hour at most (respect your provider's sending limits)"}
+    - {name: max_send_attempts, type: int, default: 5, min: 1, max: 20, description: "Attempts before an outgoing email is marked Failed"}
+    - {name: signing_key, type: secret, read_only: true, hidden: true, description: "Signs unsubscribe links; created automatically"}
+
+- name: EmailAccount
+  label: Email Account
+  kind: master
+  module: communication
+  title_field: account_name
+  search_fields: [email_address]
+  description: "A mailbox: SMTP for sending, IMAP polling or an inbound webhook for receiving. Passwords are write-only secrets: reads only say whether one is set."
+  fields:
+    - {name: account_name, type: data, required: true, unique: true, in_list: true}
+    - {name: email_address, type: email, required: true, unique: true, in_list: true}
+    - {name: display_name, type: data, description: Sender name recipients see}
+    - {name: company, type: link, to: Company, in_filter: true, description: "Leave empty for a mailbox shared by every company"}
+    - {name: enable_outgoing, type: check, default: true, in_list: true}
+    - {name: default_outgoing, type: check, in_list: true, description: "Used when mail is sent without choosing an account (one per company, plus one shared)"}
+    - {name: smtp_host, type: data, label: SMTP Host}
+    - {name: smtp_port, type: int, label: SMTP Port, default: 587, min: 1, max: 65535}
+    - {name: smtp_security, type: select, label: SMTP Security, options: [STARTTLS, TLS, None], default: STARTTLS}
+    - {name: smtp_username, type: data, label: SMTP Username, description: Leave empty when the server needs no login}
+    - {name: smtp_password, type: secret, label: SMTP Password, description: "Write-only: type a new password to replace the stored one"}
+    - {name: enable_incoming, type: check, in_list: true, description: "Poll the IMAP folder for new mail"}
+    - {name: imap_host, type: data, label: IMAP Host}
+    - {name: imap_port, type: int, label: IMAP Port, default: 993, min: 1, max: 65535}
+    - {name: imap_security, type: select, label: IMAP Security, options: [TLS, STARTTLS, None], default: TLS}
+    - {name: imap_username, type: data, label: IMAP Username}
+    - {name: imap_password, type: secret, label: IMAP Password, description: "Write-only: type a new password to replace the stored one"}
+    - {name: imap_folder, type: data, label: IMAP Folder, default: INBOX}
+    - {name: poll_interval_minutes, type: int, default: 5, min: 1, max: 1440}
+    - {name: signature, type: text, description: HTML appended to mail sent from this account}
+    - {name: append_to, type: data, label: Create Records Of, description: "Entity a new inbound thread creates, e.g. Lead or Ticket (replies attach to the original record)"}
+    - {name: append_to_mapping, type: json, label: Field Mapping, description: "Target field → source (subject, sender, sender_name, content, text_content, received_at, account); empty = guess from field names"}
+    - {name: inbound_token, type: secret, label: Inbound Webhook, read_only: true, description: "Set by the New Inbound Webhook URL action"}
+    - {name: last_uid, type: int, label: Last UID, read_only: true, no_copy: true}
+    - {name: uid_validity, type: int, label: UID Validity, read_only: true, no_copy: true}
+    - {name: last_polled_at, type: datetime, read_only: true, no_copy: true}
+    - {name: last_poll_error, type: text, read_only: true, no_copy: true}
+  actions:
+    - {name: rotate_inbound_token, label: New Inbound Webhook URL, permission: write, confirm: "A new secret URL is created and the previous one stops working. Continue?"}
+  form:
+    - {label: Account, fields: [account_name, email_address, display_name, company]}
+    - {label: Sending (SMTP), fields: [enable_outgoing, default_outgoing, smtp_host, smtp_port, smtp_security, smtp_username, smtp_password, signature]}
+    - {label: Receiving (IMAP), fields: [enable_incoming, imap_host, imap_port, imap_security, imap_username, imap_password, imap_folder, poll_interval_minutes, inbound_token]}
+    - {label: New Threads, collapsible: true, fields: [append_to, append_to_mapping]}
+    - {label: Status, collapsible: true, fields: [last_polled_at, last_poll_error, last_uid, uid_validity]}
+  list: {columns: [account_name, email_address, enable_outgoing, enable_incoming], sort: account_name asc}
+
+- name: Communication
+  label: Communication
+  kind: master
+  module: communication
+  title_field: subject
+  search_fields: [sender, recipients]
+  description: "The message log of every record: emails sent and received, calls, meetings and notes."
+  fields:
+    - {name: subject, type: data, max_length: 998, in_list: true}
+    - {name: channel, type: select, options: [Email, SMS, Chat, Phone, Note, Meeting], default: Email, required: true, in_list: true, in_filter: true}
+    - {name: direction, type: select, options: [Sent, Received], default: Sent, required: true, in_list: true, in_filter: true}
+    - {name: status, type: select, options: [Queued, Sending, Sent, Failed, Received], read_only: true, in_list: true, in_filter: true}
+    - {name: communication_date, type: datetime, label: Date, in_list: true}
+    - {name: email_account, type: link, to: EmailAccount, in_filter: true, description: "Blank = the default outgoing account"}
+    - {name: sender, type: data, read_only: true}
+    - {name: sender_name, type: data, read_only: true}
+    - {name: recipients, type: text, label: To, description: Comma-separated addresses}
+    - {name: cc, type: text, label: Cc}
+    - {name: bcc, type: text, label: Bcc}
+    - {name: content, type: text, description: "HTML, stored as written or received; displayed sanitized"}
+    - {name: text_content, type: text, label: Plain Text}
+    - {name: attachments, type: json, description: "[{id, file_name, content_type, size, url}]: files from /api/files"}
+    - {name: reference_entity, type: data, in_filter: true}
+    - {name: reference_id, type: data, in_filter: true}
+    - {name: reply_to, type: link, to: Communication, on_delete: set_null, description: The communication this one answers (threads the mail)}
+    - {name: message_id, type: data, unique: true, read_only: true, no_copy: true}
+    - {name: in_reply_to, type: data, read_only: true, no_copy: true}
+    - {name: mail_references, type: text, read_only: true, no_copy: true}
+    - {name: thread_key, type: data, read_only: true, index: true, no_copy: true}
+    - {name: seen, type: check, in_filter: true}
+    - {name: attempts, type: int, read_only: true, no_copy: true}
+    - {name: next_attempt_at, type: datetime, read_only: true, hidden: true, no_copy: true}
+    - {name: sent_at, type: datetime, read_only: true, no_copy: true}
+    - {name: error, type: text, read_only: true, no_copy: true}
+    - {name: delivered_to, type: json, read_only: true, hidden: true, no_copy: true}
+    - {name: ics, type: text, read_only: true, hidden: true, no_copy: true}
+  indexes: [[reference_entity, reference_id], [status, next_attempt_at], [communication_date]]
+  actions:
+    - {name: retry, label: Retry Sending, permission: write, condition: "doc.status == 'Failed'"}
+  form:
+    - {label: Message, fields: [channel, direction, status, communication_date, email_account, sender, sender_name, recipients, cc, bcc, subject, content, text_content, attachments]}
+    - {label: Linked To, fields: [reference_entity, reference_id, reply_to, seen]}
+    - {label: Delivery, collapsible: true, fields: [message_id, in_reply_to, mail_references, thread_key, attempts, sent_at, error]}
+  list: {columns: [communication_date, subject, channel, direction, status], sort: communication_date desc}
+
+- name: EmailTemplate
+  label: Email Template
+  kind: master
+  module: communication
+  title_field: template_name
+  description: "Subject and HTML body with {{ doc.field }} placeholders filled from the record a mail is sent from; values are HTML-escaped and missing fields render empty."
+  fields:
+    - {name: template_name, type: data, required: true, unique: true, in_list: true}
+    - {name: reference_entity, type: data, in_list: true, in_filter: true, description: Entity the template is written for (blank = any)}
+    - {name: subject, type: data, required: true, max_length: 998}
+    - {name: body, type: text, required: true, description: "HTML; {{ doc.<field> }}, {{ doc._titles.<link field> }}, {{ user.full_name }} and {{ user.email }} are available"}
+    - {name: disabled, type: check, in_filter: true}
+  list: {columns: [template_name, reference_entity, disabled], sort: template_name asc}
+
+- name: EmailGroup
+  label: Email Group
+  kind: master
+  module: communication
+  title_field: group_name
+  fields:
+    - {name: group_name, type: data, required: true, unique: true, in_list: true}
+    - {name: description, type: text}
+  list: {columns: [group_name], sort: group_name asc}
+
+- name: EmailGroupMember
+  label: Email Group Member
+  kind: master
+  module: communication
+  title_field: email
+  search_fields: [email, member_name]
+  fields:
+    - {name: email_group, type: link, to: EmailGroup, required: true, on_delete: cascade, in_list: true, in_filter: true}
+    - {name: email, type: email, required: true, in_list: true}
+    - {name: member_name, type: data, in_list: true}
+    - {name: unsubscribed, type: check, in_list: true, in_filter: true}
+  unique: [[email_group, email]]
+  list: {columns: [email, member_name, email_group, unsubscribed], sort: email asc}
+
+- name: NewsletterEmailGroup
+  label: Newsletter Email Group
+  kind: child
+  fields:
+    - {name: email_group, type: link, to: EmailGroup, required: true, in_list: true}
+
+- name: Newsletter
+  label: Newsletter
+  kind: master
+  module: communication
+  title_field: subject
+  description: "Sent in batches to the members of its email groups (never to unsubscribed ones), within the hourly limit, each with a personal unsubscribe link."
+  fields:
+    - {name: subject, type: data, required: true, max_length: 998, in_list: true}
+    - {name: email_account, type: link, to: EmailAccount, description: "Blank = the default outgoing account"}
+    - {name: email_groups, type: table, of: NewsletterEmailGroup, required: true}
+    - {name: content, type: text, required: true, description: "HTML; {{ member.member_name }}, {{ member.email }} and {{ unsubscribe_url }} are available. An unsubscribe footer is added when the content has no {{ unsubscribe_url }}"}
+    - {name: schedule_at, type: datetime, in_list: true, description: "Blank = as soon as it is scheduled"}
+    - {name: status, type: select, options: [Draft, Scheduled, Sending, Sent, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
+    - {name: total_recipients, type: int, read_only: true, no_copy: true}
+    - {name: sent_count, type: int, read_only: true, no_copy: true, in_list: true}
+    - {name: failed_count, type: int, read_only: true, no_copy: true}
+    - {name: started_at, type: datetime, read_only: true, no_copy: true}
+    - {name: finished_at, type: datetime, read_only: true, no_copy: true}
+    - {name: last_error, type: text, read_only: true, no_copy: true}
+  actions:
+    - {name: schedule, label: Schedule, permission: write, condition: "doc.status == 'Draft'"}
+    - {name: unschedule, label: Back to Draft, permission: write, condition: "doc.status == 'Scheduled'"}
+    - {name: cancel_newsletter, label: Stop Sending, permission: write, condition: "doc.status == 'Scheduled' || doc.status == 'Sending'", confirm: "Recipients not mailed yet will not receive it. Continue?"}
+  form:
+    - {label: Newsletter, fields: [subject, email_account, email_groups, schedule_at, content]}
+    - {label: Delivery, fields: [status, total_recipients, sent_count, failed_count, started_at, finished_at, last_error]}
+  list: {columns: [subject, status, schedule_at, sent_count], sort: schedule_at desc}
