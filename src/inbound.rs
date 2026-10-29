@@ -237,87 +237,100 @@ pub async fn ingest(k: &Kernel, tenant: Uuid, account: &Account, raw: &[u8], tru
         stored["content_type"] = json!(ctype);
         attachments.push(stored);
     }
-    let mut tx = k.db.tenant_tx(tenant).await?;
-    let mut parents: Vec<String> = mail.in_reply_to.clone();
-    parents.extend(mail.references.iter().rev().cloned());
-    let parent: Option<(Option<String>, Option<String>, Option<String>, Option<Uuid>)> = sqlx::query_as(
-        "select reference_entity, reference_id, thread_key, created_by from e_communication \
-         where tenant_id = $1 and message_id = any($2) order by communication_date desc limit 1",
-    )
-    .bind(tenant)
-    .bind(&parents)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let text = mail.text.clone().unwrap_or_else(|| mail.html.as_deref().map(mail_parser::decoders::html::html_to_text).unwrap_or_default());
-    let text = util::cut(&text, MAX_BODY_CHARS);
-    let (mut reference, thread_key) = match &parent {
-        Some((e, r, t, _)) => (e.clone().zip(r.clone()), t.clone().unwrap_or_else(|| message_id.clone())),
-        None => (None, message_id.clone()),
-    };
-    if parent.is_none() && account.append_to.is_some() && !mail.automatic {
-        sqlx::query("savepoint append_to").execute(&mut *tx).await?;
-        match create_record(k, &ctx, &mut tx, account, &mail, &text).await {
-            Ok((e, r)) => reference = Some((e, r.to_string())),
-            Err(err) => {
-                sqlx::query("rollback to savepoint append_to").execute(&mut *tx).await?;
-                tracing::warn!(%tenant, account = %account.name, "inbound mail could not create a {}: {err}", account.append_to.as_deref().unwrap_or_default());
+    // Stored attachments belong to the message: unless it is created, they leave storage again.
+    let stored: Vec<Uuid> = attachments.iter().filter_map(|a| a.get("id")?.as_str()?.parse().ok()).collect();
+    let outcome: Result<Ingested> = async {
+        let mut tx = k.db.tenant_tx(tenant).await?;
+        let mut parents: Vec<String> = mail.in_reply_to.clone();
+        parents.extend(mail.references.iter().rev().cloned());
+        let parent: Option<(Option<String>, Option<String>, Option<String>, Option<Uuid>)> = sqlx::query_as(
+            "select reference_entity, reference_id, thread_key, created_by from e_communication \
+             where tenant_id = $1 and message_id = any($2) order by communication_date desc limit 1",
+        )
+        .bind(tenant)
+        .bind(&parents)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let text = mail.text.clone().unwrap_or_else(|| mail.html.as_deref().map(mail_parser::decoders::html::html_to_text).unwrap_or_default());
+        let text = util::cut(&text, MAX_BODY_CHARS);
+        let (mut reference, thread_key) = match &parent {
+            Some((e, r, t, _)) => (e.clone().zip(r.clone()), t.clone().unwrap_or_else(|| message_id.clone())),
+            None => (None, message_id.clone()),
+        };
+        if parent.is_none() && account.append_to.is_some() && !mail.automatic {
+            sqlx::query("savepoint append_to").execute(&mut *tx).await?;
+            match create_record(k, &ctx, &mut tx, account, &mail, &text).await {
+                Ok((e, r)) => reference = Some((e, r.to_string())),
+                Err(err) => {
+                    sqlx::query("rollback to savepoint append_to").execute(&mut *tx).await?;
+                    tracing::warn!(%tenant, account = %account.name, "inbound mail could not create a {}: {err}", account.append_to.as_deref().unwrap_or_default());
+                }
+            }
+        }
+        let comm = Uuid::now_v7();
+        let (html, text) = if truncated {
+            let note = format!("(This message was larger than {} MB; only its headers were imported.)", MAX_MESSAGE / 1024 / 1024);
+            (None, note)
+        } else {
+            (mail.html.as_deref().map(|h| util::cut(h, MAX_BODY_CHARS)), text)
+        };
+        let sender = mail.from.as_ref().map(|f| util::cut(&f.1, 320));
+        let doc = json!({
+            "id": comm,
+            "channel": "Email",
+            "direction": "Received",
+            "status": "Received",
+            "subject": if mail.subject.is_empty() { None } else { Some(&mail.subject) },
+            "communication_date": util::ts(mail.date.filter(|d| *d <= util::now() + chrono::Duration::days(1)).unwrap_or_else(util::now)),
+            "email_account": account.id,
+            "sender": sender,
+            "sender_name": mail.from.as_ref().and_then(|f| f.0.as_deref()).map(|n| util::clean_line(n, 200)),
+            "recipients": util::cut(&mail.to.join(", "), 100_000),
+            "cc": util::cut(&mail.cc.join(", "), 100_000),
+            "content": html.unwrap_or_else(|| mail_parser::decoders::html::text_to_html(&text)),
+            "text_content": text,
+            "attachments": attachments,
+            "reference_entity": reference.as_ref().map(|r| r.0.clone()),
+            "reference_id": reference.as_ref().map(|r| r.1.clone()),
+            "message_id": message_id,
+            "in_reply_to": mail.in_reply_to.first().map(|m| util::cut(m, 500)),
+            "mail_references": util::cut(&mail.references.join(" "), 50_000),
+            "thread_key": util::cut(&thread_key, 500),
+            "seen": false,
+        });
+        match k.insert_tx(&ctx, &mut tx, "Communication", util::obj(doc)).await {
+            Ok(_) => {}
+            // The same message arrived through another path a moment ago.
+            Err(Error::Conflict(_)) => {
+                tx.rollback().await?;
+                let mut tx = k.db.tenant_tx(tenant).await?;
+                let e: Uuid = sqlx::query_scalar("select id from e_communication where tenant_id = $1 and message_id = $2")
+                    .bind(tenant)
+                    .bind(&message_id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                tx.commit().await?;
+                return Ok(Ingested::Duplicate(e));
+            }
+            Err(e) => return Err(e),
+        }
+        if let Some((_, _, _, Some(user))) = &parent {
+            let who = mail.from.as_ref().map(|f| f.0.clone().unwrap_or_else(|| f.1.clone())).unwrap_or_default();
+            let title = util::cut(&format!("Reply from {who}: {}", mail.subject), 200);
+            notify::send(&mut tx, tenant, *user, &title, Some(&util::cut(&text, 300)), Some("Communication"), Some(comm)).await?;
+        }
+        tx.commit().await?;
+        Ok(Ingested::Created(comm))
+    }
+    .await;
+    if !matches!(outcome, Ok(Ingested::Created(_))) {
+        for id in stored {
+            if let Err(e) = k.remove_file(&ctx, id).await {
+                tracing::warn!(%tenant, file = %id, "inbound mail: could not remove an unused attachment: {e}");
             }
         }
     }
-    let comm = Uuid::now_v7();
-    let (html, text) = if truncated {
-        let note = format!("(This message was larger than {} MB; only its headers were imported.)", MAX_MESSAGE / 1024 / 1024);
-        (None, note)
-    } else {
-        (mail.html.as_deref().map(|h| util::cut(h, MAX_BODY_CHARS)), text)
-    };
-    let sender = mail.from.as_ref().map(|f| util::cut(&f.1, 320));
-    let doc = json!({
-        "id": comm,
-        "channel": "Email",
-        "direction": "Received",
-        "status": "Received",
-        "subject": if mail.subject.is_empty() { None } else { Some(&mail.subject) },
-        "communication_date": util::ts(mail.date.filter(|d| *d <= util::now() + chrono::Duration::days(1)).unwrap_or_else(util::now)),
-        "email_account": account.id,
-        "sender": sender,
-        "sender_name": mail.from.as_ref().and_then(|f| f.0.as_deref()).map(|n| util::clean_line(n, 200)),
-        "recipients": util::cut(&mail.to.join(", "), 100_000),
-        "cc": util::cut(&mail.cc.join(", "), 100_000),
-        "content": html.unwrap_or_else(|| mail_parser::decoders::html::text_to_html(&text)),
-        "text_content": text,
-        "attachments": attachments,
-        "reference_entity": reference.as_ref().map(|r| r.0.clone()),
-        "reference_id": reference.as_ref().map(|r| r.1.clone()),
-        "message_id": message_id,
-        "in_reply_to": mail.in_reply_to.first().map(|m| util::cut(m, 500)),
-        "mail_references": util::cut(&mail.references.join(" "), 50_000),
-        "thread_key": util::cut(&thread_key, 500),
-        "seen": false,
-    });
-    match k.insert_tx(&ctx, &mut tx, "Communication", util::obj(doc)).await {
-        Ok(_) => {}
-        // The same message arrived through another path a moment ago.
-        Err(Error::Conflict(_)) => {
-            tx.rollback().await?;
-            let mut tx = k.db.tenant_tx(tenant).await?;
-            let e: Uuid = sqlx::query_scalar("select id from e_communication where tenant_id = $1 and message_id = $2")
-                .bind(tenant)
-                .bind(&message_id)
-                .fetch_one(&mut *tx)
-                .await?;
-            tx.commit().await?;
-            return Ok(Ingested::Duplicate(e));
-        }
-        Err(e) => return Err(e),
-    }
-    if let Some((_, _, _, Some(user))) = &parent {
-        let who = mail.from.as_ref().map(|f| f.0.clone().unwrap_or_else(|| f.1.clone())).unwrap_or_default();
-        let title = util::cut(&format!("Reply from {who}: {}", mail.subject), 200);
-        notify::send(&mut tx, tenant, *user, &title, Some(&util::cut(&text, 300)), Some("Communication"), Some(comm)).await?;
-    }
-    tx.commit().await?;
-    Ok(Ingested::Created(comm))
+    outcome
 }
 
 // ───────────────────────────── IMAP polling ─────────────────────────────
