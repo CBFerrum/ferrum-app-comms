@@ -12,6 +12,10 @@ modules:
     items: [Communication, CalendarEvent, EmailTemplate, EmailAccount, EmailGroup, EmailGroupMember, Newsletter, ChatChannel, ChatMessage,
             CommsSettings, report:email_activity, report:newsletter_performance, report:chat_activity]
 
+# What a personal-data request exports and erases for a person (their email): the messages they
+# sent, emptied of their address, name, words and attached files' list.
+personal_data:
+  - {entity: Communication, match: sender, erase: [sender, sender_name, subject, content, text_content, attachments]}
 roles:
   - name: Comms User
     description: Sends mail from the records they can read, chats with colleagues and keeps a calendar.
