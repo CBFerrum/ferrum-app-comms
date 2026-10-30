@@ -316,9 +316,7 @@ fn sanitize(html: &str, inline: &HashMap<String, String>, remote: bool) -> (Stri
             ("img", "src") => {
                 if let Some(cid) = value.strip_prefix("cid:") {
                     inline.get(cid.trim_matches(['<', '>'])).map(|d| Cow::Owned(d.clone()))
-                } else if value.starts_with("data:image/") {
-                    Some(value.into())
-                } else if remote && (value.starts_with("https://") || value.starts_with("http://")) {
+                } else if value.starts_with("data:image/") || (remote && (value.starts_with("https://") || value.starts_with("http://"))) {
                     Some(value.into())
                 } else {
                     counter.fetch_add(1, Ordering::Relaxed);
