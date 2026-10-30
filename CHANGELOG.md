@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.3
+
+- Pop out in a browser that says it floats videos but cannot float a call's (a camera stream):
+  the person is told so in plain words and the button goes away, instead of an engine's error.
+
 ## 0.7.2
 
 - Calls pop out: in a meeting, Pop out puts the call in a small window that stays above every other

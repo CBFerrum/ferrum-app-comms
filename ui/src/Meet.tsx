@@ -208,6 +208,8 @@ function copyStyles(to: Document) {
 function PopOut({ slot }: { slot: HTMLElement }) {
   const [pip, setPip] = useState<Window | null>(null);
   const [floating, setFloating] = useState(false);
+  // A browser that says it floats videos but cannot float this one (a camera's stream).
+  const [unable, setUnable] = useState(false);
   useEffect(() => () => pip?.close(), [pip]);
   useEffect(() => {
     const on = () => setFloating(!!document.pictureInPictureElement);
@@ -219,7 +221,7 @@ function PopOut({ slot }: { slot: HTMLElement }) {
     };
   }, []);
   const api = documentPip();
-  if (!api && !document.pictureInPictureEnabled) return null;
+  if (unable || (!api && !document.pictureInPictureEnabled)) return null;
   const out = !!pip || floating;
   const toggle = async () => {
     try {
@@ -239,7 +241,12 @@ function PopOut({ slot }: { slot: HTMLElement }) {
       if (!video) return toast("Nobody's camera is on yet.");
       await video.requestPictureInPicture();
     } catch (e) {
-      toast(errorMessage(e), "error");
+      if (e instanceof DOMException && e.name === "NotSupportedError") {
+        setUnable(true);
+        return toast("This browser can't pop the call out.", "error");
+      }
+      // Refused (the browser wants the click itself) or already floating elsewhere.
+      toast(e instanceof DOMException && e.name === "NotAllowedError" ? "The browser did not allow the call to pop out; try again." : errorMessage(e), "error");
     }
   };
   return (
