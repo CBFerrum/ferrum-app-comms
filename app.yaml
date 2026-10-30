@@ -1,6 +1,6 @@
 id: comms
 name: Mail, Chat and Calendar
-version: 0.7.3
+version: 0.7.4
 publisher: cbferrum
 summary: Email accounts (SMTP/IMAP), threaded communications on any record, templates, newsletters, team chat, calendars with ICS and calendar-app sync, contacts sync and video meetings
 description: README.md
@@ -38,5 +38,11 @@ contributes:
     - {id: share, action: share, type: record, path: chat/_intent/share, title: Share in Chat}
   shell.sidepanel:
     - {id: chat, title: Chat, path: chat/_panel}
+  # A channel opens in Chat (`/open/ChatChannel/{id}`: links, search results, notifications).
+  shell.open:
+    - {id: channel, entity: ChatChannel, path: "chat/{id}"}
+  # The bar's search asks Chat for the messages the person may read (Ferrum apps-ui.md §12.8).
+  shell.search:
+    - {id: chat, title: Chat, endpoint: /api/app/comms/chat/search}
   shell.public:
     - {id: guest, path: meet/guest, title: Meeting}
