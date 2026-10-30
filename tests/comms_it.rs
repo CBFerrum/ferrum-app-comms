@@ -934,9 +934,10 @@ async fn scenario() {
     t.maintenance(&imap).await;
     assert_eq!((t.notifications(alice, "Reminder: Partner sync%").await, t.notifications(bob, "Reminder: Partner sync%").await), (1, 1), "reminders fire once");
     // A public event shows on everyone's calendar.
-    k.insert(mgr, "CalendarEvent", obj(json!({"subject": "Town hall", "starts_at": iso(soon + chrono::Duration::days(2)), "ends_at": iso(soon + chrono::Duration::days(2) + chrono::Duration::hours(1)), "visibility": "Public"})))
+    let town_hall = k.insert(mgr, "CalendarEvent", obj(json!({"subject": "Town hall", "starts_at": iso(soon + chrono::Duration::days(2)), "ends_at": iso(soon + chrono::Duration::days(2) + chrono::Duration::hours(1)), "visibility": "Public"})))
         .await
         .unwrap();
+    let town_hall = uid(&Value::Object(town_hall));
     assert_eq!(t.ok(carol, "GET", "/calendar/events", &window, Value::Null).await["occurrences"].as_array().unwrap().len(), 1);
     // A personal ICS feed by secret URL; rotating it retires the old one.
     let feed = t.ok(alice, "POST", "/calendar/feed", &[], Value::Null).await;
@@ -963,6 +964,45 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     assert_eq!((r["created"].clone(), r["updated"].clone()), (json!(0), json!(2)), "{r}");
     let dentist: String = t.scalar("select to_char(starts_at at time zone 'UTC', 'HH24:MI') from e_calendar_event where tenant_id = $1 and ical_uid = 'ext-1@example.com' and $2::uuid is null", None).await;
     assert_eq!(dentist, "09:00", "10:00 in Berlin in November is 09:00 UTC");
+
+    // ───────────── meetings: who may join the call of a channel, an event or a room ─────────────
+    let join = |who: &Ctx, kind: &str, id: Uuid| {
+        let (t, who, path) = (&t, who.clone(), format!("/meet/{kind}/{id}/token"));
+        async move { t.call(Some(&who), "POST", &path, &[], Value::Null).await }
+    };
+    assert_eq!(t.ok(carol, "GET", "/meet", &[], Value::Null).await, json!({"available": false}));
+    refused(join(alice, "channel", deals_id).await, "invalid");
+    // SAFETY: this test is the only one in its process.
+    unsafe {
+        std::env::set_var("FERRUM_MEET_URL", "wss://meet.acme.test/");
+        std::env::set_var("FERRUM_MEET_KEY", "APIacme");
+        std::env::set_var("FERRUM_MEET_SECRET", "a-secret-only-livekit-and-ferrum-know");
+    }
+    assert_eq!(t.ok(carol, "GET", "/meet", &[], Value::Null).await, json!({"available": true}));
+    let pass = join(bob, "channel", deals_id).await.unwrap();
+    assert_eq!((pass["url"].clone(), pass["title"].clone()), (json!("wss://meet.acme.test"), json!("#deals")));
+    let claims = |pass: &Value| -> Value {
+        let body = pass["token"].as_str().unwrap().split('.').nth(1).unwrap();
+        serde_json::from_slice(&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(body).unwrap()).unwrap()
+    };
+    let room_of = |kind: &str, id: Uuid| json!(format!("{}-{kind}-{}", t.tenant.simple(), id.simple()));
+    assert_eq!((claims(&pass)["video"]["room"].clone(), claims(&pass)["name"].clone()), (room_of("channel", deals_id), json!("Bob Shah")));
+    assert_ne!(claims(&pass)["sub"], claims(&join(bob, "channel", deals_id).await.unwrap())["sub"], "each joining is its own participant");
+    refused(join(carol, "channel", deals_id).await, "not found");
+    assert_eq!(join(carol, "channel", general).await.unwrap()["title"], json!("#general"), "a public channel's call is open to all");
+    assert_eq!(join(alice, "channel", d1).await.unwrap()["title"], json!("Bob Shah"), "a direct call is named after the other person");
+    let bobs = join(bob, "event", event_id).await.unwrap();
+    assert_eq!((bobs["title"].clone(), claims(&bobs)["video"]["room"].clone()), (json!("Partner sync; Q4, plans"), room_of("event", event_id)));
+    refused(join(carol, "event", event_id).await, "not found");
+    assert_eq!(join(carol, "event", town_hall).await.unwrap()["title"], json!("Town hall"), "a public event's call is open to all");
+    let room = t.ok(alice, "POST", "/meet/rooms", &[], json!({"title": "  Quick chat  "})).await;
+    assert_eq!(room["title"], json!("Quick chat"));
+    assert_eq!(join(carol, "room", uid(&room)).await.unwrap()["title"], json!("Quick chat"), "a room admits anyone in the workspace with its link");
+    assert_eq!(t.ok(alice, "POST", "/meet/rooms", &[], json!({})).await["title"], json!("Meeting"));
+    refused(join(carol, "room", Uuid::new_v4()).await, "not found");
+    refused(join(carol, "space", uid(&room)).await, "not found");
+    refused(t.call(Some(dave), "POST", "/meet/rooms", &[], json!({})).await, "forbidden");
+
     // Cancelling tells the guest (iCalendar CANCEL) and the colleague.
     let cancel_before = smtp.count();
     k.update(alice, "CalendarEvent", event_id, obj(json!({"status": "Cancelled"})), None).await.unwrap();
@@ -970,6 +1010,13 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     assert_eq!(smtp.count(), cancel_before + 1);
     assert!(smtp.mails().last().unwrap().data.contains("method=CANCEL"));
     assert_eq!(t.notifications(bob, "Cancelled: Partner sync%").await, 1);
+    refused(join(bob, "event", event_id).await, "invalid");
+    // SAFETY: as above.
+    unsafe {
+        for var in ["FERRUM_MEET_URL", "FERRUM_MEET_KEY", "FERRUM_MEET_SECRET"] {
+            std::env::remove_var(var);
+        }
+    }
 
     // ───────────── reports ─────────────
     let report = |ctx: &Ctx, name: &str| {

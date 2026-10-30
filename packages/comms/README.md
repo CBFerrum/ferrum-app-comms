@@ -3,7 +3,8 @@
 Package `comms` (depends on `core`, logic in `crates/pkg-comms`): email accounts (SMTP sending,
 IMAP polling, inbound webhook), a threaded **Communication** log on any record, email templates,
 mailing lists and newsletters, team chat with live pushes, and calendars with recurrence,
-reminders, free/busy, RSVP and iCalendar (invitations, feeds, import).
+reminders, free/busy, RSVP and iCalendar (invitations, feeds, import), and video meetings
+on a LiveKit server.
 
 Times are RFC 3339 UTC with milliseconds (`2026-11-02T09:00:00.000Z`). Errors use the usual API
 shape (`{"error", "message", "fields"?}`): `not_found` (404), `forbidden` (403), `invalid` /
@@ -210,6 +211,31 @@ my_response` (null when not an attendee)`, recurring, reference_entity, referenc
 Reminders are bell notifications ("Reminder: …"), once per occurrence and reminder, to the
 organizer and colleagues who have not declined.
 
+### Meetings — `/api/app/comms/meet/...`
+
+Video meetings run on a [LiveKit](https://livekit.io) server the operator sets up beside Ferrum
+(`FERRUM_MEET_URL`: LiveKit as browsers reach it, `wss://…`; `FERRUM_MEET_KEY` and
+`FERRUM_MEET_SECRET`: an API key and its secret that LiveKit was given). Comms decides who may join
+and signs LiveKit access tokens; sound and pictures never pass through Ferrum. A meeting is
+`{kind}/{id}`:
+
+| kind | id | who may join | title |
+|---|---|---|---|
+| `channel` | a chat channel | whoever may read it: its members, anyone for a public one (not when archived) | `#name`, or the other person of a direct message |
+| `event` | a calendar event | its organizer and guests, anyone for a public one (not when cancelled) | the subject |
+| `room` | a room from `POST /meet/rooms` | anyone in the workspace with its link | its title |
+
+| Method & path | Body / query → response |
+|---|---|
+| `GET /meet` | → `{available}`: whether meetings are set up |
+| `POST /meet/rooms` | `{title?}` (at most 140 characters; "Meeting") → `201 {kind: "room", id, title}`. Rooms nobody joined for 90 days are removed |
+| `POST /meet/{kind}/{id}/token` | → `{url, token, title}`: LiveKit's address and a token (6 hours) admitting the caller with camera, microphone, screen sharing and the meeting's chat. A meeting the caller may not join is `not_found`; meetings not set up, an archived channel or a cancelled event are `invalid` |
+
+The LiveKit room is `{tenant}-{kind}-{id}` (UUIDs without hyphens), so workspaces sharing a
+LiveKit server stay apart. Each joining is its own participant (`{user}.{random}`), so a person can
+be in from two devices. A person who loses access gets no new token; one already in the meeting
+stays until they leave. An event's meeting link is the web app's `/app/meet/event/{id}`.
+
 ## Public endpoints — `/api/site/{tenant}/comms/...`
 
 | Method & path | What |
@@ -263,7 +289,7 @@ Every minute (`maintenance`, one replica at a time): retry due mail and requeue 
 Sending for 10 minutes; poll IMAP accounts whose interval passed (only UIDs above the last one; a
 new UIDVALIDITY rereads the folder; the first poll takes the newest 50; at most 50 per poll);
 start due newsletters and send the next batch; announce due reminders; keep hosted mailboxes in
-step (every ten minutes); purge old reminder bookkeeping. While an account's SMTP server is failing, newly queued mail waits for these retries
+step (every ten minutes); purge old reminder bookkeeping and meeting rooms nobody joined for 90 days. While an account's SMTP server is failing, newly queued mail waits for these retries
 instead of holding up the outbox worker with a timeout per message.
 Received mail is deduplicated by Message-ID, so the webhook and the poller can both deliver the
 same message.

@@ -11,6 +11,7 @@ mod hosted;
 pub mod ics;
 pub mod inbound;
 mod mail;
+mod meet;
 mod newsletter;
 pub mod recur;
 mod reports;
@@ -99,14 +100,16 @@ pub async fn maintenance_with(k: &Kernel, mailboxes: &dyn MailboxConnector) -> R
     first_error.map_or(Ok(()), Err)
 }
 
-/// Old reminder bookkeeping.
+/// Old reminder bookkeeping, and meeting rooms nobody joined for 90 days.
 async fn purge(k: &Kernel, tenant: Uuid) -> Result<usize> {
     let mut tx = k.db.tenant_tx(tenant).await?;
-    let n = sqlx::query("delete from comms_reminder_log where tenant_id = $1 and fired_at < now() - interval '60 days'")
-        .bind(tenant)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
+    let mut n = 0;
+    for sql in [
+        "delete from comms_reminder_log where tenant_id = $1 and fired_at < now() - interval '60 days'",
+        "delete from comms_meeting where tenant_id = $1 and coalesce(used_at, created_at) < now() - interval '90 days'",
+    ] {
+        n += sqlx::query(sql).bind(tenant).execute(&mut *tx).await?.rows_affected();
+    }
     tx.commit().await?;
     Ok(n as usize)
 }
