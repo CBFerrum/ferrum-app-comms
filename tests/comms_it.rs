@@ -1272,10 +1272,12 @@ async fn calendar_apps(t: &T, users: &HashMap<String, Ctx>) {
     assert_eq!(t.scalar::<i64>("select count(*) from e_calendar_event where tenant_id = $1 and ical_uid = 'ABC-1' and $2::uuid is null", None).await, 0);
     refused(call(alice, "GET", &path, &[], "").await, "not found");
 
-    // Address books: colleagues for everyone, CRM contacts only where CRM is installed.
+    // Address books: colleagues, and the workspace's shared contacts (the platform's, which Comms
+    // depends on), empty until someone adds one.
     let books = text(&call(alice, "PROPFIND", &format!("{a}/addressbooks"), &[("depth", "1")], &propfind("<d:resourcetype/><d:displayname/>")).await.unwrap());
-    assert!(books.contains("addressbooks/colleagues/") && books.contains("<CR:addressbook/>") && !books.contains("addressbooks/contacts/"), "{books}");
-    refused(call(alice, "PROPFIND", &format!("{a}/addressbooks/contacts"), &[], "").await, "not found");
+    assert!(books.contains("addressbooks/colleagues/") && books.contains("<CR:addressbook/>") && books.contains("addressbooks/contacts/"), "{books}");
+    let none = text(&call(alice, "PROPFIND", &format!("{a}/addressbooks/contacts"), &[("depth", "1")], &propfind("<d:getetag/>")).await.unwrap());
+    assert!(!none.contains(".vcf"), "{none}");
     let card_multiget = format!(
         r#"<card:addressbook-multiget xmlns:d="DAV:" xmlns:card="urn:ietf:params:xml:ns:carddav"><d:prop><d:getetag/><card:address-data/></d:prop><d:href>/api/dav/comms/{a}/addressbooks/colleagues/{}.vcf</d:href></card:addressbook-multiget>"#,
         bob.user
