@@ -1003,6 +1003,58 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     refused(join(carol, "space", uid(&room)).await, "not found");
     refused(t.call(Some(dave), "POST", "/meet/rooms", &[], json!({})).await, "forbidden");
 
+    // Guests. An outside guest of an event with a meeting here gets their own link in the invitation.
+    let soon_iso = |d: i64| (chrono::Utc::now() + chrono::Duration::days(d)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let review = uid(&Value::Object(
+        k.insert(
+            alice,
+            "CalendarEvent",
+            obj(json!({"subject": "Supplier review", "starts_at": soon_iso(1), "ends_at": soon_iso(1),
+                    "attendees": [{"email": "pat@partner.test", "attendee_name": "Pat Lee"}, {"email": "bob@acme.test"}]})),
+        )
+        .await
+        .unwrap(),
+    ));
+    k.update(alice, "CalendarEvent", review, obj(json!({"meeting_link": format!("https://erp.acme.test/app/meet/event/{review}")})), None).await.unwrap();
+    t.drain().await;
+    let invitation: String = t
+        .scalar("select content from e_communication where tenant_id = $1 and reference_id = $2::text and recipients like '%pat@partner.test%' order by created_at desc limit 1", Some(review))
+        .await;
+    let link = regex::Regex::new(r"https://erp\.acme\.test/app/meet/guest/acme/(e\.[A-Za-z0-9._-]+)").unwrap();
+    let pats = link.captures(&invitation).unwrap_or_else(|| panic!("a guest link in {invitation}"))[1].to_string();
+    let guest = |body: Value| t.call(None, "POST", "/meet/guest", &[], body);
+    let pass = guest(json!({"token": pats})).await.unwrap();
+    assert_eq!((pass["title"].clone(), claims(&pass)["name"].clone()), (json!("Supplier review"), json!("Pat Lee (guest)")));
+    assert_eq!(claims(&pass)["video"]["room"], room_of("event", review), "the guest joins the colleagues' meeting");
+    let mut forged = pats.clone();
+    forged.replace_range(forged.len() - 1.., if pats.ends_with('0') { "1" } else { "0" });
+    refused(guest(json!({"token": forged})).await, "not found");
+    let parts: Vec<&str> = pats.split('.').collect();
+    let eve = format!("e.{}.{}.{}", parts[1], base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("eve@partner.test"), parts[3]);
+    refused(guest(json!({"token": eve})).await, "not found");
+    // Removing the guest from the event stops their link.
+    k.update(alice, "CalendarEvent", review, obj(json!({"attendees": [{"email": "bob@acme.test"}]})), None).await.unwrap();
+    refused(guest(json!({"token": pats})).await, "not found");
+
+    // A room's guest link: anyone with it, by the name they type; a new link retires the old one.
+    let shared = uid(&t.ok(alice, "POST", "/meet/rooms", &[], json!({"title": "Vendor demo"})).await);
+    assert_eq!(join(carol, "room", shared).await.unwrap()["guest_path"], Value::Null);
+    let path = t.ok(alice, "POST", &format!("/meet/room/{shared}/guest-link"), &[], Value::Null).await["guest_path"].as_str().unwrap().to_string();
+    assert!(path.starts_with(&format!("/app/meet/guest/acme/r.{}.", shared.simple())), "{path}");
+    assert_eq!(join(carol, "room", shared).await.unwrap()["guest_path"], json!(path), "people in the room can share it");
+    let room_link = path.rsplit('/').next().unwrap().to_string();
+    refused(guest(json!({"token": room_link})).await, "invalid");
+    let sam = guest(json!({"token": room_link, "name": "  Sam  "})).await.unwrap();
+    assert_eq!((sam["title"].clone(), claims(&sam)["name"].clone()), (json!("Vendor demo"), json!("Sam (guest)")));
+    assert!(claims(&sam)["sub"].as_str().unwrap().starts_with("guest."));
+    let renewed = t.ok(alice, "POST", &format!("/meet/room/{shared}/guest-link"), &[], Value::Null).await["guest_path"].as_str().unwrap().to_string();
+    assert_ne!(renewed, path);
+    refused(guest(json!({"token": room_link, "name": "Sam"})).await, "not found");
+    assert_eq!(t.ok(alice, "DELETE", &format!("/meet/room/{shared}/guest-link"), &[], Value::Null).await["guest_path"], Value::Null);
+    refused(guest(json!({"token": renewed.rsplit('/').next().unwrap(), "name": "Sam"})).await, "not found");
+    refused(guest(json!({"token": "x.y"})).await, "not found");
+    t.drain().await;
+
     // Cancelling tells the guest (iCalendar CANCEL) and the colleague.
     let cancel_before = smtp.count();
     k.update(alice, "CalendarEvent", event_id, obj(json!({"status": "Cancelled"})), None).await.unwrap();
@@ -1028,9 +1080,10 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     let activity = report(mgr, "email_activity").await.unwrap();
     let totals = &activity["totals"];
     // Sent: the quote, Bob's reply, the retried follow-up, the one left to maintenance, the
-    // server-mailer one, the invitation and its cancellation; received: the reply, Jane, the
-    // auto-reply and two polled mails; failed: the bounce.
-    assert_eq!((totals["sent"].clone(), totals["received"].clone(), totals["failed"].clone()), (json!(7), json!(5), json!(1)), "{activity}");
+    // server-mailer one, the invitation and its cancellation, and Pat's invitation, its update with
+    // her meeting link and her cancellation; received: the reply, Jane, the auto-reply and two
+    // polled mails; failed: the bounce.
+    assert_eq!((totals["sent"].clone(), totals["received"].clone(), totals["failed"].clone()), (json!(10), json!(5), json!(1)), "{activity}");
     let letters = report(mgr, "newsletter_performance").await.unwrap();
     assert_eq!(
         (letters["rows"][0]["sent"].clone(), letters["rows"][0]["unsubscribed"].clone(), letters["rows"][0]["unsubscribe_rate"].clone()),
@@ -1044,7 +1097,194 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     let dead: i64 = t.scalar("select count(*) from outbox where tenant_id = $1 and (dead or last_error is not null) and $2::uuid is null", None).await;
     assert_eq!(dead, 0);
 
+    calendar_apps(&t, &users).await;
     hosted_mail(&t, &admin, &users, &imap).await;
+}
+
+/// A calendar and contacts app's session (CalDAV and CardDAV under `/dav`): discovery, an event
+/// created, changed, answered and deleted from apps, a moved occurrence, reports, address books.
+async fn calendar_apps(t: &T, users: &HashMap<String, Ctx>) {
+    let (alice, bob, dave) = (&users["alice"], &users["bob"], &users["dave"]);
+    let call = |who: &Ctx, method: &str, path: &str, headers: &[(&str, &str)], body: &str| {
+        let mut req = t.request(Some(who), method, &format!("/dav/{}", path.trim_start_matches('/')), &[], body.as_bytes().to_vec(), "text/xml; charset=utf-8");
+        for (k, v) in headers {
+            req.headers.insert(k.to_string(), json!(v));
+        }
+        t.raw(req)
+    };
+    let text = |r: &SiteResponse| String::from_utf8_lossy(&r.body).into_owned();
+    let header = |r: &SiteResponse, name: &str| r.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone());
+    let (a, b) = (format!("u/{}", alice.user), format!("u/{}", bob.user));
+    let propfind = |props: &str| {
+        format!(
+            r#"<?xml version="1.0"?><d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:card="urn:ietf:params:xml:ns:carddav" xmlns:cs="http://calendarserver.org/ns/"><d:prop>{props}</d:prop></d:propfind>"#
+        )
+    };
+
+    // Discovery: who I am, where my calendar and address books are.
+    let root = call(alice, "PROPFIND", "/", &[("depth", "0")], &propfind("<d:current-user-principal/>")).await.unwrap();
+    assert_eq!(root.status, 207);
+    assert!(text(&root).contains(&format!("<D:current-user-principal><D:href>/api/dav/comms/{a}/</D:href>")), "{}", text(&root));
+    let me = text(
+        &call(
+            alice,
+            "PROPFIND",
+            &a,
+            &[("depth", "0")],
+            &propfind("<c:calendar-home-set/><card:addressbook-home-set/><d:displayname/><x:nothing xmlns:x=\"urn:x\"/>"),
+        )
+        .await
+        .unwrap(),
+    );
+    for part in [
+        format!("<C:calendar-home-set><D:href>/api/dav/comms/{a}/calendars/</D:href>"),
+        format!("<CR:addressbook-home-set><D:href>/api/dav/comms/{a}/addressbooks/</D:href>"),
+        "<D:displayname>Alice Rao</D:displayname>".into(),
+        "<nothing xmlns=\"urn:x\"/></D:prop><D:status>HTTP/1.1 404 Not Found".into(),
+    ] {
+        assert!(me.contains(&part), "{part} in {me}");
+    }
+    let home = text(
+        &call(
+            alice,
+            "PROPFIND",
+            &format!("{a}/calendars"),
+            &[("depth", "1")],
+            &propfind("<d:resourcetype/><cs:getctag/><c:supported-calendar-component-set/>"),
+        )
+        .await
+        .unwrap(),
+    );
+    assert!(
+        home.contains(&format!("/api/dav/comms/{a}/calendars/default/")) && home.contains("<C:calendar/>") && home.contains("<C:comp name=\"VEVENT\"/>"),
+        "{home}"
+    );
+    refused(call(alice, "PROPFIND", &format!("{b}/calendars/default"), &[], "").await, "not found");
+    refused(call(dave, "PROPFIND", "/", &[], "").await, "forbidden");
+    let options = call(alice, "OPTIONS", &a, &[], "").await.unwrap();
+    assert!(header(&options, "dav").is_some_and(|d| d.contains("calendar-access") && d.contains("addressbook")));
+
+    // An event from Alice's phone: guests, an alert, public.
+    let day = (chrono::Utc::now() + chrono::Duration::days(3)).format("%Y%m%d").to_string();
+    let event = |summary: &str, bob_answer: &str| {
+        format!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\nBEGIN:VEVENT\r\nUID:ABC-1\r\nDTSTART;TZID=Asia/Kolkata:{day}T100000\r\n\
+             DTEND;TZID=Asia/Kolkata:{day}T110000\r\nSUMMARY:{summary}\r\nCLASS:PUBLIC\r\nORGANIZER:mailto:alice@acme.test\r\n\
+             ATTENDEE;PARTSTAT=ACCEPTED:mailto:alice@acme.test\r\nATTENDEE;CN=Bob Shah;PARTSTAT={bob_answer}:mailto:bob@acme.test\r\n\
+             ATTENDEE;CN=Pat:mailto:pat@partner.test\r\nBEGIN:VALARM\r\nTRIGGER:-PT10M\r\nACTION:DISPLAY\r\nEND:VALARM\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+    };
+    let path = format!("{a}/calendars/default/ABC-1.ics");
+    let created = call(alice, "PUT", &path, &[("if-none-match", "*")], &event("Plan review", "NEEDS-ACTION")).await.unwrap();
+    assert_eq!(created.status, 201, "{}", text(&created));
+    assert_eq!(header(&created, "etag"), None, "Ferrum keeps its own form of the event: apps read it back");
+    let stored: Value = t
+        .scalar(
+            "select jsonb_build_object('owner', e.owner, 'subject', e.subject, 'visibility', e.visibility, 'starts_at', to_char(e.starts_at at time zone 'UTC', 'HH24:MI'), \
+             'attendees', (select jsonb_agg(jsonb_build_array(a.email, a.response) order by a.idx) from e_calendar_event__attendees a where a.parent_id = e.id), \
+             'reminders', (select jsonb_agg(r.minutes_before) from e_calendar_event__reminders r where r.parent_id = e.id)) \
+             from e_calendar_event e where e.tenant_id = $1 and e.ical_uid = 'ABC-1' and $2::uuid is null",
+            None,
+        )
+        .await;
+    assert_eq!(
+        stored,
+        json!({"owner": "alice@acme.test", "subject": "Plan review", "visibility": "Public", "starts_at": "04:30",
+               "attendees": [["bob@acme.test", "Needs Action"], ["pat@partner.test", "Needs Action"]], "reminders": [10]})
+    );
+    assert_eq!(call(alice, "PUT", &path, &[("if-none-match", "*")], &event("Again", "NEEDS-ACTION")).await.unwrap().status, 412);
+
+    // Listing and reading it back: the same ETag both ways.
+    let listing = text(&call(alice, "PROPFIND", &format!("{a}/calendars/default"), &[("depth", "1")], &propfind("<d:getetag/><cs:getctag/>")).await.unwrap());
+    let got = call(alice, "GET", &path, &[], "").await.unwrap();
+    let etag = header(&got, "etag").expect("an ETag");
+    assert!(listing.contains(&format!("<D:href>/api/dav/comms/{a}/calendars/default/ABC-1.ics</D:href>")), "{listing}");
+    assert!(listing.contains(&format!("<D:getetag>{}</D:getetag>", etag.replace('"', "&quot;"))), "{listing}");
+    let ics = text(&got);
+    for l in ["UID:ABC-1", "SUMMARY:Plan review", "ATTENDEE;CN=Bob Shah;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION", "TRIGGER:-PT10M", "CLASS:PUBLIC"] {
+        assert!(ics.contains(l), "{l} in {ics}");
+    }
+    assert_eq!(header(&call(alice, "GET", &path, &[], "").await.unwrap(), "etag"), Some(etag.clone()), "the same event reads the same");
+
+    // Bob accepts from his app; the organizer is told, and her next change keeps his answer.
+    let bobs = format!("{b}/calendars/default/ABC-1.ics");
+    assert_eq!(call(bob, "PUT", &bobs, &[], &event("Bob cannot rename it", "ACCEPTED")).await.unwrap().status, 204);
+    assert_eq!(t.notifications(alice, "Bob Shah accepted: Plan review%").await, 1);
+    assert_eq!(call(alice, "PUT", &path, &[("if-match", "\"stale\"")], &event("Plan review 2", "NEEDS-ACTION")).await.unwrap().status, 412);
+    let etag = header(&call(alice, "GET", &path, &[], "").await.unwrap(), "etag").unwrap();
+    assert_eq!(call(alice, "PUT", &path, &[("if-match", &etag)], &event("Plan review 2", "NEEDS-ACTION")).await.unwrap().status, 204);
+    let after: Value = t
+        .scalar(
+            "select jsonb_build_array(e.subject, (select a.response from e_calendar_event__attendees a where a.parent_id = e.id and a.email = 'bob@acme.test')) \
+             from e_calendar_event e where e.tenant_id = $1 and e.ical_uid = 'ABC-1' and $2::uuid is null",
+            None,
+        )
+        .await;
+    assert_eq!(after, json!(["Plan review 2", "Accepted"]), "only the organizer renames; a guest's answer is theirs");
+
+    // A weekly series with one occurrence moved: the occurrence becomes an event of its own, once.
+    let weekly = format!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:WEEK-1\r\nDTSTART:{day}T090000Z\r\nDTEND:{day}T093000Z\r\nSUMMARY:Sync\r\n\
+         RRULE:FREQ=WEEKLY;COUNT=3\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:WEEK-1\r\nRECURRENCE-ID:{next}T090000Z\r\nDTSTART:{next}T110000Z\r\n\
+         DTEND:{next}T113000Z\r\nSUMMARY:Sync (moved)\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+        next = (chrono::Utc::now() + chrono::Duration::days(10)).format("%Y%m%d")
+    );
+    for _ in 0..2 {
+        assert!(call(alice, "PUT", &format!("{a}/calendars/default/WEEK-1.ics"), &[], &weekly).await.unwrap().status < 300);
+    }
+    let moved: Vec<String> = t
+        .scalar("select array_agg(subject || ' ' || to_char(starts_at at time zone 'UTC', 'HH24:MI')) from e_calendar_event where tenant_id = $1 and ical_uid like 'WEEK-1-%' and $2::uuid is null", None)
+        .await;
+    assert_eq!(moved, vec!["Sync (moved) 11:00".to_string()]);
+    let series = text(&call(alice, "GET", &format!("{a}/calendars/default/WEEK-1.ics"), &[], "").await.unwrap());
+    assert!(series.contains("RRULE:FREQ=WEEKLY;COUNT=3") && series.contains("EXDATE:"), "{series}");
+
+    // Reports: a multiget (with a name that is not there) and a query for a past range.
+    let multiget = format!(
+        r#"<c:calendar-multiget xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><d:getetag/><c:calendar-data/></d:prop>
+           <d:href>/api/dav/comms/{a}/calendars/default/ABC-1.ics</d:href><d:href>/api/dav/comms/{a}/calendars/default/missing.ics</d:href></c:calendar-multiget>"#
+    );
+    let report = text(&call(alice, "REPORT", &format!("{a}/calendars/default"), &[("depth", "1")], &multiget).await.unwrap());
+    assert!(report.contains("SUMMARY:Plan review 2") && report.contains("missing.ics</D:href><D:status>HTTP/1.1 404 Not Found"), "{report}");
+    let past = r#"<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><d:getetag/></d:prop><c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"><c:time-range start="20200101T000000Z" end="20200201T000000Z"/></c:comp-filter></c:comp-filter></c:filter></c:calendar-query>"#;
+    let query = text(&call(alice, "REPORT", &format!("{a}/calendars/default"), &[("depth", "1")], past).await.unwrap());
+    assert!(query.contains("WEEK-1.ics") && !query.contains("ABC-1.ics"), "a repeating event may fall in any range; a single one only in its own: {query}");
+    let sync = r#"<d:sync-collection xmlns:d="DAV:"><d:sync-token/><d:prop><d:getetag/></d:prop></d:sync-collection>"#;
+    assert_eq!(call(alice, "REPORT", &format!("{a}/calendars/default"), &[], sync).await.unwrap().status, 403);
+
+    // What Ferrum cannot keep is refused, not changed.
+    let odd = |rule: &str, start: &str| {
+        format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:ODD\r\nDTSTART{start}\r\nSUMMARY:Odd\r\n{rule}END:VEVENT\r\nEND:VCALENDAR\r\n")
+    };
+    for body in [odd("RRULE:FREQ=MINUTELY\r\n", &format!(":{day}T090000Z")), odd("", &format!(";TZID=Mars/Olympus:{day}T090000"))] {
+        let r = call(alice, "PUT", &format!("{a}/calendars/default/ODD.ics"), &[], &body).await.unwrap();
+        assert!(r.status == 403 && text(&r).contains("valid-calendar-object-resource"), "{}", text(&r));
+    }
+
+    // Deleting: a guest declines; the organizer cancels.
+    assert_eq!(call(bob, "DELETE", &bobs, &[], "").await.unwrap().status, 204);
+    let bobs_list = text(&call(bob, "PROPFIND", &format!("{b}/calendars/default"), &[("depth", "1")], &propfind("<d:getetag/>")).await.unwrap());
+    assert!(!bobs_list.contains("ABC-1.ics"), "a declined invitation leaves the calendar: {bobs_list}");
+    let etag = header(&call(alice, "GET", &path, &[], "").await.unwrap(), "etag").unwrap();
+    assert_eq!(call(alice, "DELETE", &path, &[("if-match", &etag)], "").await.unwrap().status, 204);
+    assert_eq!(t.scalar::<i64>("select count(*) from e_calendar_event where tenant_id = $1 and ical_uid = 'ABC-1' and $2::uuid is null", None).await, 0);
+    refused(call(alice, "GET", &path, &[], "").await, "not found");
+
+    // Address books: colleagues for everyone, CRM contacts only where CRM is installed.
+    let books = text(&call(alice, "PROPFIND", &format!("{a}/addressbooks"), &[("depth", "1")], &propfind("<d:resourcetype/><d:displayname/>")).await.unwrap());
+    assert!(books.contains("addressbooks/colleagues/") && books.contains("<CR:addressbook/>") && !books.contains("addressbooks/contacts/"), "{books}");
+    refused(call(alice, "PROPFIND", &format!("{a}/addressbooks/contacts"), &[], "").await, "not found");
+    let card_multiget = format!(
+        r#"<card:addressbook-multiget xmlns:d="DAV:" xmlns:card="urn:ietf:params:xml:ns:carddav"><d:prop><d:getetag/><card:address-data/></d:prop><d:href>/api/dav/comms/{a}/addressbooks/colleagues/{}.vcf</d:href></card:addressbook-multiget>"#,
+        bob.user
+    );
+    let cards = text(&call(alice, "REPORT", &format!("{a}/addressbooks/colleagues"), &[], &card_multiget).await.unwrap());
+    assert!(cards.contains("FN:Bob Shah") && cards.contains("EMAIL;TYPE=INTERNET,PREF:bob@acme.test") && cards.contains("N:Shah;Bob;;;"), "{cards}");
+    let put_card = call(alice, "PUT", &format!("{a}/addressbooks/colleagues/{}.vcf", bob.user), &[], "BEGIN:VCARD\r\nEND:VCARD\r\n").await.unwrap();
+    assert_eq!(put_card.status, 403, "address books are read-only");
+    let patch = r#"<d:propertyupdate xmlns:d="DAV:" xmlns:a="http://apple.com/ns/ical/"><d:set><d:prop><a:calendar-color>#FF0000FF</a:calendar-color></d:prop></d:set></d:propertyupdate>"#;
+    let patched = text(&call(alice, "PROPPATCH", &format!("{a}/calendars/default"), &[], patch).await.unwrap());
+    assert!(patched.contains("<A:calendar-color/></D:prop><D:status>HTTP/1.1 403 Forbidden"), "{patched}");
 }
 
 /// Hosted mailboxes on a real Stalwart (`FERRUM_MAIL_URL`, `FERRUM_MAIL_ADMIN`,

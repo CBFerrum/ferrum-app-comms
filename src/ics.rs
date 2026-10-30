@@ -1,7 +1,8 @@
 //! iCalendar (RFC 5545) text: writing invitations and feeds (TEXT escaping, 75-octet line
-//! folding, CRLF) and a tolerant VEVENT parser for imports (TZID through the IANA database,
-//! all-day dates, DURATION, EXDATE, RRULE). Components it has no use for (VALARM, VTIMEZONE,
-//! VTODO) are skipped without their properties leaking into the event.
+//! folding, CRLF) and a tolerant VEVENT parser for imports and calendar apps (TZID through the IANA
+//! database, all-day dates, DURATION, EXDATE, RRULE, RECURRENCE-ID, ORGANIZER, ATTENDEE, VALARM
+//! triggers). Components it has no use for (VTIMEZONE, VTODO) are skipped without their
+//! properties leaking into the event.
 
 use crate::recur::{self, Exception};
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
@@ -65,7 +66,7 @@ fn date(d: NaiveDate) -> String {
     d.format("%Y%m%d").to_string()
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Attendee {
     pub email: String,
     pub name: Option<String>,
@@ -188,9 +189,17 @@ pub struct ParsedEvent {
     pub exceptions: Vec<Exception>,
     /// CONFIRMED, TENTATIVE or CANCELLED.
     pub status: Option<String>,
-    pub private: bool,
+    /// CLASS: `Some(false)` for PUBLIC, `Some(true)` otherwise, `None` without one.
+    pub private: Option<bool>,
     pub sequence: i64,
     pub categories: Option<String>,
+    /// RECURRENCE-ID: this VEVENT changes one occurrence of the series with its UID.
+    pub recurrence_id: Option<(DateTime<Utc>, bool)>,
+    /// ORGANIZER's address (lower case).
+    pub organizer: Option<String>,
+    pub attendees: Vec<Attendee>,
+    /// VALARM triggers before the start, in minutes.
+    pub alarms: Vec<i64>,
 }
 
 #[derive(Debug, Default)]
@@ -385,9 +394,13 @@ struct Draft {
     rrule: Option<String>,
     exceptions: Vec<Exception>,
     status: Option<String>,
-    private: bool,
+    private: Option<bool>,
     sequence: i64,
     categories: Option<String>,
+    recurrence_id: Option<(DateTime<Utc>, bool)>,
+    organizer: Option<String>,
+    attendees: Vec<Attendee>,
+    alarms: Vec<i64>,
 }
 
 impl Draft {
@@ -426,8 +439,45 @@ impl Draft {
             private: self.private,
             sequence: self.sequence,
             categories: self.categories,
+            recurrence_id: self.recurrence_id,
+            organizer: self.organizer,
+            attendees: self.attendees,
+            alarms: self.alarms,
         })
     }
+}
+
+/// `mailto:Ana@Example.com` → `ana@example.com`.
+fn mailto(value: &str) -> Option<String> {
+    let v = value.trim();
+    let v = if v.len() > 7 && v[..7].eq_ignore_ascii_case("mailto:") { &v[7..] } else { v };
+    Some(v.trim().to_lowercase()).filter(|e| e.contains('@') && !e.contains(char::is_whitespace))
+}
+
+/// Changes to single occurrences (VEVENTs with a RECURRENCE-ID) become events of their own and
+/// leave their series, as Ferrum has no changes to single occurrences; a cancelled occurrence only
+/// leaves it. The detached event's UID is `{uid}-{occurrence}`, so reading the same text again finds
+/// the same events.
+pub fn detach_overrides(events: Vec<ParsedEvent>) -> Vec<ParsedEvent> {
+    let (overrides, mut out): (Vec<ParsedEvent>, Vec<ParsedEvent>) = events.into_iter().partition(|e| e.recurrence_id.is_some());
+    for mut o in overrides {
+        let Some((at, is_date)) = o.recurrence_id.take() else { continue };
+        let x = if is_date { Exception::Day(at.date_naive()) } else { Exception::At(at) };
+        if let Some(series) = out.iter_mut().find(|m| m.rrule.is_some() && m.uid.is_some() && m.uid == o.uid)
+            && !series.exceptions.contains(&x)
+        {
+            series.exceptions.push(x);
+        }
+        if o.status.as_deref() == Some("CANCELLED") {
+            continue;
+        }
+        let stamp = if is_date { at.format("%Y%m%d").to_string() } else { at.format("%Y%m%dT%H%M%SZ").to_string() };
+        o.uid = o.uid.map(|u| format!("{u}-{stamp}"));
+        o.rrule = None;
+        o.exceptions.clear();
+        out.push(o);
+    }
+    out
 }
 
 /// Parses every VEVENT of an iCalendar text.
@@ -478,10 +528,19 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
                     "URL" => d.url = Some(value.trim().to_string()).filter(|s| !s.is_empty()),
                     "CATEGORIES" => d.categories = text(),
                     "STATUS" => d.status = Some(value.trim().to_ascii_uppercase()),
-                    "CLASS" => d.private = !value.trim().eq_ignore_ascii_case("PUBLIC"),
+                    "CLASS" => d.private = Some(!value.trim().eq_ignore_ascii_case("PUBLIC")),
                     "SEQUENCE" => d.sequence = value.trim().parse().unwrap_or(0),
                     "RRULE" => d.rrule = Some(value.trim().to_string()),
                     "DTSTART" => d.start = Some(when(&value, &params, &mut out.warnings)?),
+                    "RECURRENCE-ID" => d.recurrence_id = Some(when(&value, &params, &mut out.warnings)?),
+                    "ORGANIZER" => d.organizer = mailto(&value),
+                    "ATTENDEE" => {
+                        if let Some(email) = mailto(&value) {
+                            let name = get(&params, "CN").map(str::trim).filter(|n| !n.is_empty() && !n.eq_ignore_ascii_case(&email)).map(str::to_string);
+                            let partstat = get(&params, "PARTSTAT").unwrap_or("NEEDS-ACTION").to_ascii_uppercase();
+                            d.attendees.push(Attendee { email, name, partstat });
+                        }
+                    }
                     "DTEND" => d.end = Some(when(&value, &params, &mut out.warnings)?.0),
                     "DURATION" => d.duration = duration(&value),
                     "EXDATE" => {
@@ -491,6 +550,16 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
                         }
                     }
                     _ => {}
+                }
+            }
+            // A reminder relative to the start; absolute ones and those after the start are not kept.
+            Some("VALARM") if name == "TRIGGER" && stack.get(stack.len().wrapping_sub(2)).map(String::as_str) == Some("VEVENT") => {
+                let related_start = get(&params, "RELATED").is_none_or(|r| r.eq_ignore_ascii_case("START"));
+                if let (Some(d), true, Some(before)) = (draft.as_mut(), related_start, duration(&value).filter(|t| *t <= Duration::zero())) {
+                    let minutes = (-before).num_minutes();
+                    if minutes <= 40_320 && !d.alarms.contains(&minutes) {
+                        d.alarms.push(minutes);
+                    }
                 }
             }
             _ => {}
@@ -622,7 +691,7 @@ BEGIN:VEVENT\r\nSUMMARY:Broken\r\nUID:x@y\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         assert_eq!(sync.exceptions, vec![Exception::At(t("2026-11-17T14:00:00Z")), Exception::At(t("2026-11-24T14:00:00Z"))]);
         assert_eq!(sync.rrule.as_deref(), Some("FREQ=WEEKLY;BYDAY=TU;COUNT=6;WKST=SU"));
         let holiday = &p.events[1];
-        assert!(holiday.all_day && holiday.private);
+        assert!(holiday.all_day && holiday.private == Some(true));
         assert_eq!(holiday.end - holiday.start, Duration::days(1));
         assert!(p.warnings.iter().any(|w| w.contains("Broken")), "{:?}", p.warnings);
         // Outlook writes Windows zone names; unknown zones fall back to UTC with a warning.
@@ -636,5 +705,38 @@ BEGIN:VEVENT\r\nSUMMARY:Broken\r\nUID:x@y\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         assert_eq!(duration("-P1DT2H"), Some(-Duration::hours(26)));
         assert_eq!(duration("P2W"), Some(Duration::days(14)));
         assert_eq!(duration("PT"), None);
+    }
+
+    #[test]
+    fn calendar_app_uploads() {
+        // Shaped like Apple Calendar's: a weekly series with one occurrence moved and one cancelled,
+        // guests and an alert.
+        let text = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Apple Inc.//iOS 19//EN\r\n\
+BEGIN:VTIMEZONE\r\nTZID:Asia/Kolkata\r\nBEGIN:STANDARD\r\nTZOFFSETFROM:+0530\r\nTZOFFSETTO:+0530\r\nDTSTART:19451015T000000\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\n\
+BEGIN:VEVENT\r\nUID:5D3A-11\r\nDTSTART;TZID=Asia/Kolkata:20261102T100000\r\nDTEND;TZID=Asia/Kolkata:20261102T103000\r\nSUMMARY:Stand-up\r\n\
+RRULE:FREQ=WEEKLY;COUNT=4\r\nORGANIZER;CN=Ana Rao:mailto:Ana@acme.test\r\n\
+ATTENDEE;CN=Ana Rao;PARTSTAT=ACCEPTED:mailto:ana@acme.test\r\nATTENDEE;CN=\"Bo, Lee\";PARTSTAT=TENTATIVE:MAILTO:bo@partner.test\r\n\
+BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\nBEGIN:VALARM\r\nTRIGGER;VALUE=DATE-TIME:20261101T000000Z\r\nEND:VALARM\r\nEND:VEVENT\r\n\
+BEGIN:VEVENT\r\nUID:5D3A-11\r\nRECURRENCE-ID;TZID=Asia/Kolkata:20261109T100000\r\nDTSTART;TZID=Asia/Kolkata:20261109T120000\r\n\
+DTEND;TZID=Asia/Kolkata:20261109T123000\r\nSUMMARY:Stand-up (moved)\r\nEND:VEVENT\r\n\
+BEGIN:VEVENT\r\nUID:5D3A-11\r\nRECURRENCE-ID;TZID=Asia/Kolkata:20261116T100000\r\nDTSTART;TZID=Asia/Kolkata:20261116T100000\r\n\
+SUMMARY:Stand-up\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let parsed = parse(text).unwrap();
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        let series = &parsed.events[0];
+        assert_eq!(series.organizer.as_deref(), Some("ana@acme.test"));
+        assert_eq!(
+            series.attendees.iter().map(|a| (a.email.as_str(), a.name.as_deref(), a.partstat.as_str())).collect::<Vec<_>>(),
+            vec![("ana@acme.test", Some("Ana Rao"), "ACCEPTED"), ("bo@partner.test", Some("Bo, Lee"), "TENTATIVE")]
+        );
+        assert_eq!(series.alarms, vec![15], "the alert relative to the start; the absolute one is not kept");
+        assert_eq!(parsed.events[1].recurrence_id, Some((t("2026-11-09T04:30:00Z"), false)));
+
+        let events = detach_overrides(parsed.events);
+        assert_eq!(events.len(), 2, "the series and the moved occurrence; the cancelled one only leaves the series");
+        assert_eq!(events[0].exceptions, vec![Exception::At(t("2026-11-09T04:30:00Z")), Exception::At(t("2026-11-16T04:30:00Z"))]);
+        let moved = &events[1];
+        assert_eq!((moved.uid.as_deref(), moved.start, moved.rrule.as_ref()), (Some("5D3A-11-20261109T043000Z"), t("2026-11-09T06:30:00Z"), None));
+        assert_eq!(detach_overrides(parse(text).unwrap().events)[1].uid, moved.uid, "the same text detaches the same event");
     }
 }

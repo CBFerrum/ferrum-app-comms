@@ -231,10 +231,58 @@ and signs LiveKit access tokens; sound and pictures never pass through Ferrum. A
 | `POST /meet/rooms` | `{title?}` (at most 140 characters; "Meeting") → `201 {kind: "room", id, title}`. Rooms nobody joined for 90 days are removed |
 | `POST /meet/{kind}/{id}/token` | → `{url, token, title}`: LiveKit's address and a token (6 hours) admitting the caller with camera, microphone, screen sharing and the meeting's chat. A meeting the caller may not join is `not_found`; meetings not set up, an archived channel or a cancelled event are `invalid` |
 
+**Guests** (people outside the workspace) join by link, as "Name (guest)":
+
+| Method & path | Body → response |
+|---|---|
+| `POST /meet/room/{id}/guest-link` | → `{guest_path}`: a new guest link for the room (`/app/meet/guest/{tenant}/r.{room}.{secret}`); the previous one stops working. The room's token answer carries `guest_path` while it has one |
+| `DELETE /meet/room/{id}/guest-link` | → `{guest_path: null}`: the room has no guest link |
+| `POST /api/site/{tenant}/comms/meet/guest` (public) | `{token, name?}` → `{url, token, title, name}`. A room's link needs the `name` the guest types (at most 60 characters); an event's link carries its guest |
+
+An event's outside guest gets their own link (`/app/meet/guest/{tenant}/e.{event}.{email}.{signature}`,
+signed with the workspace's key) in their invitation, mail and iCalendar, when the event's meeting
+link is its meeting here. It works while they are on the guest list and the event has an occurrence
+ending after yesterday; a cancelled event refuses it. Links that do not work answer 404.
+
 The LiveKit room is `{tenant}-{kind}-{id}` (UUIDs without hyphens), so workspaces sharing a
 LiveKit server stay apart. Each joining is its own participant (`{user}.{random}`), so a person can
 be in from two devices. A person who loses access gets no new token; one already in the meeting
 stays until they leave. An event's meeting link is the web app's `/app/meet/event/{id}`.
+
+### Calendar and contacts apps — `/api/dav/comms/...`
+
+CalDAV (RFC 4791) and CardDAV (RFC 6352) for the calendar and contacts apps of phones and
+computers. The platform signs an app in with HTTP Basic: the person's email and an app password (an
+API key of scope `dav`, made under the person's menu → Calendar and contacts apps). Apps find
+everything from the server's address: `/.well-known/caldav` and `/.well-known/carddav` lead here.
+Only people with a Comms role sync.
+
+| Path | What | Apps may |
+|---|---|---|
+| `/api/dav/comms/` | the root: `current-user-principal` | |
+| `/u/{user}/` | the person: `calendar-home-set`, `addressbook-home-set`, `calendar-user-address-set` | |
+| `/u/{user}/calendars/default/` | **Calendar**: the events they organize, and those they are invited to and have not declined, from the last 400 days and every repeating one | add, change and delete events |
+| `/u/{user}/addressbooks/colleagues/` | **Colleagues**: the workspace's active people (plugins' service users left out) | read |
+| `/u/{user}/addressbooks/contacts/` | **Contacts**: the CRM contacts they may read (where CRM is installed), with all emails and phones, company and title | read |
+
+Methods: `OPTIONS`, `PROPFIND` (depth 0 or 1), `REPORT` (`calendar-multiget`, `calendar-query`
+with a time range, `addressbook-multiget`, `addressbook-query`), `GET`, `HEAD`, `PUT` and `DELETE`
+on events (with `If-Match` / `If-None-Match`). `PROPPATCH` is refused per property; other reports
+(`sync-collection`) answer 403. Collections carry `getctag` and items `getetag`, hashes of what GET
+returns.
+
+What apps send:
+* **An organizer's event** becomes the event, with its guests (each keeping the answer they gave),
+  alerts (VALARM before the start become reminders), visibility (CLASS) and repetition. What apps
+  tend to drop (the meeting link, the status) is kept when absent. Invitations go out as from the
+  web app.
+* **A guest's copy**: only their answer (PARTSTAT) is kept, as their RSVP. Deleting an invitation
+  declines it; deleting one's own event deletes it, with cancellations to its guests.
+* **One occurrence changed** (RECURRENCE-ID) becomes an event of its own, with the UID
+  `{uid}-{occurrence}`, and the occurrence leaves the series. A cancelled occurrence only leaves it.
+* **Refused** (403 `valid-calendar-object-resource`): repetition rules Ferrum cannot keep, unknown
+  time zones, events larger than 1 MB, no VEVENT. An app's name for a new event is kept (an app
+  finds its event under the name it chose); a second name for the same UID answers 409.
 
 ## Public endpoints — `/api/site/{tenant}/comms/...`
 
@@ -244,6 +292,7 @@ stays until they leave. An event's meeting link is the web app's `/app/meet/even
 | `GET /unsubscribe?n=&e=&s=` | Confirmation page for a newsletter unsubscribe link (a GET never unsubscribes, so link scanners cannot) |
 | `POST /unsubscribe?n=&e=&s=` | Unsubscribes the address from the newsletter's groups and shows a confirmation page; also the RFC 8058 one-click target of the `List-Unsubscribe` header. A changed or incomplete link → 403 page |
 | `GET /calendar/{token}.ics` | The token owner's calendar as iCalendar (events since 180 days ago, recurrences as RRULE, reminders as VALARM) |
+| `POST /meet/guest` | A guest joins a meeting by their link (see Meetings) |
 
 ## Live pushes (`/ws/live`)
 

@@ -9,7 +9,8 @@ A native app for [Ferrum](https://github.com/CBFerrum/Ferrum), the open-source, 
 - Team chat: public, private and direct channels, threads, mentions, edits, read markers, search; members only, pushed live
 - Hosted mail: with a Stalwart mail server, a mailbox for every person in the workspace's mail domain, kept in step with their account, and webmail endpoints over JMAP (safe message HTML, attachments, app passwords, filing a mail onto a record), shared mailboxes (sales@, support@) and distribution lists
 - Calendar: events with attendees and RSVP, recurrence (daily to yearly, by weekday or month day, with exceptions), reminders, free/busy, ICS invitations, a private ICS feed and ICS import
-- Video meetings on a LiveKit server the operator runs: a call in any chat channel, a meeting for any calendar event, or a room to meet in now; Comms decides who may join and signs their tokens
+- Video meetings on a LiveKit server the operator runs: a call in any chat channel, a meeting for any calendar event, or a room to meet in now; Comms decides who may join and signs their tokens. People outside the workspace join by link: an event's guests by the link in their invitation, anyone by a room's guest link
+- Calendar and contacts apps (CalDAV, CardDAV): each person's calendar syncs both ways with Apple Calendar, Thunderbird, DAVx⁵ or Outlook, and their colleagues and CRM contacts reach their address books
 - `packages/comms/README.md` documents every endpoint and the chat push protocol
 
 ## Install
