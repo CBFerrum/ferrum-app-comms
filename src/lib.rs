@@ -6,6 +6,7 @@
 mod account;
 mod calendar;
 mod chat;
+mod groups;
 mod hosted;
 pub mod ics;
 pub mod inbound;
@@ -45,6 +46,9 @@ pub fn register(hooks: &mut HookRegistry) {
         .register("CalendarEvent", Arc::new(calendar::EventHook))
         .register("CommsSettings", Arc::new(hosted::SettingsHook))
         .register("HostedMailbox", Arc::new(hosted::MailboxHook))
+        .register("SharedMailbox", Arc::new(groups::SharedMailboxHook))
+        .register("EmailGroup", Arc::new(groups::EmailGroupHook))
+        .register("EmailGroupMember", Arc::new(groups::GroupMemberHook))
         .add_event_sink(Arc::new(mail::MailSink))
         .add_site("comms", Arc::new(site::CommsSite));
 }
