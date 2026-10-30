@@ -1,0 +1,12 @@
+{
+  "name": "ferrum-app-comms-ui",
+  "private": true,
+  "type": "module",
+  "description": "Comms' own interface: Mail, Chat, Calendar and Meet at /mail/, /chat/, /calendar/ and /meet/, built with Ferrum-Frontend's packages from the sibling checkout (../../ferrum/web)",
+  "scripts": {
+    "build": "node ../../ferrum/web/packages/build/cli.mjs build",
+    "check": "node ../../ferrum/web/packages/build/cli.mjs check",
+    "typecheck": "node ../../ferrum/web/packages/build/cli.mjs typecheck",
+    "test": "node ../../ferrum/web/packages/build/cli.mjs test"
+  }
+}

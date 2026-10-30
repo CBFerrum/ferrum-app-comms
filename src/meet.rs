@@ -113,8 +113,9 @@ async fn join(k: &Kernel, ctx: &Ctx, server: &Server, kind: &str, id: Uuid) -> R
 
 // ───────────────────────────── guests ─────────────────────────────
 
+/// Comms' public page for guests (its interface's `meet/guest`, Ferrum docs/plan/apps-ui.md §7.3).
 fn room_guest_path(slug: &str, room: Uuid, key: &str) -> String {
-    format!("/app/meet/guest/{slug}/r.{}.{key}", room.simple())
+    format!("/meet/guest/{slug}/r.{}.{key}", room.simple())
 }
 
 /// `POST /meet/room/{id}/guest-link`: a new guest link for the room (the old one stops working);
@@ -145,7 +146,9 @@ fn guest_claim(event: Uuid, email: &str) -> String {
 /// The link to an event's meeting for one outside guest, when `link` (the event's meeting link) is
 /// this event's meeting here: the invitation carries it instead.
 pub(crate) async fn invitation_link(k: &Kernel, tx: &mut Tx, tenant: Uuid, event: Uuid, link: &str, email: &str) -> Result<Option<String>> {
-    let Some((origin, rest)) = link.trim().split_once("/app/meet/event/") else { return Ok(None) };
+    // Links made before Comms had pages of its own lead to the web app (`/app/meet/…`).
+    let link = link.trim();
+    let Some((origin, rest)) = link.split_once("/app/meet/event/").or_else(|| link.split_once("/meet/event/")) else { return Ok(None) };
     if server().is_none()
         || rest.trim_end_matches('/').parse::<Uuid>().ok() != Some(event)
         || !origin.starts_with("http")
@@ -156,7 +159,7 @@ pub(crate) async fn invitation_link(k: &Kernel, tx: &mut Tx, tenant: Uuid, event
     let key = util::signing_key(k, tenant).await?;
     let email = email.to_lowercase();
     let token = format!("e.{}.{}.{}", event.simple(), URL_SAFE_NO_PAD.encode(&email), util::sign(&key, &guest_claim(event, &email)));
-    Ok(Some(format!("{origin}/app/meet/guest/{}/{token}", util::slug(tx, tenant).await?)))
+    Ok(Some(format!("{origin}/meet/guest/{}/{token}", util::slug(tx, tenant).await?)))
 }
 
 /// `POST /api/site/{tenant}/comms/meet/guest {token, name?}`: someone outside the workspace joins by

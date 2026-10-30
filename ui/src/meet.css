@@ -1,0 +1,12 @@
+/* The meeting page (Meet.tsx). Unlayered, like LiveKit's stylesheet it sits beside: a layered rule
+   would lose to LiveKit's whatever its specificity. */
+
+.ferrum-meet {
+  background: var(--lk-bg);
+  color: var(--lk-fg);
+}
+
+/* Others see the name in the token: PreJoin's name field would change nothing. */
+.ferrum-meet .lk-username-container input {
+  display: none;
+}

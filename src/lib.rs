@@ -116,6 +116,7 @@ async fn purge(k: &Kernel, tenant: Uuid) -> Result<usize> {
 }
 
 include!(concat!(env!("OUT_DIR"), "/packages.rs"));
+include!(concat!(env!("OUT_DIR"), "/ui.rs"));
 
 /// This app's manifest (`app.yaml`).
 pub const MANIFEST: &str = include_str!("../app.yaml");
@@ -136,5 +137,16 @@ mod tests {
         assert!(schema.warnings.is_empty(), "{:?}", schema.warnings);
         assert!(schema.entity("CalendarFeed").is_some_and(|e| e.secret_fields().count() == 1));
         assert!(super::MANIFEST.contains("packages: [comms]"));
+    }
+
+    #[test]
+    fn the_interface_is_a_release_the_platform_takes() {
+        let m = ferrum_apps::AppManifest::parse(super::MANIFEST).expect("app.yaml");
+        let routes: Vec<String> = m.routes().into_iter().map(|(r, _)| r).collect();
+        assert_eq!(routes, ["mail", "chat", "calendar", "meet"]);
+        assert_eq!(m.public_paths(), ["meet/guest"]);
+        let files = super::UI.iter().map(|(p, b)| (p.to_string(), b.to_vec())).collect();
+        let ui = ferrum_apps::ui::prepare("comms", files).expect("ui/dist is an interface release");
+        assert!(super::UI.iter().any(|(p, _)| *p == "index.html") && !super::UI.iter().any(|(p, _)| p.starts_with('.')), "{}", ui.digest);
     }
 }
