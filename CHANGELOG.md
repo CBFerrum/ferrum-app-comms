@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.2
+
+- Calls pop out: in a meeting, Pop out puts the call in a small window that stays above every other
+  (Document Picture-in-Picture: a shared screen first, else whoever speaks, with the microphone, the
+  camera and leaving), so people keep it in view while they work in other apps. Where browsers can
+  only float a video (Safari), the speaker's video floats instead; where they can do neither,
+  there is no button. Leaving the call, or its page, closes the small window. Guests have it too.
+
 ## 0.7.1
 
 - Depends on the platform's `contacts` (Ferrum docs/plan/apps-ui.md §13, U3): every workspace with

@@ -10,3 +10,26 @@
 .ferrum-meet .lk-username-container input {
   display: none;
 }
+
+/* The pop-out (PopOut in Meet.tsx): the call's focus filling a small window, its controls below. */
+.ferrum-pip {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  height: 100vh;
+  margin: 0;
+}
+.ferrum-pip .lk-participant-tile {
+  min-height: 0;
+  border-radius: 0;
+}
+.ferrum-pip .lk-control-bar {
+  justify-content: center;
+  padding: 6px;
+  border-top: 1px solid var(--lk-border-color, rgb(255 255 255 / 0.12));
+}
+.ferrum-pip-empty {
+  display: grid;
+  place-items: center;
+  margin: 0;
+  opacity: 0.7;
+}
