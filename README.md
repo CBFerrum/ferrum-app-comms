@@ -19,6 +19,24 @@ Workspace administrators install it from **Apps** in Ferrum; it ships in the off
 server image. Self-hosters building their own image enable the `comms` feature of the server.
 Everything it adds is also available to AI agents over Ferrum's MCP server.
 
+## Its interface
+
+Mail, Chat, Calendar and Meet are this app's own interface (`ui/`), which Ferrum serves under its bar
+at `/mail/`, `/chat/`, `/calendar/` and `/meet/` (Ferrum docs/plan/apps-ui.md). Calls from Chat and
+Calendar open in a window of their own that outlives the page; meeting guests join on the public page
+`/meet/guest/{workspace}/{link}`. For other apps it writes emails (`compose email`), schedules
+meetings (`schedule event`), shares records to Chat (`share record`) and opens Chat beside any page.
+
+`ui/dist` is committed: the crate embeds it, so the server carries the interface of the version it was
+built with. With Ferrum-Frontend checked out at `../ferrum/web`:
+
+```
+cd ui
+npm run build       # into dist/, stamped with its sources (commit dist/)
+npm run check       # CI: dist/ was built from ui/ as it is
+npm run typecheck && npm test
+```
+
 ## Develop
 
 Clone it next to the platform and point the platform dependencies at your checkout (this file

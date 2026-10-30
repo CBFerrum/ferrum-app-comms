@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.0
+
+- Comms' own interface (Ferrum docs/plan/apps-ui.md, U4a), out of the web app: `ui/`, one interface
+  with four launcher entries and routes, Mail (`/mail/`), Chat (`/chat/`), Calendar (`/calendar/`)
+  and Meet (`/meet/`), served by the platform under its bar and embedded in the crate (`UI`, from
+  `ui/dist`).
+- Calls from Chat and Calendar open in a companion window that outlives the page, so people keep
+  working in other apps while they talk; the window closes itself when they leave the call.
+- For other apps: the intents `compose email`, `schedule event` and `share record`, and Chat as the
+  bar's side panel. Mail attaches files from Drive (the `pick file` intent); the bar's Create menu has
+  Email.
+- Meetings' links are Comms' pages (`/meet/{kind}/{id}`); guests join on its public page
+  `/meet/guest/{workspace}/{link}` (`shell.public`). Links made before (`/app/meet/…`) keep working:
+  invitations read them, and the web app sends them here.
+- Needs Ferrum platform 0.3.2.
+
 ## 0.6.0
 
 - Calendar and contacts apps (CalDAV and CardDAV, `/api/dav/comms/...`; Ferrum docs/plan/collaboration.md, C5). Each person's calendar syncs both ways: organizers add, change and delete events from their apps, guests answer and decline, and a change to one occurrence becomes an event of its own. Two read-only address books: the workspace's people, and the CRM contacts the person may read. Apps sign in with an app password (Ferrum's API key of scope `dav`).

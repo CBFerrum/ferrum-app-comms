@@ -1,6 +1,6 @@
 id: comms
 name: Mail, Chat and Calendar
-version: 0.6.0
+version: 0.7.0
 publisher: cbferrum
 summary: Email accounts (SMTP/IMAP), threaded communications on any record, templates, newsletters, team chat, calendars with ICS and calendar-app sync, contacts sync and video meetings
 description: README.md
@@ -9,6 +9,34 @@ license: AGPL-3.0-only
 homepage: https://github.com/CBFerrum/ferrum-app-comms
 support: https://github.com/CBFerrum/ferrum-app-comms/issues
 runtime: native
-platform: ">=0.3, <0.4"
+platform: ">=0.3.2, <0.4"
 packages: [comms]
 uninstall: ask
+# Comms' own interface (Ferrum docs/plan/apps-ui.md): one interface, four routes.
+ui:
+  dist: ui/dist
+  csp:
+    # LiveKit as browsers reach it (FERRUM_MEET_URL): calls connect there, over WebSocket and HTTPS.
+    connect: ["env:FERRUM_MEET_URL"]
+    # Mail shows remote images when asked to (they load in the message's frame).
+    img: ["https:"]
+contributes:
+  shell.app:
+    - {id: mail, route: mail, title: Mail, description: Your mailbox and the shared ones, icon: mail, color: "#2563eb", roles: [Comms User, Comms Manager]}
+    - {id: chat, route: chat, title: Chat, description: Conversations with your team, icon: message-square, color: "#0891b2", roles: [Comms User, Comms Manager]}
+    - {id: calendar, route: calendar, title: Calendar, description: Your events and meetings, icon: calendar, color: "#7c3aed", roles: [Comms User, Comms Manager]}
+    - {id: meet, route: meet, title: Meet, description: Video meetings, icon: video, color: "#16a34a", compact: true, roles: [Comms User, Comms Manager]}
+  shell.create:
+    - {id: email, label: Email, path: mail/compose}
+  # What Comms does for other apps (Ferrum docs/plan/apps-ui.md §11.3): `compose email`
+  # ({to, cc, subject, body, attachments: [{url, name}]}), `schedule event` ({subject, starts_at,
+  # ends_at, attendees, location, description, meeting, record: {entity, id}}) and `share record`
+  # ({entity, id, title}) to a chat conversation.
+  shell.intent:
+    - {id: compose, action: compose, type: email, path: mail/_intent/compose, title: Write an email}
+    - {id: schedule, action: schedule, type: event, path: calendar/_intent/schedule, title: Schedule a meeting}
+    - {id: share, action: share, type: record, path: chat/_intent/share, title: Share in Chat}
+  shell.sidepanel:
+    - {id: chat, title: Chat, path: chat/_panel}
+  shell.public:
+    - {id: guest, path: meet/guest, title: Meeting}

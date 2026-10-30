@@ -1015,12 +1015,13 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
         .await
         .unwrap(),
     ));
+    // A link the web app made before Comms had pages of its own (`/app/meet/…`) still leads here.
     k.update(alice, "CalendarEvent", review, obj(json!({"meeting_link": format!("https://erp.acme.test/app/meet/event/{review}")})), None).await.unwrap();
     t.drain().await;
     let invitation: String = t
         .scalar("select content from e_communication where tenant_id = $1 and reference_id = $2::text and recipients like '%pat@partner.test%' order by created_at desc limit 1", Some(review))
         .await;
-    let link = regex::Regex::new(r"https://erp\.acme\.test/app/meet/guest/acme/(e\.[A-Za-z0-9._-]+)").unwrap();
+    let link = regex::Regex::new(r"https://erp\.acme\.test/meet/guest/acme/(e\.[A-Za-z0-9._-]+)").unwrap();
     let pats = link.captures(&invitation).unwrap_or_else(|| panic!("a guest link in {invitation}"))[1].to_string();
     let guest = |body: Value| t.call(None, "POST", "/meet/guest", &[], body);
     let pass = guest(json!({"token": pats})).await.unwrap();
@@ -1040,7 +1041,7 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     let shared = uid(&t.ok(alice, "POST", "/meet/rooms", &[], json!({"title": "Vendor demo"})).await);
     assert_eq!(join(carol, "room", shared).await.unwrap()["guest_path"], Value::Null);
     let path = t.ok(alice, "POST", &format!("/meet/room/{shared}/guest-link"), &[], Value::Null).await["guest_path"].as_str().unwrap().to_string();
-    assert!(path.starts_with(&format!("/app/meet/guest/acme/r.{}.", shared.simple())), "{path}");
+    assert!(path.starts_with(&format!("/meet/guest/acme/r.{}.", shared.simple())), "{path}");
     assert_eq!(join(carol, "room", shared).await.unwrap()["guest_path"], json!(path), "people in the room can share it");
     let room_link = path.rsplit('/').next().unwrap().to_string();
     refused(guest(json!({"token": room_link})).await, "invalid");
