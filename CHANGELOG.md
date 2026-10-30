@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.4
+
+- The bar's search finds chat messages (`shell.search`): those in public channels and in the
+  person's own, each opening its conversation. `GET /chat/search` answers `results` in the bar's
+  shape beside `messages`.
+- Chat channels open in Chat from anywhere (`shell.open`: `/open/ChatChannel/{id}`).
+
 ## 0.7.3
 
 - Pop out in a browser that says it floats videos but cannot float a call's (a camera stream):

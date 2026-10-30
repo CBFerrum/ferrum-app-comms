@@ -664,7 +664,8 @@ async fn mark_read(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, Value
     Ok(json!({"channel": channel, "last_read_at": read}))
 }
 
-/// `GET /chat/search?q=&limit=`: messages in channels I belong to and in public channels.
+/// `GET /chat/search?q=&limit=`: messages in channels I belong to and in public channels; also as
+/// the bar's search provider (`shell.search`: `results`, each opening its conversation).
 async fn search(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
     let q = util::param(req, "q").unwrap_or_default();
     if q.chars().count() < 2 {
@@ -686,7 +687,21 @@ async fn search(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
         .fetch_all(&mut *tx)
         .await?;
     tx.commit().await?;
-    Ok(json!({"messages": rows}))
+    let results: Vec<Value> = rows
+        .iter()
+        .map(|m| {
+            let body = m["body"].as_str().unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ");
+            let when = m["posted_at"].as_str().unwrap_or_default().get(..10).unwrap_or_default().to_string();
+            json!({
+                "title": util::cut(&body, 120),
+                "subtitle": format!("{} · {when}", m["sender_name"].as_str().unwrap_or_default()),
+                "url": format!("/chat/{}", m["channel"].as_str().unwrap_or_default()),
+                "icon": "message-square",
+                "updated_at": m["posted_at"],
+            })
+        })
+        .collect();
+    Ok(json!({"messages": rows, "results": results}))
 }
 
 fn uuid(seg: &str) -> Result<Uuid> {
