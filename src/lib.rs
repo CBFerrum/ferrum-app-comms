@@ -16,6 +16,7 @@ mod reports;
 mod site;
 mod template;
 mod util;
+mod webmail;
 
 pub use account::{Account, Security, Server};
 pub use inbound::{ImapConnector, Mailbox, MailboxConnector};

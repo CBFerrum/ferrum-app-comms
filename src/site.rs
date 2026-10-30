@@ -1,9 +1,10 @@
-//! The package's HTTP endpoints: `/api/app/comms/...` for signed-in users (Comms roles) and
-//! `/api/site/{tenant}/comms/...` for the public (inbound mail webhook, unsubscribe pages,
-//! calendar feeds — each authenticated by an unguessable or signed token). See README.md.
+//! The package's HTTP endpoints: `/api/app/comms/...` for signed-in users (Comms roles; webmail
+//! for whoever has a hosted mailbox) and `/api/site/{tenant}/comms/...` for the public (inbound
+//! mail webhook, unsubscribe pages, calendar feeds — each authenticated by an unguessable or
+//! signed token). See README.md.
 
 use crate::util::{self, created, ok};
-use crate::{calendar, chat, inbound, mail, newsletter};
+use crate::{calendar, chat, inbound, mail, newsletter, webmail};
 use async_trait::async_trait;
 use ferrum_kernel::{Access, Action, Ctx, Error, Kernel, Result, Site, SiteRequest, SiteResponse};
 use serde_json::{Value, json};
@@ -27,6 +28,9 @@ impl Site for CommsSite {
         match &req.user {
             None => public(k, &req, &path).await,
             Some(ctx) => {
+                if let ["mail", rest @ ..] = path.as_slice() {
+                    return webmail::handle(k, ctx, &req, rest).await;
+                }
                 util::require_member(ctx)?;
                 app(k, ctx, &req, &path).await
             }
@@ -108,16 +112,22 @@ async fn download(k: &Kernel, ctx: &Ctx, file: Uuid) -> Result<SiteResponse> {
         return Err(Error::NotFound("attachment".into()));
     }
     let (name, ctype, data) = k.read_file(&util::sys(ctx), file).await?;
-    let ctype = if ACTIVE_TYPES.contains(&ctype.as_str()) { "application/octet-stream".to_string() } else { ctype };
+    Ok(attachment(&name, &ctype, data))
+}
+
+/// A file as a download: never shown in the page, and never as a type a browser could run.
+pub(crate) fn attachment(name: &str, ctype: &str, data: Vec<u8>) -> SiteResponse {
+    let ctype = ctype.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
+    let ctype = if ctype.is_empty() || ACTIVE_TYPES.contains(&ctype.as_str()) { "application/octet-stream".to_string() } else { ctype };
     let ascii: String = name.chars().map(|c| if c.is_ascii_graphic() || c == ' ' { c } else { '_' }).collect();
-    Ok(SiteResponse {
+    SiteResponse {
         status: 200,
         content_type: ctype,
         headers: vec![
-            ("content-disposition".into(), format!("attachment; filename=\"{}\"; filename*=UTF-8''{}", ascii.replace('"', ""), util::url_encode(&name))),
+            ("content-disposition".into(), format!("attachment; filename=\"{}\"; filename*=UTF-8''{}", ascii.replace('"', ""), util::url_encode(name))),
             ("x-content-type-options".into(), "nosniff".into()),
             ("cache-control".into(), "private, max-age=3600".into()),
         ],
         body: data,
-    })
+    }
 }

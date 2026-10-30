@@ -209,6 +209,19 @@ async fn create_record(k: &Kernel, ctx: &Ctx, tx: &mut ferrum_kernel::Tx, accoun
 /// Stores one received message (deduplicated by Message-ID), threaded onto the record of the
 /// message it answers; a new thread creates the account's "append to" record.
 pub async fn ingest(k: &Kernel, tenant: Uuid, account: &Account, raw: &[u8], truncated: bool) -> Result<Ingested> {
+    let ctx = Ctx::system(tenant, k.registry.schema(tenant).await?);
+    store(k, &ctx, raw, truncated, Some(account), None).await
+}
+
+/// Files a message from a person's hosted mailbox onto `record` (entity, id), deduplicated by
+/// Message-ID like received mail: Sent when it is from them, Received otherwise. `ctx` is the
+/// person with engine privileges (`util::elevated`), so the communication is theirs.
+pub async fn file(k: &Kernel, ctx: &Ctx, raw: &[u8], record: (&str, Uuid)) -> Result<Ingested> {
+    store(k, ctx, raw, false, None, Some(record)).await
+}
+
+async fn store(k: &Kernel, ctx: &Ctx, raw: &[u8], truncated: bool, account: Option<&Account>, record: Option<(&str, Uuid)>) -> Result<Ingested> {
+    let tenant = ctx.tenant;
     let mail = parse_mime(raw)?;
     let digest = hex::encode(Sha256::digest(raw));
     let message_id = match mail.message_id.as_deref() {
@@ -216,7 +229,6 @@ pub async fn ingest(k: &Kernel, tenant: Uuid, account: &Account, raw: &[u8], tru
         Some(m) => format!("{}@long-message-id.invalid", &hex::encode(Sha256::digest(m.as_bytes()))[..32]),
         None => format!("{}@missing-message-id.invalid", &digest[..32]),
     };
-    let ctx = Ctx::system(tenant, k.registry.schema(tenant).await?);
     let mut tx = k.db.tenant_tx(tenant).await?;
     let existing: Option<Uuid> = sqlx::query_scalar("select id from e_communication where tenant_id = $1 and message_id = $2")
         .bind(tenant)
@@ -233,7 +245,7 @@ pub async fn ingest(k: &Kernel, tenant: Uuid, account: &Account, raw: &[u8], tru
     let mut attachments = Vec::new();
     for a in mail.attachments.iter().filter(|a| a.data.len() <= util::MAX_ATTACHMENTS) {
         let ctype = util::content_type(&a.content_type);
-        let mut stored = k.store_file(&ctx, None, &a.file_name, &ctype, &a.data).await?;
+        let mut stored = k.store_file(ctx, None, &a.file_name, &ctype, &a.data).await?;
         stored["content_type"] = json!(ctype);
         attachments.push(stored);
     }
@@ -257,9 +269,15 @@ pub async fn ingest(k: &Kernel, tenant: Uuid, account: &Account, raw: &[u8], tru
             Some((e, r, t, _)) => (e.clone().zip(r.clone()), t.clone().unwrap_or_else(|| message_id.clone())),
             None => (None, message_id.clone()),
         };
-        if parent.is_none() && account.append_to.is_some() && !mail.automatic {
+        if let Some((e, r)) = record {
+            reference = Some((e.to_string(), r.to_string()));
+        }
+        if parent.is_none()
+            && let Some(account) = account.filter(|a| a.append_to.is_some())
+            && !mail.automatic
+        {
             sqlx::query("savepoint append_to").execute(&mut *tx).await?;
-            match create_record(k, &ctx, &mut tx, account, &mail, &text).await {
+            match create_record(k, ctx, &mut tx, account, &mail, &text).await {
                 Ok((e, r)) => reference = Some((e, r.to_string())),
                 Err(err) => {
                     sqlx::query("rollback to savepoint append_to").execute(&mut *tx).await?;
@@ -275,14 +293,17 @@ pub async fn ingest(k: &Kernel, tenant: Uuid, account: &Account, raw: &[u8], tru
             (mail.html.as_deref().map(|h| util::cut(h, MAX_BODY_CHARS)), text)
         };
         let sender = mail.from.as_ref().map(|f| util::cut(&f.1, 320));
+        // A filed message the person sent themselves.
+        let sent = record.is_some() && sender.as_deref() == Some(ctx.email.to_lowercase().as_str());
+        let direction = if sent { "Sent" } else { "Received" };
         let doc = json!({
             "id": comm,
             "channel": "Email",
-            "direction": "Received",
-            "status": "Received",
+            "direction": direction,
+            "status": direction,
             "subject": if mail.subject.is_empty() { None } else { Some(&mail.subject) },
             "communication_date": util::ts(mail.date.filter(|d| *d <= util::now() + chrono::Duration::days(1)).unwrap_or_else(util::now)),
-            "email_account": account.id,
+            "email_account": account.map(|a| a.id),
             "sender": sender,
             "sender_name": mail.from.as_ref().and_then(|f| f.0.as_deref()).map(|n| util::clean_line(n, 200)),
             "recipients": util::cut(&mail.to.join(", "), 100_000),
@@ -296,9 +317,9 @@ pub async fn ingest(k: &Kernel, tenant: Uuid, account: &Account, raw: &[u8], tru
             "in_reply_to": mail.in_reply_to.first().map(|m| util::cut(m, 500)),
             "mail_references": util::cut(&mail.references.join(" "), 50_000),
             "thread_key": util::cut(&thread_key, 500),
-            "seen": false,
+            "seen": record.is_some(),
         });
-        match k.insert_tx(&ctx, &mut tx, "Communication", util::obj(doc)).await {
+        match k.insert_tx(ctx, &mut tx, "Communication", util::obj(doc)).await {
             Ok(_) => {}
             // The same message arrived through another path a moment ago.
             Err(Error::Conflict(_)) => {
@@ -314,7 +335,10 @@ pub async fn ingest(k: &Kernel, tenant: Uuid, account: &Account, raw: &[u8], tru
             }
             Err(e) => return Err(e),
         }
-        if let Some((_, _, _, Some(user))) = &parent {
+        if let Some((_, _, _, Some(user))) = &parent
+            && !sent
+            && *user != ctx.user
+        {
             let who = mail.from.as_ref().map(|f| f.0.clone().unwrap_or_else(|| f.1.clone())).unwrap_or_default();
             let title = util::cut(&format!("Reply from {who}: {}", mail.subject), 200);
             notify::send(&mut tx, tenant, *user, &title, Some(&util::cut(&text, 300)), Some("Communication"), Some(comm)).await?;
@@ -325,7 +349,7 @@ pub async fn ingest(k: &Kernel, tenant: Uuid, account: &Account, raw: &[u8], tru
     .await;
     if !matches!(outcome, Ok(Ingested::Created(_))) {
         for id in stored {
-            if let Err(e) = k.remove_file(&ctx, id).await {
+            if let Err(e) = k.remove_file(ctx, id).await {
                 tracing::warn!(%tenant, file = %id, "inbound mail: could not remove an unused attachment: {e}");
             }
         }

@@ -1059,4 +1059,130 @@ async fn hosted_mail(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>, imap: &Fa
     assert!(opens("caroline@acme.test", &carol_password).await, "the moved mailbox keeps its password");
     assert_eq!(status(dave).await, "Locked");
     assert_eq!(sync().await.unwrap(), in_step);
+
+    // ───────────── webmail: each person's own mailbox, through Ferrum ─────────────
+    let alice = &users["alice"];
+    let primary = |s: &Value| s["primaryAccounts"]["urn:ietf:params:jmap:mail"].as_str().unwrap().to_string();
+    let bob_session = t.ok(bob, "GET", "/mail", &[], Value::Null).await;
+    assert_eq!(bob_session["username"], json!("bob@acme.test"));
+    assert!(bob_session.get("apiUrl").is_none(), "the mail server's own URLs stay inside");
+    let (bob_acc, carol_acc) = (primary(&bob_session), primary(&t.ok(carol, "GET", "/mail", &[], Value::Null).await));
+    refused(t.call(Some(dave), "GET", "/mail", &[], Value::Null).await, "forbidden");
+    let using = json!(["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail", "urn:ietf:params:jmap:submission", "urn:stalwart:jmap"]);
+    let jmap = async |who: &Ctx, calls: Value| t.ok(who, "POST", "/mail/jmap", &[], json!({"using": using, "methodCalls": calls})).await;
+    // Only mail passes: no administration, even of one's own account.
+    refused(
+        t.call(Some(bob), "POST", "/mail/jmap", &[], json!({"using": using, "methodCalls": [["x:Account/get", {"accountId": bob_acc}, "0"]]})).await,
+        "forbidden",
+    );
+    let roles = async |who: &Ctx, acc: &str| -> HashMap<String, String> {
+        let r = jmap(who, json!([["Mailbox/get", {"accountId": acc, "properties": ["role"]}, "0"]])).await;
+        r["methodResponses"][0][1]["list"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|m| Some((m["role"].as_str()?.to_string(), m["id"].as_str()?.to_string())))
+            .collect()
+    };
+    // Caroline writes to Bob with an attachment uploaded through Ferrum.
+    let up = t.raw(t.request(Some(carol), "POST", &format!("/mail/upload/{carol_acc}"), &[], b"quarterly numbers".to_vec(), "text/plain")).await.unwrap();
+    assert_eq!(up.status, 201);
+    let blob: Value = serde_json::from_slice(&up.body).unwrap();
+    let send_mail =
+        async |who: &Ctx, acc: &str, from: &str, to: &str, subject: &str, html: &str, attachments: Value| {
+            let boxes = roles(who, acc).await;
+            let ids = jmap(who, json!([["Identity/get", {"accountId": acc}, "0"]])).await;
+            let identity = ids["methodResponses"][0][1]["list"][0]["id"].clone();
+            let out = jmap(who, json!([
+            ["Email/set", {"accountId": acc, "create": {"m": {
+                "mailboxIds": {(boxes["drafts"].clone()): true}, "from": [{"email": from}], "to": [{"email": to}], "subject": subject,
+                "bodyValues": {"h": {"value": html}}, "htmlBody": [{"partId": "h", "type": "text/html"}], "attachments": attachments}}}, "0"],
+            ["EmailSubmission/set", {"accountId": acc, "create": {"s": {"emailId": "#m", "identityId": identity}},
+                "onSuccessUpdateEmail": {"#s": {(format!("mailboxIds/{}", boxes["drafts"])): null, (format!("mailboxIds/{}", boxes["sent"])): true}}}, "1"],
+        ]))
+        .await;
+            assert!(out["methodResponses"][1][1]["created"]["s"].is_object(), "{out}");
+            out["methodResponses"][0][1]["created"]["m"]["id"].as_str().unwrap().to_string()
+        };
+    let html = r#"<p style="color: navy">Numbers attached.</p><script>alert(1)</script><img src="https://tracker.example/p.gif">"#;
+    send_mail(
+        carol,
+        &carol_acc,
+        "caroline@acme.test",
+        "bob@acme.test",
+        "Q3 numbers",
+        html,
+        json!([{"blobId": blob["blobId"], "type": "text/plain", "name": "numbers.txt"}]),
+    )
+    .await;
+    let inbox = roles(bob, &bob_acc).await["inbox"].clone();
+    let mut received = None;
+    for _ in 0..60 {
+        let r = jmap(bob, json!([["Email/query", {"accountId": bob_acc, "filter": {"inMailbox": inbox}}, "0"]])).await;
+        if let Some(id) = r["methodResponses"][0][1]["ids"][0].as_str() {
+            received = Some(id.to_string());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let email = received.expect("Bob received Caroline's mail");
+    let view = t.ok(bob, "GET", &format!("/mail/message/{bob_acc}/{email}"), &[], Value::Null).await;
+    let shown = view["html"].as_str().unwrap();
+    assert_eq!(view["subject"], json!("Q3 numbers"));
+    assert!(shown.contains("Numbers attached") && shown.contains("navy") && !shown.contains("script") && !shown.contains("tracker.example"), "{shown}");
+    assert_eq!(view["remote_images"], json!(1));
+    let with_images = t.ok(bob, "GET", &format!("/mail/message/{bob_acc}/{email}"), &[("images", "1")], Value::Null).await;
+    assert!(with_images["html"].as_str().unwrap().contains("tracker.example"));
+    let attachment = &view["attachments"][0];
+    assert_eq!(attachment["name"], json!("numbers.txt"));
+    let blob_path = format!("/mail/blob/{bob_acc}/{}", attachment["blobId"].as_str().unwrap());
+    let file = t.raw(t.request(Some(bob), "GET", &blob_path, &[("name", "numbers.txt"), ("type", "text/html")], vec![], "")).await.unwrap();
+    assert_eq!(file.body, b"quarterly numbers");
+    assert_eq!(file.content_type, "application/octet-stream", "never served as a type the browser runs");
+    assert!(file.headers.iter().any(|(h, v)| h == "content-disposition" && v.starts_with("attachment")));
+    refused(t.call(Some(carol), "GET", &format!("/mail/message/{bob_acc}/{email}"), &[], Value::Null).await, "not found");
+
+    // Filed onto a customer: Bob's communication on its timeline; again is the same one.
+    let customer: Uuid = t.scalar("select id from e_customer where tenant_id = $1 and $2::uuid is null order by created_at limit 1", None).await;
+    let filing = json!({"account": bob_acc, "email": email, "entity": "Customer", "record": customer.to_string()});
+    let filed = t.ok(bob, "POST", "/mail/file", &[], filing.clone()).await;
+    let comm_id: Uuid = filed["communication"].as_str().unwrap().parse().unwrap();
+    let comm = t.comm(comm_id).await;
+    assert_eq!(
+        (comm["direction"].clone(), comm["reference_entity"].clone(), comm["reference_id"].clone(), comm["subject"].clone(), comm["created_by"].clone()),
+        (json!("Received"), json!("Customer"), json!(customer.to_string()), json!("Q3 numbers"), json!(bob.user.to_string()))
+    );
+    assert_eq!(comm["attachments"].as_array().map(Vec::len), Some(1));
+    assert_eq!(t.ok(bob, "POST", "/mail/file", &[], filing).await, filed);
+    let other = uid(&Value::Object(k.insert(alice, "Customer", obj(json!({"customer_name": "Initech"}))).await.unwrap()));
+    refused(
+        t.call(Some(bob), "POST", "/mail/file", &[], json!({"account": bob_acc, "email": email, "entity": "Customer", "record": other.to_string()})).await,
+        "conflict",
+    );
+    // Only onto records one can read.
+    let carol_sent = roles(carol, &carol_acc).await["sent"].clone();
+    let copy = jmap(carol, json!([["Email/query", {"accountId": carol_acc, "filter": {"inMailbox": carol_sent}}, "0"]])).await;
+    let copy = copy["methodResponses"][0][1]["ids"][0].as_str().unwrap().to_string();
+    refused(
+        t.call(Some(carol), "POST", "/mail/file", &[], json!({"account": carol_acc, "email": copy, "entity": "Customer", "record": customer.to_string()}))
+            .await,
+        "forbidden",
+    );
+    // Mail one sent is filed as Sent, and is never sent again.
+    let reply = send_mail(bob, &bob_acc, "bob@acme.test", "caroline@acme.test", "Re: Q3 numbers", "<p>Thanks</p>", json!([])).await;
+    let filed = t.ok(bob, "POST", "/mail/file", &[], json!({"account": bob_acc, "email": reply, "entity": "Customer", "record": customer.to_string()})).await;
+    t.drain().await;
+    let sent = t.comm(filed["communication"].as_str().unwrap().parse().unwrap()).await;
+    assert_eq!((sent["direction"].clone(), sent["status"].clone(), sent["attempts"].clone()), (json!("Sent"), json!("Sent"), Value::Null), "{sent:?}");
+
+    // App passwords for mail programs, through the same door.
+    let made = jmap(bob, json!([["x:AppPassword/set", {"accountId": bob_acc, "create": {"p": {"description": "Phone"}}}, "0"]])).await;
+    let app_password = made["methodResponses"][0][1]["created"]["p"]["secret"].as_str().expect("a new app password").to_string();
+    assert!(opens("bob@acme.test", &app_password).await);
+
+    // A kept password the mail server no longer takes is replaced on the spot.
+    let sys = Ctx::system(t.tenant, k.registry.schema(t.tenant).await.unwrap());
+    k.update(&sys, "HostedMailbox", mailbox(alice).await, obj(json!({"secret": "Not-The-Password-1"})), None).await.unwrap();
+    assert_eq!(t.ok(alice, "GET", "/mail", &[], Value::Null).await["username"], json!("alice@acme.test"));
+    assert!(opens("alice@acme.test", &password(alice).await.unwrap()).await);
 }

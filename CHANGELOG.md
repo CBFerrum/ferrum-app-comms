@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0
+
+- Webmail endpoints (`/api/app/comms/mail/...`) for whoever has a hosted mailbox:
+  - the JMAP session;
+  - JMAP requests of mail methods (others refused);
+  - attachments in and out;
+  - messages to read with their HTML made safe (no scripts or forms, styles that load nothing, inline images embedded, remote images only on request);
+  - filing a message onto a record as the person's communication.
+- Ferrum signs in with the kept password. When the mail server no longer takes it, Ferrum sets a new one and retries.
+- Files are served with their type stripped of parameters before the check against types a browser could run.
+
 ## 0.2.0
 
 - Hosted mail: with a Stalwart mail server the operator runs (`FERRUM_MAIL_URL`,
