@@ -43,4 +43,7 @@ jobs:
           SQL
       - run: cargo fmt -- --check
       - run: cargo clippy --all-targets -- -D warnings
+      # The hosted-mail part of the integration test runs against a real Stalwart.
+      - name: Start a mail server
+        run: tests/stalwart.sh >> "$GITHUB_ENV"
       - run: cargo test
