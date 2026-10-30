@@ -2,15 +2,28 @@
 // LiveKit server the operator runs. Comms decides who may join and signs their token; LiveKit's own
 // components show the call. /meet starts a room; /meet/{kind}/{id} is a meeting's page: a chat
 // channel's call, a calendar event's meeting or a room. /meet/guest/{workspace}/{link} lets people
-// outside the workspace join by their link.
+// outside the workspace join by their link. A call pops out into a small window that stays above
+// every other one (PopOut), so people keep it in view while they work elsewhere.
 
 import "@livekit/components-styles";
 import "./meet.css";
-import { LiveKitRoom, PreJoin, VideoConference, useConnectionState, useRoomContext, type LocalUserChoices } from "@livekit/components-react";
+import {
+  ControlBar,
+  LiveKitRoom,
+  ParticipantTile,
+  PreJoin,
+  VideoConference,
+  useConnectionState,
+  useRoomContext,
+  useSpeakingParticipants,
+  useTracks,
+  type LocalUserChoices,
+} from "@livekit/components-react";
 import { useQuery } from "@tanstack/react-query";
-import { ConnectionState, DisconnectReason, type RoomOptions } from "livekit-client";
-import { Copy, UserPlus, Video } from "lucide-react";
+import { ConnectionState, DisconnectReason, Track, type RoomOptions } from "livekit-client";
+import { Copy, PictureInPicture2, UserPlus, Video } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate, useParams } from "react-router";
 import { Button } from "@ferrum/kit/primitives";
 import { Input } from "@ferrum/kit/primitives";
@@ -51,6 +64,8 @@ export function MeetPage() {
     gcTime: 0,
   });
 
+  // Where the call puts its own buttons (Pop out), once it runs.
+  const [tools, setTools] = useState<HTMLElement | null>(null);
   useEffect(() => {
     if (pass.data?.title) shell().title(pass.data.title);
   }, [pass.data?.title]);
@@ -62,6 +77,7 @@ export function MeetPage() {
       <header className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
         <Video className="size-4 text-muted-foreground" aria-hidden="true" />
         <h1 className="min-w-0 flex-1 truncate font-semibold">{pass.data?.title ?? "Meeting"}</h1>
+        <span ref={setTools} className="contents" />
         {meetKind === "room" && pass.data && <GuestLink room={id} initial={pass.data.guest_path ?? null} />}
         <Button variant="outline" size="sm" onClick={() => void copy(meetLink(meetKind, id), "Meeting link")}>
           <Copy /> Copy link
@@ -78,6 +94,7 @@ export function MeetPage() {
             // A call in its own window (opened from Chat or Calendar) closes it when done.
             onBack={() => (shell().host === "companion" ? window.close() : goBack(navigate, home(meetKind, id)))}
             channel={meetKind === "channel" ? id : undefined}
+            tools={tools}
           />
         )}
       </div>
@@ -86,7 +103,21 @@ export function MeetPage() {
 }
 
 /** Getting ready (camera and microphone), the call, and after leaving it, a way back in. */
-function Stage({ pass, name, onRejoin, onBack, channel }: { pass: MeetPass; name: string; onRejoin: () => Promise<unknown>; onBack?: () => void; channel?: string }) {
+function Stage({
+  pass,
+  name,
+  onRejoin,
+  onBack,
+  channel,
+  tools,
+}: {
+  pass: MeetPass;
+  name: string;
+  onRejoin: () => Promise<unknown>;
+  onBack?: () => void;
+  channel?: string;
+  tools?: HTMLElement | null;
+}) {
   const [choices, setChoices] = useState<LocalUserChoices | null>(null);
   const [left, setLeft] = useState<DisconnectReason | undefined | null>(null);
   const options = useMemo<RoomOptions>(
@@ -140,7 +171,111 @@ function Stage({ pass, name, onRejoin, onBack, channel }: { pass: MeetPass; name
     >
       <VideoConference />
       {channel && <Announce channel={channel} />}
+      {tools && <PopOut slot={tools} />}
     </LiveKitRoom>
+  );
+}
+
+interface DocumentPip {
+  requestWindow(options?: { width?: number; height?: number }): Promise<Window>;
+}
+/** Document Picture-in-Picture (Chromium): a small window of the page's own, above every other. */
+const documentPip = () => (window as unknown as { documentPictureInPicture?: DocumentPip }).documentPictureInPicture;
+
+/** The page's styles in another window's document (the pop-out's): LiveKit's, the kit's, the theme. */
+function copyStyles(to: Document) {
+  for (const sheet of Array.from(document.styleSheets)) {
+    try {
+      const style = to.createElement("style");
+      style.textContent = Array.from(sheet.cssRules, (r) => r.cssText).join("\n");
+      to.head.append(style);
+    } catch {
+      // A sheet the page may not read (another origin's) is linked again instead.
+      if (!sheet.href) continue;
+      const link = to.createElement("link");
+      link.rel = "stylesheet";
+      link.href = sheet.href;
+      to.head.append(link);
+    }
+  }
+  for (const [k, v] of Object.entries(document.documentElement.dataset)) if (v !== undefined) to.documentElement.dataset[k] = v;
+}
+
+/** Pop out: the call in a small window that stays above every other (Document Picture-in-Picture:
+ *  Chromium, recent Firefox), or the speaker's video alone where browsers only float a video
+ *  (Safari); no button where neither exists. Leaving the call, or the page, closes the small
+ *  window. */
+function PopOut({ slot }: { slot: HTMLElement }) {
+  const [pip, setPip] = useState<Window | null>(null);
+  const [floating, setFloating] = useState(false);
+  useEffect(() => () => pip?.close(), [pip]);
+  useEffect(() => {
+    const on = () => setFloating(!!document.pictureInPictureElement);
+    document.addEventListener("enterpictureinpicture", on, true);
+    document.addEventListener("leavepictureinpicture", on, true);
+    return () => {
+      document.removeEventListener("enterpictureinpicture", on, true);
+      document.removeEventListener("leavepictureinpicture", on, true);
+    };
+  }, []);
+  const api = documentPip();
+  if (!api && !document.pictureInPictureEnabled) return null;
+  const out = !!pip || floating;
+  const toggle = async () => {
+    try {
+      if (pip) return pip.close();
+      if (document.pictureInPictureElement) return await document.exitPictureInPicture();
+      if (api) {
+        const w = await api.requestWindow({ width: 420, height: 320 });
+        w.document.title = document.title;
+        copyStyles(w.document);
+        w.addEventListener("pagehide", () => setPip(null), { once: true });
+        setPip(w);
+        return;
+      }
+      // Whoever is speaking, else the first video that plays.
+      const videos = Array.from(document.querySelectorAll<HTMLVideoElement>(".ferrum-meet video")).filter((v) => v.readyState > 0 && !v.disablePictureInPicture);
+      const video = videos.find((v) => v.closest("[data-lk-speaking='true']")) ?? videos[0];
+      if (!video) return toast("Nobody's camera is on yet.");
+      await video.requestPictureInPicture();
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    }
+  };
+  return (
+    <>
+      {createPortal(
+        <Button variant="outline" size="sm" aria-pressed={out} onClick={() => void toggle()}>
+          <PictureInPicture2 /> {out ? "Bring back" : "Pop out"}
+        </Button>,
+        slot,
+      )}
+      {pip && createPortal(<MiniCall />, pip.document.body)}
+    </>
+  );
+}
+
+/** The call in the pop-out: a shared screen first, else whoever speaks, else someone else, else you;
+ *  and the microphone, the camera and leaving. */
+function MiniCall() {
+  const tracks = useTracks(
+    [
+      { source: Track.Source.ScreenShare, withPlaceholder: false },
+      { source: Track.Source.Camera, withPlaceholder: true },
+    ],
+    { onlySubscribed: false },
+  );
+  const speaking = useSpeakingParticipants();
+  const focus =
+    tracks.find((t) => t.source === Track.Source.ScreenShare) ??
+    tracks.find((t) => !t.participant.isLocal && speaking.some((p) => p.identity === t.participant.identity)) ??
+    tracks.find((t) => !t.participant.isLocal) ??
+    tracks[0];
+  return (
+    <div data-lk-theme="default" className="ferrum-meet ferrum-pip">
+      {focus ? <ParticipantTile trackRef={focus} /> : <p className="ferrum-pip-empty">Nobody else is here yet.</p>}
+      <ControlBar variation="minimal" controls={{ microphone: true, camera: true, screenShare: false, chat: false, leave: true }} />
+    </div>
   );
 }
 
@@ -250,6 +385,7 @@ export function GuestMeetPage() {
   const [askName, setAskName] = useState(false);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [tools, setTools] = useState<HTMLElement | null>(null);
   const asked = useRef(false);
   const ask = async (typed?: string) => {
     setBusy(true);
@@ -276,6 +412,7 @@ export function GuestMeetPage() {
         <Video className="size-4 opacity-70" aria-hidden="true" />
         <h1 className="min-w-0 flex-1 truncate font-semibold">{pass?.title ?? "Meeting"}</h1>
         {pass && <span className="text-sm opacity-70">You are joining as {pass.name} (guest)</span>}
+        <span ref={setTools} className="contents" />
       </header>
       <main className="min-h-0">
         {error ? (
@@ -284,7 +421,7 @@ export function GuestMeetPage() {
             <p className="opacity-70">{errorMessage(error)}</p>
           </div>
         ) : pass ? (
-          <Stage pass={pass} name={pass.name} onRejoin={() => ask(askName ? name.trim() : undefined)} />
+          <Stage pass={pass} name={pass.name} onRejoin={() => ask(askName ? name.trim() : undefined)} tools={tools} />
         ) : askName ? (
           <form
             className="mx-auto grid max-w-sm gap-3 p-6"
