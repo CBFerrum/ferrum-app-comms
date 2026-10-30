@@ -29,12 +29,45 @@ use uuid::Uuid;
 const EVERY: Duration = Duration::from_secs(600);
 const PAGE: usize = 100;
 
+fn var(name: &str) -> Option<String> {
+    std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+/// The mail server's address, when the operator set one.
+pub(crate) fn server_url() -> Option<String> {
+    var("FERRUM_MAIL_URL").map(|u| u.trim_end_matches('/').to_string())
+}
+
 /// The mail server's address and an administrator's Basic credentials, when the operator set them.
 fn configured() -> Option<(String, String)> {
-    let var = |name: &str| std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
-    let url = var("FERRUM_MAIL_URL")?.trim_end_matches('/').to_string();
-    let auth = format!("Basic {}", STANDARD.encode(format!("{}:{}", var("FERRUM_MAIL_ADMIN")?, var("FERRUM_MAIL_ADMIN_SECRET")?)));
-    Some((url, auth))
+    Some((server_url()?, basic(&var("FERRUM_MAIL_ADMIN")?, &var("FERRUM_MAIL_ADMIN_SECRET")?)))
+}
+
+pub(crate) fn basic(user: &str, password: &str) -> String {
+    format!("Basic {}", STANDARD.encode(format!("{user}:{password}")))
+}
+
+/// A request to the mail server signed in with `auth`: a POST of `body` (content type, bytes) or
+/// a GET. Returns the status, content type and body; a body over `max` bytes is an error.
+pub(crate) async fn send(k: &Kernel, url: &str, auth: &str, path: &str, body: Option<(&str, Vec<u8>)>, max: usize) -> Result<(u16, String, Vec<u8>)> {
+    let url = format!("{url}{path}");
+    // The operator's own server, usually beside Ferrum: private addresses allowed.
+    let (client, parsed) = k.vetted_client(&url, true, Duration::from_secs(30), "Ferrum Comms").await?;
+    let req = match body {
+        Some((ctype, b)) => client.post(parsed).header("content-type", ctype).body(b),
+        None => client.get(parsed),
+    };
+    let mut res = req.header("authorization", auth).send().await.map_err(unavailable)?;
+    let status = res.status().as_u16();
+    let ctype = res.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("application/octet-stream").to_string();
+    let mut out = Vec::new();
+    while let Some(chunk) = res.chunk().await.map_err(unavailable)? {
+        if out.len() + chunk.len() > max {
+            return Err(Error::invalid(format!("larger than {} MB", max / 1024 / 1024)));
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok((status, ctype, out))
 }
 
 fn unavailable(e: impl std::fmt::Display) -> Error {
@@ -61,20 +94,12 @@ impl Admin {
     }
 
     async fn request(&self, k: &Kernel, path: &str, body: Option<&Value>) -> Result<Value> {
-        let url = format!("{}{path}", self.url);
-        // The operator's own server, usually beside Ferrum: private addresses allowed.
-        let (client, parsed) = k.vetted_client(&url, true, Duration::from_secs(20), "Ferrum Comms").await?;
-        let req = match body {
-            Some(b) => client.post(parsed).header("content-type", "application/json").body(b.to_string()),
-            None => client.get(parsed),
-        };
-        let res = req.header("authorization", &self.auth).send().await.map_err(unavailable)?;
-        let status = res.status();
-        let text = res.text().await.map_err(unavailable)?;
-        if !status.is_success() {
-            return Err(unavailable(format!("{path} answered {status}: {}", util::cut(&text, 200))));
+        let body = body.map(|b| ("application/json", b.to_string().into_bytes()));
+        let (status, _, out) = send(k, &self.url, &self.auth, path, body, 16 << 20).await?;
+        if !(200..300).contains(&status) {
+            return Err(unavailable(format!("{path} answered {status}: {}", util::cut(&String::from_utf8_lossy(&out), 200))));
         }
-        serde_json::from_str(&text).map_err(unavailable)
+        serde_json::from_slice(&out).map_err(unavailable)
     }
 
     /// One JMAP request of administration calls; their answers in order (call `i` has id `"i"`).
@@ -190,6 +215,8 @@ impl Person {
 struct Kept {
     email: String,
     status: String,
+    /// Whether its password is kept.
+    secret: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -228,7 +255,7 @@ fn plan(people: &[Person], domain: &str, accounts: &BTreeMap<Uuid, String>, kept
         .iter()
         .filter_map(|p| {
             let kept = kept.get(&p.id);
-            let active = kept.is_some_and(|k| k.status == "Active");
+            let active = kept.is_some_and(|k| k.status == "Active" && k.secret);
             match (p.active && p.email.ends_with(&suffix), accounts.get(&p.id)) {
                 (true, None) => Some(Step::Create(p.id)),
                 (true, Some(a)) if !active => Some(Step::Update { person: p.id, account: a.clone(), password: true }),
@@ -257,16 +284,21 @@ pub async fn reconcile(k: &Kernel, tenant: Uuid) -> Result<Value> {
     let mut tx = k.db.tenant_tx(tenant).await?;
     let people: Vec<(Uuid, String, String, bool)> =
         sqlx::query_as("select id, lower(email::text), full_name, is_active from app_user where tenant_id = $1").bind(tenant).fetch_all(&mut *tx).await?;
-    let rows: Vec<(Uuid, String, String, Option<String>)> =
-        sqlx::query_as("select id, user_id, email, status from e_hosted_mailbox where tenant_id = $1").bind(tenant).fetch_all(&mut *tx).await?;
+    let rows: Vec<(Uuid, String, String, Option<String>, bool)> = sqlx::query_as(
+        "select m.id, m.user_id, m.email, m.status, exists (select 1 from record_secret s where s.tenant_id = m.tenant_id \
+         and s.entity = 'HostedMailbox' and s.record_id = m.id and s.field = 'secret') from e_hosted_mailbox m where m.tenant_id = $1",
+    )
+    .bind(tenant)
+    .fetch_all(&mut *tx)
+    .await?;
     tx.commit().await?;
     let people: Vec<Person> = people.into_iter().map(|(id, email, full_name, active)| Person { id, email, full_name, active }).collect();
     let mut row_of = HashMap::new();
     let mut kept = HashMap::new();
-    for (row, user, email, status) in rows {
+    for (row, user, email, status, secret) in rows {
         if let Ok(user) = user.parse::<Uuid>() {
             row_of.insert(user, row);
-            kept.insert(user, Kept { email, status: status.unwrap_or_default() });
+            kept.insert(user, Kept { email, status: status.unwrap_or_default(), secret });
         }
     }
 
@@ -314,6 +346,15 @@ pub async fn reconcile(k: &Kernel, tenant: Uuid) -> Result<Value> {
     }
     tracing::info!(%tenant, %report, "hosted mail reconciled");
     Ok(report)
+}
+
+/// When the mail server refuses a person's kept password (restored from a backup, changed by hand,
+/// a sync cut short): forgets it and brings the mailboxes in step, which sets a new one.
+pub(crate) async fn renew(k: &Kernel, tenant: Uuid, mailbox: Uuid) -> Result<()> {
+    tracing::warn!(%tenant, %mailbox, "the mail server refused a kept password; setting a new one");
+    let ctx = Ctx::system(tenant, k.registry.schema(tenant).await?);
+    k.update(&ctx, "HostedMailbox", mailbox, obj(json!({"secret": null})), None).await?;
+    reconcile(k, tenant).await.map(|_| ())
 }
 
 static LAST: Mutex<Option<HashMap<Uuid, Instant>>> = Mutex::new(None);
@@ -382,13 +423,18 @@ mod tests {
             person("still@acme.com", false),
             person("lost@acme.com", true),
             person("renamed@acme.com", true),
+            person("forgotten@acme.com", true),
         ];
-        let [new, steady, gone, moved, back, _guest, still, lost, renamed] = &people;
-        let accounts: BTreeMap<Uuid, String> = [steady, gone, moved, back, still, lost, renamed].iter().map(|p| (p.id, format!("a-{}", p.local()))).collect();
+        let [new, steady, gone, moved, back, _guest, still, lost, renamed, forgotten] = &people;
+        let accounts: BTreeMap<Uuid, String> =
+            [steady, gone, moved, back, still, lost, renamed, forgotten].iter().map(|p| (p.id, format!("a-{}", p.local()))).collect();
         let kept: HashMap<Uuid, Kept> = [(steady, "Active"), (gone, "Active"), (moved, "Active"), (back, "Locked"), (still, "Locked")]
             .into_iter()
-            .map(|(p, status)| (p.id, Kept { email: p.email.clone(), status: status.into() }))
-            .chain([(renamed.id, Kept { email: "old.name@acme.com".into(), status: "Active".into() })])
+            .map(|(p, status)| (p.id, Kept { email: p.email.clone(), status: status.into(), secret: status == "Active" }))
+            .chain([
+                (renamed.id, Kept { email: "old.name@acme.com".into(), status: "Active".into(), secret: true }),
+                (forgotten.id, Kept { email: forgotten.email.clone(), status: "Active".into(), secret: false }),
+            ])
             .collect();
         let update = |p: &Person, password| Step::Update { person: p.id, account: format!("a-{}", p.local()), password };
         assert_eq!(
@@ -400,6 +446,7 @@ mod tests {
                 update(back, true),
                 update(lost, true),
                 update(renamed, false),
+                update(forgotten, true),
             ],
             "the guest and the people already in step need nothing; a password Ferrum does not keep is replaced"
         );

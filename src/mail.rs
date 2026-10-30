@@ -284,6 +284,10 @@ impl DocHook for CommunicationHook {
         if s(doc, "communication_date").is_none() {
             set(doc, "communication_date", json!(util::ts(util::now())));
         }
+        // A copy of mail sent from elsewhere (filed from a hosted mailbox): a record, never sent again.
+        if hc.ctx.is_system && s(doc, "channel") == Some("Email") && s(doc, "status") == Some("Sent") {
+            return Ok(());
+        }
         if s(doc, "channel") == Some("Email") && s(doc, "direction") == Some("Received") {
             if s(doc, "status").is_none() {
                 set(doc, "status", json!("Received"));
