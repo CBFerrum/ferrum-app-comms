@@ -365,7 +365,8 @@ async fn scenario() {
             admin_email: "admin@acme.test".into(),
             admin_password: PASSWORD.into(),
             admin_name: None,
-            packages: vec!["core".into(), "comms".into()],
+            // Customers (and the Sales roles) are ERP's now: selling brings them, with what it needs.
+            packages: vec!["core".into(), "selling".into(), "comms".into()],
             settings: None,
         })
         .await
