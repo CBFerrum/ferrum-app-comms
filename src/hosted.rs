@@ -14,13 +14,14 @@
 // ponytail: each reconcile pages through every account on the server; filter on the server once a
 // shared server holds enough workspaces for that to matter.
 
+use crate::groups;
 use crate::util::{self, obj};
 use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use ferrum_kernel::{Ctx, Doc, DocHook, Error, HookCtx, Kernel, Result};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -75,7 +76,7 @@ fn unavailable(e: impl std::fmt::Display) -> Error {
 }
 
 /// The mail server's administration API, signed in.
-struct Admin {
+pub(crate) struct Admin {
     url: String,
     auth: String,
     account: String,
@@ -103,7 +104,7 @@ impl Admin {
     }
 
     /// One JMAP request of administration calls; their answers in order (call `i` has id `"i"`).
-    async fn jmap(&self, k: &Kernel, calls: Vec<(&str, Value)>) -> Result<Vec<Value>> {
+    pub(crate) async fn jmap(&self, k: &Kernel, calls: Vec<(&str, Value)>) -> Result<Vec<Value>> {
         let calls: Vec<Value> = calls
             .into_iter()
             .enumerate()
@@ -131,10 +132,10 @@ impl Admin {
         created(&made[0], "d")
     }
 
-    /// The accounts of this workspace's people: person → account id.
-    async fn accounts(&self, k: &Kernel, tenant: Uuid) -> Result<BTreeMap<Uuid, String>> {
+    /// The workspace's accounts: its people's and its shared mailboxes' (`groups.rs`).
+    pub(crate) async fn accounts(&self, k: &Kernel, tenant: Uuid) -> Result<Accounts> {
         let prefix = format!("ferrum:{tenant}:");
-        let mut out = BTreeMap::new();
+        let mut out = Accounts::default();
         let mut position = 0;
         loop {
             let r = self
@@ -142,15 +143,27 @@ impl Admin {
                     k,
                     vec![
                         ("x:Account/query", json!({"position": position, "limit": PAGE})),
-                        ("x:Account/get", json!({"#ids": {"resultOf": "0", "name": "x:Account/query", "path": "/ids"}, "properties": ["externalId"]})),
+                        (
+                            "x:Account/get",
+                            json!({"#ids": {"resultOf": "0", "name": "x:Account/query", "path": "/ids"},
+                                   "properties": ["externalId", "name", "description", "domainId", "memberGroupIds"]}),
+                        ),
                     ],
                 )
                 .await?;
             for a in r[1]["list"].as_array().into_iter().flatten() {
-                let person = a["externalId"].as_str().and_then(|x| x.strip_prefix(&prefix)).and_then(|u| u.parse().ok());
-                if let (Some(person), Some(id)) = (person, a["id"].as_str()) {
-                    out.insert(person, id.to_string());
-                }
+                let (Some(id), Some(ours)) = (a["id"].as_str(), a["externalId"].as_str().and_then(|x| x.strip_prefix(&prefix))) else { continue };
+                let account = Account {
+                    id: id.to_string(),
+                    name: a["name"].as_str().unwrap_or_default().to_string(),
+                    description: a["description"].as_str().unwrap_or_default().to_string(),
+                    domain: a["domainId"].as_str().unwrap_or_default().to_string(),
+                    groups: a["memberGroupIds"].as_object().map(|g| g.keys().cloned().collect()).unwrap_or_default(),
+                };
+                match ours.strip_prefix("group:") {
+                    Some(g) => g.parse().ok().map(|g| out.groups.insert(g, account)),
+                    None => ours.parse().ok().map(|p| out.people.insert(p, account)),
+                };
             }
             match r[0]["ids"].as_array().map_or(0, Vec::len) {
                 0 => return Ok(out),
@@ -182,15 +195,37 @@ impl Admin {
             patch["credentials"] = json!({"0": {"@type": "Password", "secret": secret}});
         }
         let r = self.jmap(k, vec![("x:Account/set", json!({"update": {account: patch}}))]).await?;
-        match r[0]["updated"].get(account) {
-            Some(_) => Ok(()),
-            None => Err(unavailable(format!("refused the change: {}", r[0]["notUpdated"][account]))),
-        }
+        updated(&r[0], account)
     }
 }
 
-fn created(r: &Value, key: &str) -> Result<String> {
+/// The workspace's accounts on the server, by Ferrum id: its people's and its shared mailboxes'.
+#[derive(Debug, Default)]
+pub(crate) struct Accounts {
+    pub people: BTreeMap<Uuid, Account>,
+    pub groups: BTreeMap<Uuid, Account>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Account {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub domain: String,
+    /// The group accounts it is a member of.
+    pub groups: BTreeSet<String>,
+}
+
+pub(crate) fn created(r: &Value, key: &str) -> Result<String> {
     r["created"][key]["id"].as_str().map(String::from).ok_or_else(|| unavailable(format!("refused it: {}", r["notCreated"][key])))
+}
+
+/// Whether an update was taken.
+pub(crate) fn updated(r: &Value, id: &str) -> Result<()> {
+    match r["updated"].get(id) {
+        Some(_) => Ok(()),
+        None => Err(unavailable(format!("refused the change: {}", r["notUpdated"][id]))),
+    }
 }
 
 fn new_secret() -> String {
@@ -198,16 +233,21 @@ fn new_secret() -> String {
 }
 
 #[derive(Debug)]
-struct Person {
-    id: Uuid,
-    email: String,
-    full_name: String,
-    active: bool,
+pub(crate) struct Person {
+    pub id: Uuid,
+    pub email: String,
+    pub full_name: String,
+    pub active: bool,
 }
 
 impl Person {
     fn local(&self) -> &str {
         self.email.split('@').next().unwrap_or_default()
+    }
+
+    /// Whether they have an unlocked mailbox in `domain` (lowercase).
+    pub(crate) fn hosted(&self, domain: &str) -> bool {
+        self.active && self.email.strip_suffix(domain).is_some_and(|l| l.ends_with('@'))
     }
 }
 
@@ -250,13 +290,13 @@ impl Step {
 /// What brings the server in step with the people (emails lowercase): an active person in the
 /// domain has an unlocked account at their address; anyone else's account is locked.
 fn plan(people: &[Person], domain: &str, accounts: &BTreeMap<Uuid, String>, kept: &HashMap<Uuid, Kept>) -> Vec<Step> {
-    let suffix = format!("@{}", domain.to_ascii_lowercase());
+    let domain = domain.to_ascii_lowercase();
     people
         .iter()
         .filter_map(|p| {
             let kept = kept.get(&p.id);
             let active = kept.is_some_and(|k| k.status == "Active" && k.secret);
-            match (p.active && p.email.ends_with(&suffix), accounts.get(&p.id)) {
+            match (p.hosted(&domain), accounts.get(&p.id)) {
                 (true, None) => Some(Step::Create(p.id)),
                 (true, Some(a)) if !active => Some(Step::Update { person: p.id, account: a.clone(), password: true }),
                 (true, Some(a)) if kept.is_some_and(|k| k.email != p.email) => Some(Step::Update { person: p.id, account: a.clone(), password: false }),
@@ -276,8 +316,9 @@ async fn mail_domain(k: &Kernel, tenant: Uuid) -> Result<Option<String>> {
     Ok(d.flatten().map(|d| d.trim().trim_start_matches('@').to_ascii_lowercase()).filter(|d| !d.is_empty()))
 }
 
-/// Brings the mail server in step with the workspace's people: `{domain, created, updated,
-/// locked, failed: [{email, step, error}]}`. A person whose step fails does not stop the others.
+/// Brings the mail server in step with the workspace's people, shared mailboxes and distribution
+/// lists (`groups.rs`): `{domain, created, updated, locked, shared, lists, failed: [{email, step,
+/// error}]}`. A step that fails does not stop the others.
 pub async fn reconcile(k: &Kernel, tenant: Uuid) -> Result<Value> {
     let domain = mail_domain(k, tenant).await?.ok_or_else(|| Error::invalid("set the Mail Domain in Communication Settings first"))?;
     let admin = Admin::connect(k).await?;
@@ -303,10 +344,11 @@ pub async fn reconcile(k: &Kernel, tenant: Uuid) -> Result<Value> {
     }
 
     let domain_id = admin.domain(k, &domain).await?;
-    let accounts = admin.accounts(k, tenant).await?;
+    let mut accounts = admin.accounts(k, tenant).await?;
     let ctx = Ctx::system(tenant, k.registry.schema(tenant).await?);
-    let mut report = json!({"domain": domain, "created": 0, "updated": 0, "locked": 0, "failed": []});
-    for step in plan(&people, &domain, &accounts, &kept) {
+    let mut report = json!({"domain": domain, "created": 0, "updated": 0, "locked": 0, "shared": 0, "lists": 0, "failed": []});
+    let ids: BTreeMap<Uuid, String> = accounts.people.iter().map(|(p, a)| (*p, a.id.clone())).collect();
+    for step in plan(&people, &domain, &ids, &kept) {
         let Some(p) = people.iter().find(|p| p.id == step.person()) else { continue };
         let done = async {
             let (account, status, secret) = match &step {
@@ -344,8 +386,22 @@ pub async fn reconcile(k: &Kernel, tenant: Uuid) -> Result<Value> {
             }
         }
     }
+    // New people's accounts take part in the shared mailboxes too.
+    if report["created"].as_i64().unwrap_or(0) > 0 {
+        accounts = admin.accounts(k, tenant).await?;
+    }
+    groups::reconcile(k, &admin, &ctx, &domain, &domain_id, &people, &accounts, &mut report).await?;
     tracing::info!(%tenant, %report, "hosted mail reconciled");
     Ok(report)
+}
+
+/// The next maintenance round brings the workspace in step (a changed shared mailbox or list),
+/// instead of waiting out the ten minutes.
+// ponytail: the wait is per replica; one whose maintenance round runs elsewhere waits it out.
+pub(crate) fn soon(tenant: Uuid) {
+    if let Some(last) = LAST.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        last.remove(&tenant);
+    }
 }
 
 /// When the mail server refuses a person's kept password (restored from a backup, changed by hand,
@@ -375,11 +431,15 @@ pub async fn reconcile_due(k: &Kernel, tenant: Uuid) -> Result<()> {
     reconcile(k, tenant).await.map(|_| ())
 }
 
-/// Communication Settings' "Sync Mailboxes".
+/// Communication Settings' "Sync Mailboxes"; a changed Mail Domain is taken up at the next round.
 pub struct SettingsHook;
 
 #[async_trait]
 impl DocHook for SettingsHook {
+    async fn after_save(&self, hc: &mut HookCtx<'_>, _doc: &Doc, _old: Option<&Doc>) -> Result<()> {
+        soon(hc.ctx.tenant);
+        Ok(())
+    }
     async fn action(&self, hc: &mut HookCtx<'_>, name: &str, _doc: &Doc, _params: &Value) -> Result<Option<Value>> {
         match name {
             "sync_mail" => reconcile(hc.kernel, hc.ctx.tenant).await.map(Some),

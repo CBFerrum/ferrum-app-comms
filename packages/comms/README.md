@@ -66,6 +66,24 @@ its owner. Stalwart's open-source edition has no tenants: workspaces that share 
 apart by their domains, and each account carries `externalId = ferrum:<workspace>:<person>`. The
 domain's DNS records (MX, SPF, DKIM, DMARC) are published from Stalwart's admin interface.
 
+### Shared mailboxes and distribution lists
+
+* **Shared Mailbox** (`SharedMailbox`: `address`, the part before @, e.g. `sales`;
+  `display_name`; `members`, people of the workspace by email).
+  * It is a group account on the mail server (`externalId = ferrum:<workspace>:group:<id>`).
+  * Its members see it in their mail as one more account (the JMAP session's `accounts`), so
+    sales@ mail reaches all of them.
+  * People leave it when they leave its members, are deactivated, or move out of the domain.
+  * A deleted shared mailbox keeps its mail on the server and loses its members.
+* **Distribution list:** an **Email Group** with a `mail_address` (e.g. `all-staff`).
+  * It is a mailing list on the mail server that passes mail on to the group's members who are not
+    unsubscribed.
+  * Clearing the address removes the list.
+
+Changes to these records, their members, or the Mail Domain reach the mail server at the next
+maintenance round (about a minute). Sync Mailboxes applies them at once and reports `shared`
+and `lists`.
+
 ### Webmail — `/api/app/comms/mail/...`
 
 Whoever has an active hosted mailbox reaches it here over JMAP (RFC 8620/8621); no Comms role is

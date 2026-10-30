@@ -5,9 +5,10 @@
 #     tests/stalwart.sh >> "$GITHUB_ENV"             # CI
 #     export $(tests/stalwart.sh) && cargo test      # locally
 #
-# Needs Docker, curl and jq. STALWART_IMAGE and STALWART_PORT override the defaults.
+# Needs Docker, curl and jq. STALWART_IMAGE, STALWART_PORT and STALWART_NAME (the container)
+# override the defaults.
 set -euo pipefail
-name=ferrum-comms-stalwart
+name=${STALWART_NAME:-ferrum-comms-stalwart}
 image=${STALWART_IMAGE:-stalwartlabs/stalwart:v1.0}
 url="http://127.0.0.1:${STALWART_PORT:-18081}"
 docker rm -f "$name" >/dev/null 2>&1 || true

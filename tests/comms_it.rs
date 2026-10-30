@@ -1019,7 +1019,7 @@ async fn hosted_mail(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>, imap: &Fa
         let (client, session) = k.vetted_client(&format!("{url}/jmap/session"), true, Duration::from_secs(20), "it").await.unwrap();
         client.get(session).basic_auth(address, Some(password)).send().await.unwrap().status().is_success()
     };
-    let in_step = json!({"domain": "acme.test", "created": 0, "updated": 0, "locked": 0, "failed": []});
+    let in_step = json!({"domain": "acme.test", "created": 0, "updated": 0, "locked": 0, "shared": 0, "lists": 0, "failed": []});
 
     refused(sync().await, "invalid");
     k.update(mgr, "CommsSettings", settings, obj(json!({"mail_domain": "ACME.test"})), None).await.unwrap();
@@ -1185,4 +1185,64 @@ async fn hosted_mail(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>, imap: &Fa
     k.update(&sys, "HostedMailbox", mailbox(alice).await, obj(json!({"secret": "Not-The-Password-1"})), None).await.unwrap();
     assert_eq!(t.ok(alice, "GET", "/mail", &[], Value::Null).await["username"], json!("alice@acme.test"));
     assert!(opens("alice@acme.test", &password(alice).await.unwrap()).await);
+
+    // ───────────── a shared mailbox and a distribution list ─────────────
+    refused(k.insert(mgr, "SharedMailbox", obj(json!({"address": "-sales"}))).await, "invalid");
+    refused(k.insert(mgr, "SharedMailbox", obj(json!({"address": "sales", "members": [{"email": "nobody@acme.test"}]}))).await, "invalid");
+    let sales = k
+        .insert(
+            mgr,
+            "SharedMailbox",
+            obj(json!({"address": " Sales@acme.test", "display_name": "Sales team", "members": [{"email": "bob@acme.test"}, {"email": "Caroline@acme.test"}]})),
+        )
+        .await
+        .unwrap();
+    assert_eq!(sales["address"], json!("sales"));
+    let staff = uid(&Value::Object(k.insert(mgr, "EmailGroup", obj(json!({"group_name": "All staff", "mail_address": "All-Staff"}))).await.unwrap()));
+    for (email, unsubscribed) in [("bob@acme.test", false), ("caroline@acme.test", false), ("mgr@acme.test", true)] {
+        k.insert(mgr, "EmailGroupMember", obj(json!({"email_group": staff, "email": email, "unsubscribed": unsubscribed}))).await.unwrap();
+    }
+    let synced = sync().await.unwrap();
+    assert_eq!(
+        (synced["shared"].clone(), synced["lists"].clone(), synced["failed"].clone()),
+        (json!(3), json!(1), json!([])),
+        "the group, two members, the list: {synced}"
+    );
+    assert_eq!(sync().await.unwrap(), in_step);
+    // Members see the shared mailbox as another account in their mail.
+    let shared_account = async |who: &Ctx| -> Option<String> {
+        let s = t.ok(who, "GET", "/mail", &[], Value::Null).await;
+        s["accounts"].as_object().unwrap().iter().find(|(_, a)| a["isPersonal"] == json!(false)).map(|(id, _)| id.clone())
+    };
+    let sales_acc = shared_account(bob).await.expect("Bob sees sales@");
+    assert_eq!(shared_account(carol).await.as_deref(), Some(sales_acc.as_str()));
+    assert!(shared_account(alice).await.is_none());
+    let arrived = async |who: &Ctx, acc: &str, subject: &str| {
+        let inbox = roles(who, acc).await["inbox"].clone();
+        for _ in 0..60 {
+            let r = jmap(
+                who,
+                json!([["Email/query", {"accountId": acc, "filter": {"inMailbox": inbox}}, "0"],
+                ["Email/get", {"accountId": acc, "#ids": {"resultOf": "0", "name": "Email/query", "path": "/ids"}, "properties": ["subject"]}, "1"]]),
+            )
+            .await;
+            if r["methodResponses"][1][1]["list"].as_array().unwrap().iter().any(|m| m["subject"] == json!(subject)) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        false
+    };
+    let alice_acc = primary(&t.ok(alice, "GET", "/mail", &[], Value::Null).await);
+    send_mail(alice, &alice_acc, "alice@acme.test", "sales@acme.test", "Lead from the fair", "<p>Globex wants a demo.</p>", json!([])).await;
+    assert!(arrived(bob, &sales_acc, "Lead from the fair").await, "mail to sales@ lands in the shared mailbox");
+    send_mail(alice, &alice_acc, "alice@acme.test", "all-staff@acme.test", "Friday town hall", "<p>4pm</p>", json!([])).await;
+    assert!(arrived(bob, &bob_acc, "Friday town hall").await, "the list passes mail on to its members");
+    // Leaving the shared mailbox and clearing the list's address take effect at the next round.
+    k.update(mgr, "SharedMailbox", uid(&Value::Object(sales)), obj(json!({"members": [{"email": "bob@acme.test"}]})), None).await.unwrap();
+    k.update(mgr, "EmailGroup", staff, obj(json!({"mail_address": ""})), None).await.unwrap();
+    let synced = sync().await.unwrap();
+    assert_eq!((synced["shared"].clone(), synced["lists"].clone()), (json!(1), json!(1)), "{synced}");
+    assert!(shared_account(carol).await.is_none());
+    assert!(shared_account(bob).await.is_some());
 }

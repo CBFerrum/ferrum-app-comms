@@ -27,6 +27,28 @@
     - {name: synced_at, type: datetime, label: Synced At, in_list: true}
   list: {columns: [email, status, synced_at], sort: email asc}
 
+- name: SharedMailbox
+  label: Shared Mailbox
+  label_plural: Shared Mailboxes
+  kind: master
+  module: communication
+  title_field: address
+  search_fields: [display_name]
+  description: "A mailbox on the hosted mail server that several people read and answer, such as sales@ or support@: its members see it in their mail. The domain is the workspace's Mail Domain (Communication Settings)."
+  fields:
+    - {name: address, type: data, required: true, unique: true, max_length: 64, in_list: true, description: "The part before @, e.g. sales"}
+    - {name: display_name, type: data, max_length: 200, in_list: true, label: Display Name}
+    - {name: members, type: table, of: SharedMailboxMember, description: "People of the workspace who read and answer it"}
+    - {name: account_id, type: data, read_only: true, max_length: 64, label: Account ID, description: "The group account on the mail server"}
+    - {name: synced_at, type: datetime, read_only: true, label: Synced At}
+  list: {columns: [address, display_name, synced_at], sort: address asc}
+
+- name: SharedMailboxMember
+  label: Shared Mailbox Member
+  kind: child
+  fields:
+    - {name: email, type: email, required: true, in_list: true, description: "A person of the workspace (their address)"}
+
 - name: EmailAccount
   label: Email Account
   kind: master
@@ -139,7 +161,8 @@
   fields:
     - {name: group_name, type: data, required: true, unique: true, in_list: true}
     - {name: description, type: text}
-  list: {columns: [group_name], sort: group_name asc}
+    - {name: mail_address, type: data, max_length: 64, unique: true, in_list: true, label: List Address, description: "With hosted mail: the part before @ of an address on the mail server that passes mail on to every member not unsubscribed (a distribution list), e.g. all-staff"}
+  list: {columns: [group_name, mail_address], sort: group_name asc}
 
 - name: EmailGroupMember
   label: Email Group Member
