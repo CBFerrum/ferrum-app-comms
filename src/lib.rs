@@ -6,12 +6,13 @@
 mod account;
 mod calendar;
 mod chat;
+mod dav;
 mod groups;
 mod hosted;
 pub mod ics;
 pub mod inbound;
 mod mail;
-mod meet;
+pub(crate) mod meet;
 mod newsletter;
 pub mod recur;
 mod reports;

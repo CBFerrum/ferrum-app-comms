@@ -4,7 +4,7 @@
 //! signed token). See README.md.
 
 use crate::util::{self, created, ok};
-use crate::{calendar, chat, inbound, mail, meet, newsletter, webmail};
+use crate::{calendar, chat, dav, inbound, mail, meet, newsletter, webmail};
 use async_trait::async_trait;
 use ferrum_kernel::{Access, Action, Ctx, Error, Kernel, Result, Site, SiteRequest, SiteResponse};
 use serde_json::{Value, json};
@@ -44,6 +44,7 @@ async fn public(k: &Kernel, req: &SiteRequest, path: &[&str]) -> Result<SiteResp
             Ok(SiteResponse::json(202, &inbound::webhook(k, req.tenant, token, util::header(req, "content-type"), &req.body).await?))
         }
         ("GET" | "POST", ["unsubscribe"]) => newsletter::unsubscribe(k, req).await,
+        ("POST", ["meet", "guest"]) => meet::guest(k, req).await,
         ("GET", ["calendar", file]) => match file.strip_suffix(".ics") {
             Some(token) => calendar::feed(k, req.tenant, token).await,
             None => Err(Error::NotFound("calendar".into())),
@@ -62,6 +63,7 @@ async fn app(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> Result<
         (_, ["chat", rest @ ..]) => return chat::handle(k, ctx, req, rest).await,
         (_, ["calendar", rest @ ..]) => return calendar::handle(k, ctx, req, rest).await,
         (_, ["meet", rest @ ..]) => return meet::handle(k, ctx, req, rest).await,
+        (_, ["dav", rest @ ..]) => return dav::handle(k, ctx, req, rest).await,
         ("GET", ["accounts"]) => ok(mail::accounts(k, ctx).await?),
         ("POST", ["send"]) => created(mail::send(k, ctx, body()?).await?),
         ("POST", ["templates", "preview"]) => ok(mail::preview(k, ctx, body()?).await?),

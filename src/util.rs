@@ -161,10 +161,14 @@ pub async fn settings(tx: &mut Tx, tenant: Uuid) -> Result<Settings> {
     })
 }
 
+/// The workspace's short name, as its public addresses carry it.
+pub async fn slug(tx: &mut Tx, tenant: Uuid) -> Result<String> {
+    Ok(sqlx::query_scalar("select slug from tenant where id = $1").bind(tenant).fetch_one(&mut **tx).await?)
+}
+
 /// `/api/site/{slug}/comms`, the root of the package's public endpoints.
 pub async fn site_path(tx: &mut Tx, tenant: Uuid) -> Result<String> {
-    let slug: String = sqlx::query_scalar("select slug from tenant where id = $1").bind(tenant).fetch_one(&mut **tx).await?;
-    Ok(format!("/api/site/{slug}/comms"))
+    Ok(format!("/api/site/{}/comms", slug(tx, tenant).await?))
 }
 
 /// Absolute public URL of `path` under the site root, when the public URL is configured.

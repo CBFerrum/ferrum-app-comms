@@ -13,8 +13,8 @@ use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
-const ATTENDEES: &str = "e_calendar_event__attendees";
-const REMINDERS: &str = "e_calendar_event__reminders";
+pub(crate) const ATTENDEES: &str = "e_calendar_event__attendees";
+pub(crate) const REMINDERS: &str = "e_calendar_event__reminders";
 /// Changing one of these is a new version of the invitation (SEQUENCE + 1).
 const SIGNIFICANT: &[&str] =
     &["subject", "starts_at", "ends_at", "all_day", "location", "meeting_link", "recurrence", "recurrence_exceptions", "status", "description"];
@@ -80,7 +80,7 @@ pub fn when(doc: &Doc) -> String {
     format!("{}–{tail} ({label})", fmt(start, "%a %-d %b %Y, %H:%M"))
 }
 
-async fn display_name(tx: &mut Tx, tenant: Uuid, email: &str) -> Result<Option<String>> {
+pub(crate) async fn display_name(tx: &mut Tx, tenant: Uuid, email: &str) -> Result<Option<String>> {
     Ok(util::users(tx, tenant, &[email.to_string()]).await?.into_iter().next().map(|u| u.full_name).filter(|n| !n.trim().is_empty()))
 }
 
@@ -123,7 +123,16 @@ async fn queue_invitation(hc: &mut HookCtx<'_>, doc: &Doc, to: &str, method: &st
         Some(o) => display_name(hc.tx, hc.ctx.tenant, o).await?,
         None => None,
     };
-    let Some(ev) = vevent(doc, organizer_name.clone(), method == "CANCEL", false) else { return Ok(()) };
+    let Some(mut ev) = vevent(doc, organizer_name.clone(), method == "CANCEL", false) else { return Ok(()) };
+    // The event's meeting here: this guest's own link to it, as they cannot sign in.
+    let mut join = s(doc, "meeting_link").map(str::to_string);
+    if method != "CANCEL"
+        && let (Some(link), Some(event)) = (&join, util::id(doc, "id"))
+        && let Some(own) = crate::meet::invitation_link(hc.kernel, hc.tx, hc.ctx.tenant, event, link, to).await?
+    {
+        ev.url = Some(own.clone());
+        join = Some(own);
+    }
     let subject = s(doc, "subject").unwrap_or("(no title)");
     let when = when(doc);
     let title = match (method, updated) {
@@ -136,7 +145,7 @@ async fn queue_invitation(hc: &mut HookCtx<'_>, doc: &Doc, to: &str, method: &st
     if let Some(l) = s(doc, "location") {
         html.push_str(&format!("<p>Where: {}</p>", e(l)));
     }
-    if let Some(l) = s(doc, "meeting_link") {
+    if let Some(l) = &join {
         html.push_str(&format!("<p>Join: <a href=\"{0}\">{0}</a></p>", e(l)));
     }
     if let Some(d) = s(doc, "description") {
@@ -381,7 +390,7 @@ async fn events_of(
 }
 
 /// Raw rows carry Postgres date-time text; the API speaks RFC 3339 UTC.
-fn normalize(mut d: Doc) -> Doc {
+pub(crate) fn normalize(mut d: Doc) -> Doc {
     for k in ["starts_at", "ends_at", "created_at", "updated_at"] {
         if let Some(t) = util::time(&d, k) {
             d.insert(k.into(), json!(util::ts(t)));
@@ -492,7 +501,7 @@ async fn free_busy(k: &Kernel, ctx: &Ctx, body: Map<String, Value>) -> Result<Va
 }
 
 /// `POST /calendar/events/{id}/rsvp` `{response: Accepted|Declined|Tentative|Needs Action}`.
-async fn rsvp(k: &Kernel, ctx: &Ctx, event: Uuid, body: Map<String, Value>) -> Result<Value> {
+pub(crate) async fn rsvp(k: &Kernel, ctx: &Ctx, event: Uuid, body: Map<String, Value>) -> Result<Value> {
     let response = body.get("response").and_then(Value::as_str).unwrap_or_default().to_string();
     if !["Accepted", "Declined", "Tentative", "Needs Action"].contains(&response.as_str()) {
         return Err(Error::field("response", "must be Accepted, Declined, Tentative or Needs Action"));
@@ -610,6 +619,37 @@ pub async fn feed(k: &Kernel, tenant: Uuid, token: &str) -> Result<SiteResponse>
     Ok(r)
 }
 
+/// An event's own fields from iCalendar, for imports and calendar apps.
+pub(crate) fn event_fields(e: &ics::ParsedEvent) -> Doc {
+    let status = match e.status.as_deref() {
+        Some("CANCELLED") => "Cancelled",
+        Some("TENTATIVE") => "Tentative",
+        _ => "Confirmed",
+    };
+    let exceptions: Vec<String> = e
+        .exceptions
+        .iter()
+        .map(|x| match x {
+            Exception::Day(d) => d.format("%Y-%m-%d").to_string(),
+            Exception::At(t) => util::ts(*t),
+        })
+        .collect();
+    util::obj(json!({
+        "subject": util::clean_line(&e.summary, 990),
+        "starts_at": util::ts(e.start),
+        "ends_at": util::ts(e.end),
+        "all_day": e.all_day,
+        "description": e.description,
+        "location": e.location.as_deref().map(|l| util::clean_line(l, 990)),
+        "meeting_link": e.url.as_deref().filter(|u| u.starts_with("https://") || u.starts_with("http://")),
+        "category": e.categories.as_deref().map(|c| util::clean_line(c, 990)),
+        "status": status,
+        "recurrence": e.rrule,
+        "recurrence_exceptions": exceptions,
+        "sequence": e.sequence,
+    }))
+}
+
 /// `POST /calendar/import`: an iCalendar file (raw `text/calendar`, or JSON `{ics}`) becomes my
 /// events; events imported before (same UID) are updated.
 async fn import(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
@@ -627,37 +667,11 @@ async fn import(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
     let me = ctx.email.to_lowercase();
     let acting = util::elevated(ctx);
     let (mut created, mut updated, mut failed) = (0, 0, Vec::new());
-    for e in parsed.events {
+    for e in ics::detach_overrides(parsed.events) {
         let uid = e.uid.clone().unwrap_or_else(|| format!("{}@import.ferrum", Uuid::now_v7()));
-        let status = match e.status.as_deref() {
-            Some("CANCELLED") => "Cancelled",
-            Some("TENTATIVE") => "Tentative",
-            _ => "Confirmed",
-        };
-        let exceptions: Vec<String> = e
-            .exceptions
-            .iter()
-            .map(|x| match x {
-                Exception::Day(d) => d.format("%Y-%m-%d").to_string(),
-                Exception::At(t) => util::ts(*t),
-            })
-            .collect();
-        let doc = util::obj(json!({
-            "subject": util::clean_line(&e.summary, 990),
-            "starts_at": util::ts(e.start),
-            "ends_at": util::ts(e.end),
-            "all_day": e.all_day,
-            "description": e.description,
-            "location": e.location.as_deref().map(|l| util::clean_line(l, 990)),
-            "meeting_link": e.url.filter(|u| u.starts_with("https://") || u.starts_with("http://")),
-            "category": e.categories.as_deref().map(|c| util::clean_line(c, 990)),
-            "status": status,
-            "recurrence": e.rrule,
-            "recurrence_exceptions": exceptions,
-            "ical_uid": util::cut(&uid, 990),
-            "sequence": e.sequence,
-            "owner": me,
-        }));
+        let mut doc = event_fields(&e);
+        doc.insert("ical_uid".into(), json!(util::cut(&uid, 990)));
+        doc.insert("owner".into(), json!(me));
         let result = async {
             let mut tx = k.db.tenant_tx(ctx.tenant).await?;
             let existing: Option<Uuid> = sqlx::query_scalar("select id from e_calendar_event where tenant_id = $1 and owner = $2 and ical_uid = $3")

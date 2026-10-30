@@ -1,6 +1,6 @@
 [package]
 name = "ferrum-app-comms"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 description = "Messaging, mail and calendar: email accounts (SMTP/IMAP), threaded communications on any record, templates, newsletters, team chat and calendars with ICS."
@@ -29,6 +29,8 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["loggin
 webpki-roots = "1"
 chrono-tz = { version = "0.10", default-features = false }
 ammonia = "4"
+# The version Ferrum already builds (through its S3 client), so a server build compiles it once.
+quick-xml = "0.42"
 tokio = { version = "1.45", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "net", "io-util"] }
 chrono = { version = "0.4", features = ["serde"] }
 rust_decimal = { version = "1.43", features = ["serde-with-str", "maths"] }

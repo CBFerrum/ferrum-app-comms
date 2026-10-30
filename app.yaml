@@ -1,8 +1,8 @@
 id: comms
 name: Mail, Chat and Calendar
-version: 0.5.0
+version: 0.6.0
 publisher: cbferrum
-summary: Email accounts (SMTP/IMAP), threaded communications on any record, templates, newsletters, team chat, calendars with ICS and video meetings
+summary: Email accounts (SMTP/IMAP), threaded communications on any record, templates, newsletters, team chat, calendars with ICS and calendar-app sync, contacts sync and video meetings
 description: README.md
 categories: [communication, productivity]
 license: AGPL-3.0-only
