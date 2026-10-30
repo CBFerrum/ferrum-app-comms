@@ -1,8 +1,10 @@
 package: comms
-version: 0.3.0
+version: 0.3.1
 label: Communication
 description: Mail (accounts, threaded communications on any record, templates, inbound mail, newsletters), team chat and calendars with ICS.
-depends: [core]
+# The people mail goes to and the address book calendar and contacts apps read (Ferrum
+# docs/plan/apps-ui.md §13): the platform's shared contacts.
+depends: [core, contacts]
 
 modules:
   - name: communication
@@ -24,6 +26,9 @@ roles:
       - {entity: Communication, read: true, write: true, create: true, if_owner: true}
       - {entity: EmailTemplate, read: true}
       - {entity: CalendarEvent, read: true, write: true, create: true, delete: true, if_owner: true}
+      # The shared address book, for mail and contacts apps (CRM's roles edit it).
+      - {entity: Contact, read: true}
+      - {entity: Address, read: true}
   - name: Comms Manager
     description: Email accounts and their credentials, templates, mailing lists, newsletters and every communication.
     permissions:

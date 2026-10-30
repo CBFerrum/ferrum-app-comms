@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.1
+
+- Depends on the platform's `contacts` (Ferrum docs/plan/apps-ui.md §13, U3): every workspace with
+  Comms has the shared contacts and addresses, without CRM. Comms users read them, so calendar and
+  contacts apps show the address book; CRM's roles edit it.
+
 ## 0.7.0
 
 - Comms' own interface (Ferrum docs/plan/apps-ui.md, U4a), out of the web app: `ui/`, one interface
