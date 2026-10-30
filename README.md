@@ -7,6 +7,7 @@ A native app for [Ferrum](https://github.com/CBFerrum/Ferrum), the open-source, 
 - Email templates rendered against the record (sandboxed, escaped), with preview
 - Newsletters to email groups in batches under an hourly limit, with signed one-click unsubscribe
 - Team chat: public, private and direct channels, threads, mentions, edits, read markers, search; members only, pushed live
+- Hosted mail: with a Stalwart mail server, a mailbox for every person in the workspace's mail domain, kept in step with their account
 - Calendar: events with attendees and RSVP, recurrence (daily to yearly, by weekday or month day, with exceptions), reminders, free/busy, ICS invitations, a private ICS feed and ICS import
 - `packages/comms/README.md` documents every endpoint and the chat push protocol
 
@@ -40,7 +41,9 @@ createuser ferrum --pwprompt && createdb -O ferrum ferrum_comms_test
 cargo test
 ```
 
-`FERRUM_COMMS_TEST_DATABASE_URL` overrides the database URL. The app's metadata lives in `packages/` and is embedded
+`FERRUM_COMMS_TEST_DATABASE_URL` overrides the database URL. The hosted-mail part runs against a
+real Stalwart when one is set up (`export $(tests/stalwart.sh)` starts one in Docker) and is
+skipped otherwise. The app's metadata lives in `packages/` and is embedded
 at build time; `app.yaml` is its manifest (see Ferrum's `docs/plan/apps.md`).
 
 ## License

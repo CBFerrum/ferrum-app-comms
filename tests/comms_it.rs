@@ -996,4 +996,67 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     // Nothing is left in the outbox that failed.
     let dead: i64 = t.scalar("select count(*) from outbox where tenant_id = $1 and (dead or last_error is not null) and $2::uuid is null", None).await;
     assert_eq!(dead, 0);
+
+    hosted_mail(&t, &admin, &users, &imap).await;
+}
+
+/// Hosted mailboxes on a real Stalwart (`FERRUM_MAIL_URL`, `FERRUM_MAIL_ADMIN`,
+/// `FERRUM_MAIL_ADMIN_SECRET`; `tests/stalwart.sh` starts one): skipped without one.
+async fn hosted_mail(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>, imap: &FakeImap) {
+    let Ok(url) = std::env::var("FERRUM_MAIL_URL") else {
+        eprintln!("hosted mail skipped: no FERRUM_MAIL_URL (tests/stalwart.sh starts a mail server)");
+        return;
+    };
+    let (k, mgr, bob, carol, dave) = (&t.k, &users["mgr"], &users["bob"], &users["carol"], &users["dave"]);
+    let settings: Uuid = t.scalar("select id from e_comms_settings where tenant_id = $1 and $2::uuid is null", None).await;
+    let sync = async || k.run_action(mgr, "CommsSettings", settings, "sync_mail", json!({})).await;
+    let mailbox = async |user: &Ctx| -> Uuid { t.scalar("select id from e_hosted_mailbox where tenant_id = $1 and user_id = $2::text", Some(user.user)).await };
+    let status =
+        async |user: &Ctx| -> String { t.scalar("select status from e_hosted_mailbox where tenant_id = $1 and user_id = $2::text", Some(user.user)).await };
+    let password = async |user: &Ctx| t.secret("HostedMailbox", mailbox(user).await, "secret").await;
+    // Whether the address and password open the mailbox (a JMAP session).
+    let opens = async |address: &str, password: &str| {
+        let (client, session) = k.vetted_client(&format!("{url}/jmap/session"), true, Duration::from_secs(20), "it").await.unwrap();
+        client.get(session).basic_auth(address, Some(password)).send().await.unwrap().status().is_success()
+    };
+    let in_step = json!({"domain": "acme.test", "created": 0, "updated": 0, "locked": 0, "failed": []});
+
+    refused(sync().await, "invalid");
+    k.update(mgr, "CommsSettings", settings, obj(json!({"mail_domain": "ACME.test"})), None).await.unwrap();
+    let people: i64 =
+        t.scalar("select count(*) from app_user where tenant_id = $1 and is_active and email like '%@acme.test' and $2::uuid is null", None).await;
+    let made = sync().await.unwrap();
+    assert_eq!((made["created"].clone(), made["failed"].clone()), (json!(people), json!([])), "{made}");
+    let carol_password = password(carol).await.expect("a kept password");
+    assert!(opens("carol@acme.test", &carol_password).await, "the kept password opens the mailbox");
+    assert!(!opens("carol@acme.test", "Not-Her-Password-1").await);
+    assert_eq!(sync().await.unwrap(), in_step);
+    // Managers see mailboxes, not their passwords; nobody edits or deletes them by hand.
+    assert_eq!(k.get(mgr, "HostedMailbox", mailbox(carol).await, false).await.unwrap()["secret"], json!(true));
+    refused(k.update(admin, "HostedMailbox", mailbox(carol).await, obj(json!({"status": "Locked"})), None).await, "forbidden");
+    refused(k.delete(admin, "HostedMailbox", mailbox(carol).await, None).await, "forbidden");
+
+    // Deactivated: maintenance locks the mailbox (its mail stays).
+    let bob_password = password(bob).await.unwrap();
+    k.set_user_active(admin, bob.user, false).await.unwrap();
+    t.maintenance(imap).await;
+    assert_eq!((status(bob).await, password(bob).await), ("Locked".to_string(), None));
+    assert!(!opens("bob@acme.test", &bob_password).await, "a deactivated person's password no longer opens it");
+    // Back: maintenance waits ten minutes; "Sync Mailboxes" does not.
+    k.set_user_active(admin, bob.user, true).await.unwrap();
+    t.maintenance(imap).await;
+    assert_eq!(status(bob).await, "Locked");
+    assert_eq!(sync().await.unwrap()["updated"], json!(1));
+    let renewed = password(bob).await.unwrap();
+    assert!(renewed != bob_password && opens("bob@acme.test", &renewed).await);
+
+    // A new address in the domain moves the mailbox; one outside it locks the mailbox.
+    t.exec("update app_user set email = 'caroline@acme.test' where tenant_id = $1 and id = $2", Some(carol.user)).await;
+    t.exec("update app_user set email = 'dave@elsewhere.test' where tenant_id = $1 and id = $2", Some(dave.user)).await;
+    let moved = sync().await.unwrap();
+    assert_eq!((moved["updated"].clone(), moved["locked"].clone(), moved["failed"].clone()), (json!(1), json!(1), json!([])), "{moved}");
+    // (Stalwart 1.0 still resolves the old name at sign-in for a while: the same account.)
+    assert!(opens("caroline@acme.test", &carol_password).await, "the moved mailbox keeps its password");
+    assert_eq!(status(dave).await, "Locked");
+    assert_eq!(sync().await.unwrap(), in_step);
 }

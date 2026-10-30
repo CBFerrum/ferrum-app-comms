@@ -44,6 +44,28 @@ Mail without an account (no default for the company and no shared default) goes 
 server's own mailer, one simple HTML message per recipient (no threading headers, attachments or
 invitations).
 
+## Hosted mail
+
+With a [Stalwart](https://stalw.art) mail server the operator runs, the workspace's people get
+real mailboxes. The operator sets `FERRUM_MAIL_URL` (Stalwart's HTTP address as Ferrum reaches it,
+e.g. `http://mail:8080`), `FERRUM_MAIL_ADMIN` and `FERRUM_MAIL_ADMIN_SECRET` (one of its
+administrators); a Comms Manager sets `mail_domain` in Communication Settings (e.g. `acme.com`).
+Then every active person whose email is in that domain has a mailbox, kept in step every ten
+minutes or at once with the action `POST /api/v1/CommsSettings/{id}/actions/sync_mail`
+(`{domain, created, updated, locked, failed: [{email, step, error}]}`):
+
+* a new person gets an account at their address;
+* a changed address in the domain moves the account (and its mail) to it;
+* a deactivated person, or one whose address leaves the domain, is locked: every password of the
+  account is replaced by one nobody keeps, so nobody signs in, and the mail stays;
+* a person who comes back is unlocked with a new password.
+
+**Hosted Mailboxes** (`HostedMailbox`, read-only; Comms Managers read them) list the accounts
+with their status. Ferrum keeps each account's password sealed (`secret`) to reach the mailbox for
+its owner. Stalwart's open-source edition has no tenants: workspaces that share a server are kept
+apart by their domains, and each account carries `externalId = ferrum:<workspace>:<person>`. The
+domain's DNS records (MX, SPF, DKIM, DMARC) are published from Stalwart's admin interface.
+
 ## Signed-in endpoints — `/api/app/comms/...`
 
 Bearer auth as everywhere; the caller needs one of the roles above.
@@ -199,8 +221,8 @@ chat administrators). Parameters `from_date` / `to_date` default to the last 30 
 Every minute (`maintenance`, one replica at a time): retry due mail and requeue mail stuck in
 Sending for 10 minutes; poll IMAP accounts whose interval passed (only UIDs above the last one; a
 new UIDVALIDITY rereads the folder; the first poll takes the newest 50; at most 50 per poll);
-start due newsletters and send the next batch; announce due reminders; purge old reminder
-bookkeeping. While an account's SMTP server is failing, newly queued mail waits for these retries
+start due newsletters and send the next batch; announce due reminders; keep hosted mailboxes in
+step (every ten minutes); purge old reminder bookkeeping. While an account's SMTP server is failing, newly queued mail waits for these retries
 instead of holding up the outbox worker with a timeout per message.
 Received mail is deduplicated by Message-ID, so the webhook and the poller can both deliver the
 same message.
