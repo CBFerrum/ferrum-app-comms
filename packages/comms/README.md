@@ -66,6 +66,29 @@ its owner. Stalwart's open-source edition has no tenants: workspaces that share 
 apart by their domains, and each account carries `externalId = ferrum:<workspace>:<person>`. The
 domain's DNS records (MX, SPF, DKIM, DMARC) are published from Stalwart's admin interface.
 
+### Webmail — `/api/app/comms/mail/...`
+
+Whoever has an active hosted mailbox reaches it here over JMAP (RFC 8620/8621); no Comms role is
+needed, except for filing. Ferrum signs in to the mail server with the person's kept password.
+If the server refuses it, Ferrum sets a new one and tries once more. Without a mailbox the
+endpoints answer 404, and with a locked one 403.
+
+| Endpoint | Does |
+|---|---|
+| `GET /mail` | the JMAP session: `username`, `accounts` (one's own and those shared with one), `primaryAccounts`, `capabilities` with their limits. Adds `servers` (`{imap, smtp}`) when the operator set `FERRUM_MAIL_HOST` |
+| `POST /mail/jmap` | a JMAP request of mail methods: `Mailbox`, `Thread`, `Email`, `SearchSnippet`, `Identity`, `EmailSubmission`, `VacationResponse`, `SieveScript`, `Quota`, `x:AppPassword` (app passwords for mail programs) and `Core/echo`. Any other method is refused (403) |
+| `POST /mail/upload/{account}` | an attachment (the body is the file, `Content-Type` its type) → `{blobId, type, size}` |
+| `GET /mail/blob/{account}/{blob}?name=&type=` | an attachment, as a download, never as a type a browser runs |
+| `GET /mail/message/{account}/{email}?images=1` | a message to read: its headers, `text`, `attachments` and `html`. The `html` is made safe (see below) |
+| `POST /mail/file {account, email, entity, record}` | puts the message on a record's timeline as the person's communication: Sent when it is from them, Received otherwise. Needs a Comms role and a record they can read. A message already in the log on no record moves there; one on another record is a 409 |
+
+What makes `html` safe:
+* no scripts, forms or frames;
+* inline styles limited to layout, type and colour, so nothing loads a URL;
+* links open in a new tab;
+* inline (`cid:`) images are embedded;
+* remote images are left out unless `images=1`; `remote_images` counts them.
+
 ## Signed-in endpoints — `/api/app/comms/...`
 
 Bearer auth as everywhere; the caller needs one of the roles above.
