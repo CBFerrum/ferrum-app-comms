@@ -7,6 +7,25 @@
     - {name: newsletter_hourly_limit, type: int, default: 500, min: 1, max: 1000000, description: "Newsletter mails sent per hour at most (respect your provider's sending limits)"}
     - {name: max_send_attempts, type: int, default: 5, min: 1, max: 20, description: "Attempts before an outgoing email is marked Failed"}
     - {name: signing_key, type: secret, read_only: true, hidden: true, description: "Signs unsubscribe links; created automatically"}
+    - {name: mail_domain, type: data, max_length: 253, label: Mail Domain, description: "With hosted mail (a Stalwart server the operator runs): the domain whose people get a mailbox there, e.g. acme.com. Empty: no hosted mailboxes"}
+  actions:
+    - {name: sync_mail, label: Sync Mailboxes, permission: write}
+
+- name: HostedMailbox
+  label: Hosted Mailbox
+  label_plural: Hosted Mailboxes
+  kind: master
+  module: communication
+  title_field: email
+  description: "A person's mailbox on the hosted mail server, kept in step with their account (Communication Settings: Mail Domain). Read-only: Ferrum maintains it."
+  fields:
+    - {name: email, type: email, required: true, in_list: true}
+    - {name: user_id, type: data, required: true, unique: true, max_length: 36, label: User ID}
+    - {name: account_id, type: data, max_length: 64, label: Account ID, description: "The account on the mail server"}
+    - {name: status, type: select, options: [Active, Locked], default: Active, required: true, in_list: true, description: "Locked: the person was deactivated or left the mail domain; the mailbox and its mail stay"}
+    - {name: secret, type: secret, description: "The account's password, with which Ferrum reaches the mailbox for its owner"}
+    - {name: synced_at, type: datetime, label: Synced At, in_list: true}
+  list: {columns: [email, status, synced_at], sort: email asc}
 
 - name: EmailAccount
   label: Email Account

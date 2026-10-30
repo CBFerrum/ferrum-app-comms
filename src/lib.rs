@@ -6,6 +6,7 @@
 mod account;
 mod calendar;
 mod chat;
+mod hosted;
 pub mod ics;
 pub mod inbound;
 mod mail;
@@ -41,6 +42,8 @@ pub fn register(hooks: &mut HookRegistry) {
         .register("ChatChannel", Arc::new(chat::ChannelHook))
         .register("ChatMessage", Arc::new(chat::MessageHook))
         .register("CalendarEvent", Arc::new(calendar::EventHook))
+        .register("CommsSettings", Arc::new(hosted::SettingsHook))
+        .register("HostedMailbox", Arc::new(hosted::MailboxHook))
         .add_event_sink(Arc::new(mail::MailSink))
         .add_site("comms", Arc::new(site::CommsSite));
 }
@@ -56,7 +59,8 @@ pub async fn maintenance(k: &Kernel) -> Result<()> {
 }
 
 /// [`maintenance`] reading mailboxes through `mailboxes` (tests pass a fake mailbox). Per tenant:
-/// retry due mail, poll due IMAP accounts, send newsletter batches, announce reminders, purge.
+/// retry due mail, poll due IMAP accounts, send newsletter batches, announce reminders, keep hosted
+/// mailboxes in step, purge.
 /// A failing step is logged and does not stop the others; the first error is returned.
 pub async fn maintenance_with(k: &Kernel, mailboxes: &dyn MailboxConnector) -> Result<()> {
     let mut tx = k.db.system_tx().await?;
@@ -77,6 +81,7 @@ pub async fn maintenance_with(k: &Kernel, mailboxes: &dyn MailboxConnector) -> R
             ("mail polling", inbound::poll_due(k, tenant, mailboxes, POLL_BUDGET).await),
             ("newsletters", newsletter::run(k, tenant, SEND_BUDGET).await),
             ("reminders", calendar::fire_reminders(k, tenant).await),
+            ("hosted mail", hosted::reconcile_due(k, tenant).await.map(|_| 0)),
             ("purge", purge(k, tenant).await),
         ];
         for (step, outcome) in steps {
