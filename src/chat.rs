@@ -183,6 +183,21 @@ async fn readable_channel(tx: &mut Tx, ctx: &Ctx, channel: Uuid) -> Result<Chann
     }
 }
 
+/// What a call in a channel the caller may read is called: "#name", or the other person of a
+/// direct message.
+pub(crate) async fn call_title(tx: &mut Tx, ctx: &Ctx, channel: Uuid) -> Result<String> {
+    let c = readable_channel(tx, ctx, channel).await?;
+    if c.archived {
+        return Err(Error::invalid("this channel is archived"));
+    }
+    if c.kind != "Direct" {
+        return Ok(c.label());
+    }
+    let others: Vec<String> = member_emails(&c).into_iter().filter(|m| !m.eq_ignore_ascii_case(&ctx.email)).collect();
+    let name = util::users(tx, ctx.tenant, &others).await?.into_iter().map(|u| u.full_name).find(|n| !n.trim().is_empty());
+    Ok(name.or_else(|| others.into_iter().next()).unwrap_or_else(|| c.label()))
+}
+
 /// Pushes a chat event to these members' open apps (at commit).
 async fn push(tx: &mut Tx, tenant: Uuid, emails: &[String], data: Value) -> Result<()> {
     for u in util::users(tx, tenant, emails).await? {
