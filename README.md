@@ -288,7 +288,7 @@ CHANGELOG.md  what changed in each version
 | **0.7.4** | The bar's search finds chat messages (`shell.search`): those in public channels and in the person's own, each opening its conversation. `GET … |
 | **0.7.3** | Pop out in a browser that says it floats videos but cannot float a call's (a camera stream): the person is told so in plain words and the button … |
 | **0.7.2** | Calls pop out: in a meeting, Pop out puts the call in a small window that stays above every other (Document Picture-in-Picture: a shared screen … |
-| **0.7.1** | Depends on the platform's `contacts` : every workspace with Comms has the shared contacts and addresses, without CRM. Comms users read them, so … |
+| **0.7.1** | Depends on the platform's `contacts`: every workspace with Comms has the shared contacts and addresses, without CRM. Comms users read them, so … |
 
 Every version is in [CHANGELOG.md](CHANGELOG.md).
 
