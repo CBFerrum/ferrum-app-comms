@@ -583,7 +583,7 @@ async fn post(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, Value>) ->
     let title = util::cut(&format!("{who} mentioned you in {}", c.label()), 200);
     let snippet = util::cut(&text, 200);
     for u in util::users(&mut tx, ctx.tenant, &mentioned).await? {
-        notify::send(&mut tx, ctx.tenant, u.id, &title, Some(&snippet), Some("ChatMessage"), Some(message)).await?;
+        notify::send_kind(&mut tx, ctx.tenant, u.id, "comms.mention", "inapp", &title, Some(&snippet), Some("ChatMessage"), Some(message)).await?;
     }
     let out = message_json(&mut tx, ctx.tenant, message).await?;
     tx.commit().await?;

@@ -923,8 +923,27 @@ async fn scenario() {
     assert_eq!(busy["busy"]["bob@acme.test"].as_array().unwrap().len(), 4);
     assert!(busy["busy"]["carol@acme.test"].as_array().unwrap().is_empty());
     assert!(busy["busy"]["alice@acme.test"][0].get("subject").is_none(), "no details in free/busy");
+    // Home's My work: the invitation Bob has not answered, its next occurrence, opening in Calendar.
+    let waiting = t.ok(bob, "GET", "/calendar/invitations", &[], Value::Null).await;
+    let items = waiting["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "one per series: {waiting}");
+    assert_eq!(items[0]["title"], json!("Partner sync; Q4, plans"));
+    assert!(items[0]["url"].as_str().unwrap().starts_with(&format!("/calendar/?event={event_id}&at=")), "{waiting}");
+    assert!(items[0]["subtitle"].as_str().unwrap().ends_with("from Alice Rao"), "{waiting}");
+    assert!(t.ok(alice, "GET", "/calendar/invitations", &[], Value::Null).await["items"].as_array().unwrap().is_empty(), "the organizer has nothing to answer");
+    let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
+    let kinds: Vec<String> =
+        sqlx::query_scalar("select kind from notification where tenant_id = $1 and user_id = $2 and title like 'Invitation: Partner sync%'")
+            .bind(t.tenant)
+            .bind(bob.user)
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(kinds, vec!["comms.invitation".to_string()], "a kind people can choose for");
     assert_eq!(t.ok(bob, "POST", &format!("/calendar/events/{event_id}/rsvp"), &[], json!({"response": "Accepted"})).await["response"], json!("Accepted"));
     assert_eq!(t.notifications(alice, "Bob Shah accepted: Partner sync%").await, 1);
+    assert!(t.ok(bob, "GET", "/calendar/invitations", &[], Value::Null).await["items"].as_array().unwrap().is_empty(), "answered");
     refused(t.call(Some(carol), "POST", &format!("/calendar/events/{event_id}/rsvp"), &[], json!({"response": "Accepted"})).await, "not found");
     let mails_after_rsvp = smtp.count();
     t.drain().await;

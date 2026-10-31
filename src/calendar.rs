@@ -309,7 +309,18 @@ impl DocHook for EventHook {
             };
             match colleagues.get(email) {
                 Some(user) if *email != me && *email != owner => {
-                    notify::send(hc.tx, hc.ctx.tenant, *user, &util::cut(&title, 200), Some(&when), Some("CalendarEvent"), Some(event)).await?;
+                    notify::send_kind(
+                        hc.tx,
+                        hc.ctx.tenant,
+                        *user,
+                        "comms.invitation",
+                        "inapp",
+                        &util::cut(&title, 200),
+                        Some(&when),
+                        Some("CalendarEvent"),
+                        Some(event),
+                    )
+                    .await?;
                 }
                 Some(_) => {}
                 None => queue_invitation(hc, doc, email, if cancelled_now { "CANCEL" } else { "REQUEST" }, !invited).await?,
@@ -344,7 +355,18 @@ impl DocHook for EventHook {
         for email in emails {
             match colleagues.get(&email) {
                 Some(user) if email != me => {
-                    notify::send(hc.tx, hc.ctx.tenant, *user, &util::cut(&format!("Cancelled: {subject}"), 200), Some(&when(doc)), None, Some(event)).await?;
+                    notify::send_kind(
+                        hc.tx,
+                        hc.ctx.tenant,
+                        *user,
+                        "comms.invitation",
+                        "inapp",
+                        &util::cut(&format!("Cancelled: {subject}"), 200),
+                        Some(&when(doc)),
+                        None,
+                        Some(event),
+                    )
+                    .await?;
                 }
                 Some(_) => {}
                 None => queue_invitation(hc, doc, &email, "CANCEL", false).await?,
@@ -461,6 +483,47 @@ async fn my_calendar(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> 
     Ok(json!({"from": util::ts(from), "to": util::ts(to), "occurrences": out}))
 }
 
+/// How far ahead Home's My work looks for invitations to answer.
+const INVITATIONS_DAYS: i64 = 60;
+
+/// `GET /calendar/invitations`: events I am invited to and have not answered, from now to
+/// [`INVITATIONS_DAYS`] ahead, each with its next occurrence: what Home's My work shows from
+/// Calendar (`shell.work`). `{items: [{title, subtitle, url, due, updated_at}]}`.
+async fn invitations(k: &Kernel, ctx: &Ctx) -> Result<Value> {
+    let me = ctx.email.to_lowercase();
+    let (from, to) = (Utc::now(), Utc::now() + Duration::days(INVITATIONS_DAYS));
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let events = events_of(&mut tx, ctx.tenant, &me, from, to, false, false).await?;
+    let mut items = Vec::new();
+    for (doc, response) in events {
+        if response.as_deref() != Some("Needs Action") || lower(s(&doc, "owner")) == me || s(&doc, "status") == Some("Cancelled") {
+            continue;
+        }
+        let Some(sr) = series(&doc) else { continue };
+        let Some((start, end)) = recur::occurrences(&sr, from, to).into_iter().next() else { continue };
+        let owner = s(&doc, "owner").unwrap_or_default().to_string();
+        let by = display_name(&mut tx, ctx.tenant, &owner).await?.unwrap_or(owner);
+        let mut at = doc.clone();
+        at.insert("starts_at".into(), json!(util::ts(start)));
+        at.insert("ends_at".into(), json!(util::ts(end)));
+        // The date as the event's own time zone has it (UTC without one).
+        let tz = s(&doc, "timezone").and_then(ics::zone);
+        let day = tz.map(|z| start.with_timezone(&z).date_naive()).unwrap_or_else(|| start.date_naive());
+        items.push(json!({
+            "title": s(&doc, "subject").filter(|t| !t.trim().is_empty()).unwrap_or("(no subject)"),
+            "subtitle": format!("{} · from {by}", when(&at)),
+            "url": format!("/calendar/?event={}&at={}", s(&doc, "id").unwrap_or_default(), util::ts(start)),
+            "due": day.to_string(),
+            "updated_at": doc.get("updated_at"),
+        }));
+        if items.len() >= 50 {
+            break;
+        }
+    }
+    tx.commit().await?;
+    Ok(json!({"items": items}))
+}
+
 /// Merges overlapping intervals.
 fn merge(mut v: Vec<(DateTime<Utc>, DateTime<Utc>)>) -> Vec<(DateTime<Utc>, DateTime<Utc>)> {
     v.sort();
@@ -532,7 +595,7 @@ pub(crate) async fn rsvp(k: &Kernel, ctx: &Ctx, event: Uuid, body: Map<String, V
             _ => "has not decided on",
         };
         let title = util::cut(&format!("{who} {verb}: {}", s(&doc, "subject").unwrap_or_default()), 200);
-        notify::send(&mut tx, ctx.tenant, user, &title, None, Some("CalendarEvent"), Some(event)).await?;
+        notify::send_kind(&mut tx, ctx.tenant, user, "comms.rsvp", "inapp", &title, None, Some("CalendarEvent"), Some(event)).await?;
     }
     tx.commit().await?;
     Ok(json!({"event": event, "response": response}))
@@ -750,7 +813,18 @@ pub async fn fire_reminders(k: &Kernel, tenant: Uuid) -> Result<usize> {
                     occurrence.insert("ends_at".into(), json!(util::ts(start + (sr.end - sr.start))));
                     let title = util::cut(&format!("Reminder: {}", s(&doc, "subject").unwrap_or("(no title)")), 200);
                     for u in util::users(&mut tx, tenant, &people).await? {
-                        notify::send(&mut tx, tenant, u.id, &title, Some(&when(&occurrence)), Some("CalendarEvent"), Some(event)).await?;
+                        notify::send_kind(
+                            &mut tx,
+                            tenant,
+                            u.id,
+                            "comms.reminder",
+                            "inapp",
+                            &title,
+                            Some(&when(&occurrence)),
+                            Some("CalendarEvent"),
+                            Some(event),
+                        )
+                        .await?;
                     }
                     fired += 1;
                 }
@@ -769,6 +843,7 @@ fn uuid(seg: &str) -> Result<Uuid> {
 pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> Result<SiteResponse> {
     let out = match (req.method.as_str(), path) {
         ("GET", ["events"]) => my_calendar(k, ctx, req).await?,
+        ("GET", ["invitations"]) => invitations(k, ctx).await?,
         ("POST", ["freebusy"]) => free_busy(k, ctx, util::body_json(req)?).await?,
         ("POST", ["events", e, "rsvp"]) => rsvp(k, ctx, uuid(e)?, util::body_json(req)?).await?,
         (m, ["feed"]) => feed_token(k, ctx, m).await?,
