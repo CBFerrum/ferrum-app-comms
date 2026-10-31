@@ -41,6 +41,8 @@ tracing = "0.1"
 uuid = { version = "1.10", features = ["v4", "v7", "serde"] }
 
 [dev-dependencies]
+# Its tests run on ERP's records (customers, invoices, the ledger).
+ferrum-app-erp = { git = "https://github.com/CBFerrum/ferrum-app-erp", branch = "main" }
 ferrum-apps = { git = "https://github.com/CBFerrum/Ferrum", branch = "main" }
 
 [lints.clippy]
