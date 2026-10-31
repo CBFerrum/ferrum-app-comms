@@ -1,6 +1,6 @@
 id: comms
 name: Mail, Chat and Calendar
-version: 0.7.4
+version: 0.7.5
 publisher: cbferrum
 summary: Email accounts (SMTP/IMAP), threaded communications on any record, templates, newsletters, team chat, calendars with ICS and calendar-app sync, contacts sync and video meetings
 description: README.md
@@ -44,5 +44,17 @@ contributes:
   # The bar's search asks Chat for the messages the person may read (Ferrum apps-ui.md §12.8).
   shell.search:
     - {id: chat, title: Chat, endpoint: /api/app/comms/chat/search}
+  # Home's My work asks Calendar for the invitations to answer (Ferrum apps-ui.md §11.8).
+  shell.work:
+    - {id: invitations, title: Invitations, endpoint: /api/app/comms/calendar/invitations}
+  # The kinds of notification Comms sends ({app}.{id}, as src/ sends them, with these defaults);
+  # each person chooses how each reaches them (Ferrum apps-ui.md §12.8).
+  shell.notification:
+    - {id: invitation, label: Calendar invitations and changes to them, default: [inapp]}
+    - {id: rsvp, label: Answers to your invitations, default: [inapp]}
+    - {id: reminder, label: Event reminders, default: [inapp]}
+    - {id: mention, label: Someone mentions you in Chat, default: [inapp]}
+    - {id: reply, label: Replies to email you sent, default: [inapp]}
+    - {id: undelivered, label: Email you sent that could not be delivered, default: [inapp]}
   shell.public:
     - {id: guest, path: meet/guest, title: Meeting}

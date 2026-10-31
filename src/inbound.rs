@@ -341,7 +341,7 @@ async fn store(k: &Kernel, ctx: &Ctx, raw: &[u8], truncated: bool, account: Opti
         {
             let who = mail.from.as_ref().map(|f| f.0.clone().unwrap_or_else(|| f.1.clone())).unwrap_or_default();
             let title = util::cut(&format!("Reply from {who}: {}", mail.subject), 200);
-            notify::send(&mut tx, tenant, *user, &title, Some(&util::cut(&text, 300)), Some("Communication"), Some(comm)).await?;
+            notify::send_kind(&mut tx, tenant, *user, "comms.reply", "inapp", &title, Some(&util::cut(&text, 300)), Some("Communication"), Some(comm)).await?;
         }
         tx.commit().await?;
         Ok(Ingested::Created(comm))

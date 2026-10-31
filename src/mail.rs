@@ -678,7 +678,18 @@ async fn record(
     if let Some(user) = creator {
         if status == "Failed" {
             let title = format!("Email not delivered: {}", s(doc, "subject").unwrap_or("(no subject)"));
-            notify::send(&mut tx, tenant, user, &util::cut(&title, 200), error.as_deref(), Some("Communication"), Some(comm)).await?;
+            notify::send_kind(
+                &mut tx,
+                tenant,
+                user,
+                "comms.undelivered",
+                "inapp",
+                &util::cut(&title, 200),
+                error.as_deref(),
+                Some("Communication"),
+                Some(comm),
+            )
+            .await?;
         }
         notify::push(&mut tx, tenant, user, "mail", json!({"communication": comm, "status": status})).await?;
     }

@@ -5,7 +5,8 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CalendarDays, ChevronLeft, ChevronRight, MapPin, Plus, Repeat, Video } from "lucide-react";
-import { useCallback, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent } from "react";
+import { useSearchParams } from "react-router";
 import { Badge } from "@ferrum/kit/primitives";
 import { Button } from "@ferrum/kit/primitives";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@ferrum/kit/primitives";
@@ -61,7 +62,14 @@ function savedView(): View {
 export function CalendarPage() {
   const qc = useQueryClient();
   const [view, setViewState] = useState<View>(savedView);
-  const [anchor, setAnchor] = useState(() => new Date());
+  // A link to an event (`?event={id}&at={start}`: Home's My work, a notification) opens it.
+  const [params, setParams] = useSearchParams();
+  const wanted = params.get("event");
+  const wantedAt = params.get("at");
+  const [anchor, setAnchor] = useState(() => {
+    const at = wantedAt ? new Date(wantedAt) : null;
+    return at && !Number.isNaN(at.getTime()) ? at : new Date();
+  });
   const [open, setOpen] = useState<Occurrence | null>(null);
   const grid = useMemo(() => monthGrid(anchor), [anchor]);
   const week = useMemo(() => weekOf(anchor), [anchor]);
@@ -75,6 +83,21 @@ export function CalendarPage() {
   const refresh = useCallback(() => void qc.invalidateQueries({ queryKey: ["calendar"] }), [qc]);
   useLiveEntity("CalendarEvent", refresh);
   const list = useMemo(() => events.data?.occurrences ?? [], [events.data]);
+  useEffect(() => {
+    if (!wanted || !events.data) return;
+    const at = wantedAt ? new Date(wantedAt).getTime() : NaN;
+    const o = list.find((x) => x.event === wanted && new Date(x.start).getTime() === at) ?? list.find((x) => x.event === wanted);
+    if (o) setOpen(o);
+    else toast("That event is not in your calendar any more", "info");
+    setParams(
+      (p) => {
+        p.delete("event");
+        p.delete("at");
+        return p;
+      },
+      { replace: true },
+    );
+  }, [wanted, wantedAt, events.data, list, setParams]);
   const days = useMemo(() => byDay(list), [list]);
   const today = isoDay(new Date());
   const setView = (v: View) => {
