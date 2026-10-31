@@ -131,6 +131,7 @@ mod tests {
     #[test]
     fn packages_are_valid() {
         let mut all = ferrum_domain::packages().expect("platform packages");
+        all.extend(ferrum_app_erp::packages().expect("ERP's packages"));
         all.extend(super::packages().expect("app packages"));
         let catalog = ferrum_meta::Catalog::from_packages(all).unwrap_or_else(|e| panic!("{e}"));
         let schema = ferrum_meta::effective::build(&catalog, &["comms".to_string()], &[], 1).unwrap_or_else(|e| panic!("{e}"));

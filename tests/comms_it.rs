@@ -214,6 +214,7 @@ async fn fresh_kernel(mailer: TestMailer) -> Arc<Kernel> {
     sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
     // Only this package and what it depends on: other packages' work in progress cannot break it.
     let mut packages = ferrum_domain::packages().expect("platform packages");
+    packages.extend(ferrum_app_erp::packages().expect("ERP's packages"));
     packages.extend(ferrum_app_comms::packages().expect("app packages"));
     let catalog = Catalog::from_packages(packages).expect("catalog");
     let mut hooks = HookRegistry::default();
