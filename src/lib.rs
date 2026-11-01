@@ -7,6 +7,7 @@ mod account;
 mod calendar;
 mod chat;
 mod dav;
+mod dns;
 mod groups;
 mod hosted;
 pub mod ics;

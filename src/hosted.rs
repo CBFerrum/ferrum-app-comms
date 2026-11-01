@@ -308,12 +308,25 @@ fn plan(people: &[Person], domain: &str, accounts: &BTreeMap<Uuid, String>, kept
 }
 
 /// The workspace's mail domain, when hosted mail is on for it.
-async fn mail_domain(k: &Kernel, tenant: Uuid) -> Result<Option<String>> {
+pub(crate) async fn mail_domain(k: &Kernel, tenant: Uuid) -> Result<Option<String>> {
     let mut tx = k.db.tenant_tx(tenant).await?;
     let d: Option<Option<String>> =
         sqlx::query_scalar("select mail_domain from e_comms_settings where tenant_id = $1 limit 1").bind(tenant).fetch_optional(&mut *tx).await?;
     tx.commit().await?;
     Ok(d.flatten().map(|d| d.trim().trim_start_matches('@').to_ascii_lowercase()).filter(|d| !d.is_empty()))
+}
+
+/// The DNS records the mail server wants published for `domain`, as the zone file it keeps for it
+/// (the domain's `dnsZoneFile`); none when hosted mail is not set up or it does not know the domain.
+pub(crate) async fn zone_file(k: &Kernel, domain: &str) -> Result<Option<String>> {
+    if configured().is_none() {
+        return Ok(None);
+    }
+    let admin = Admin::connect(k).await?;
+    let found = admin.jmap(k, vec![("x:Domain/query", json!({"filter": {"name": domain}}))]).await?;
+    let Some(id) = found[0]["ids"].get(0).and_then(Value::as_str) else { return Ok(None) };
+    let got = admin.jmap(k, vec![("x:Domain/get", json!({"ids": [id], "properties": ["name", "dnsZoneFile"]}))]).await?;
+    Ok(got[0]["list"].get(0).and_then(|d| d["dnsZoneFile"].as_str()).map(String::from))
 }
 
 /// Brings the mail server in step with the workspace's people, shared mailboxes and distribution

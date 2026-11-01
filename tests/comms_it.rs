@@ -395,6 +395,10 @@ async fn scenario() {
 
     // ───────────── settings and an account whose passwords are write-only ─────────────
     k.insert(mgr, "CommsSettings", obj(json!({"public_url": "https://erp.acme.test/", "newsletter_hourly_limit": 2, "max_send_attempts": 3}))).await.unwrap();
+    // The mail domain's health is for managers, and says plainly that there is no domain to check yet.
+    let health = t.ok(mgr, "GET", "/domain", &[], Value::Null).await;
+    assert_eq!((health["domain"].clone(), health["hosted"].clone()), (Value::Null, json!(false)));
+    refused(t.call(Some(alice), "GET", "/domain", &[], Value::Null).await, "forbidden");
     let account = k
         .insert(
             mgr,
