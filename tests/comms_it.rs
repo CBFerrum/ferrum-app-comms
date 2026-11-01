@@ -863,6 +863,80 @@ async fn scenario() {
     t.ok(bob, "POST", &format!("/chat/channels/{general}/messages"), &[], json!({"body": "hi all"})).await;
     refused(t.call(Some(dave), "GET", "/chat/channels", &[], Value::Null).await, "forbidden");
 
+    // ───────────── chat: who is told, what is unread, who may post, finding a message ─────────────
+    let counts = |v: &Value, id: Uuid, key: &str| v["channels"].as_array().unwrap().iter().find(|c| c["id"] == json!(id)).map(|c| c[key].clone());
+    let list = async |who: &Ctx| t.ok(who, "GET", "/chat/channels", &[], Value::Null).await;
+    // A direct message tells the other person, and a reply tells the people of the thread, not its writer.
+    assert_eq!(t.notifications(bob, "Alice Rao sent you a message").await, 1);
+    assert_eq!(t.notifications(alice, "Bob Shah replied in a thread in #deals").await, 1);
+    assert_eq!(t.notifications(alice, "Alice Rao%").await, 0, "nobody is told of their own messages");
+    // Joining starts from now: the history is not a count of unread.
+    t.ok(mgr, "POST", &format!("/chat/channels/{general}/join"), &[], Value::Null).await;
+    assert_eq!(counts(&list(mgr).await, general, "unread"), Some(json!(0)));
+    t.ok(carol, "POST", &format!("/chat/channels/{general}/messages"), &[], json!({"body": "welcome, Meera"})).await;
+    assert_eq!(counts(&list(mgr).await, general, "unread"), Some(json!(1)));
+    assert_eq!(t.notifications(mgr, "Carol Diaz in #general").await, 0, "a channel tells only those who chose to hear everything");
+    t.ok(mgr, "PUT", &format!("/chat/channels/{general}/notify"), &[], json!({"level": "All"})).await;
+    t.ok(carol, "POST", &format!("/chat/channels/{general}/messages"), &[], json!({"body": "second"})).await;
+    assert_eq!(t.notifications(mgr, "Carol Diaz in #general").await, 1);
+    refused(t.call(Some(mgr), "PUT", &format!("/chat/channels/{general}/notify"), &[], json!({"level": "Loud"})).await, "invalid");
+    refused(t.call(Some(carol), "PUT", &format!("/chat/channels/{deals_id}/notify"), &[], json!({"level": "All"})).await, "not found");
+    // Replies in a thread alice started are hers to read; a mention counts apart.
+    t.ok(alice, "POST", &format!("/chat/channels/{deals_id}/read"), &[], Value::Null).await;
+    assert_eq!(counts(&list(alice).await, deals_id, "unread"), Some(json!(0)));
+    t.ok(bob, "POST", &format!("/chat/channels/{deals_id}/messages"), &[], json!({"body": "Ready", "parent": hello_id})).await;
+    let ping = uid(&t.ok(bob, "POST", &format!("/chat/channels/{deals_id}/messages"), &[], json!({"body": "ping <@alice@acme.test>"})).await);
+    let l = list(alice).await;
+    assert_eq!((counts(&l, deals_id, "unread"), counts(&l, deals_id, "unread_mentions")), (Some(json!(2)), Some(json!(1))));
+    assert_eq!(t.notifications(alice, "Bob Shah mentioned you in #deals").await, 1);
+    // Mark unread from a message, and everything read at once.
+    t.ok(alice, "POST", &format!("/chat/channels/{deals_id}/read"), &[], Value::Null).await;
+    t.ok(alice, "POST", &format!("/chat/channels/{deals_id}/read"), &[], json!({"unread_from": ping})).await;
+    let l = list(alice).await;
+    assert_eq!((counts(&l, deals_id, "unread"), counts(&l, deals_id, "unread_mentions")), (Some(json!(1)), Some(json!(1))));
+    assert_eq!(t.ok(alice, "POST", "/chat/read-all", &[], Value::Null).await["channels"], json!(2));
+    assert_eq!(counts(&list(alice).await, deals_id, "unread"), Some(json!(0)));
+    // Who may post: owners only starts posts; members still reply.
+    let owners = t.ok(alice, "PATCH", &format!("/chat/channels/{deals_id}"), &[], json!({"post_policy": "Owners"})).await;
+    assert_eq!(owners["post_policy"], json!("Owners"));
+    refused(t.call(Some(bob), "POST", &format!("/chat/channels/{deals_id}/messages"), &[], json!({"body": "announce"})).await, "forbidden");
+    t.ok(bob, "POST", &format!("/chat/channels/{deals_id}/messages"), &[], json!({"body": "a reply", "parent": hello_id})).await;
+    t.ok(alice, "POST", &format!("/chat/channels/{deals_id}/messages"), &[], json!({"body": "announcement"})).await;
+    refused(t.call(Some(bob), "PATCH", &format!("/chat/channels/{deals_id}"), &[], json!({"post_policy": "Members"})).await, "forbidden");
+    t.ok(alice, "PATCH", &format!("/chat/channels/{deals_id}"), &[], json!({"post_policy": "Members"})).await;
+    // Owners: promote, demote, and never none.
+    let role = |c: &Value, who: &str| c["members"].as_array().unwrap().iter().find(|m| m["email"] == json!(who)).map(|m| m["role"].clone());
+    let promoted = t.ok(alice, "POST", &format!("/chat/channels/{deals_id}/members"), &[], json!({"promote": ["bob@acme.test"]})).await;
+    assert_eq!((role(&promoted, "bob@acme.test"), role(&promoted, "alice@acme.test")), (Some(json!("Owner")), Some(json!("Owner"))));
+    let demoted = t.ok(bob, "POST", &format!("/chat/channels/{deals_id}/members"), &[], json!({"demote": ["alice@acme.test"]})).await;
+    assert_eq!(role(&demoted, "alice@acme.test"), Some(json!("Member")));
+    refused(t.call(Some(bob), "POST", &format!("/chat/channels/{deals_id}/members"), &[], json!({"demote": ["bob@acme.test"]})).await, "invalid");
+    refused(t.call(Some(alice), "POST", &format!("/chat/channels/{deals_id}/members"), &[], json!({"add": ["mgr@acme.test"]})).await, "forbidden");
+    // Muted, a channel stays quiet except for a mention by name.
+    t.ok(bob, "PUT", &format!("/chat/channels/{deals_id}/notify"), &[], json!({"level": "Nothing"})).await;
+    t.ok(alice, "POST", &format!("/chat/channels/{deals_id}/messages"), &[], json!({"body": "late reply", "parent": hello_id})).await;
+    assert_eq!(t.notifications(bob, "Alice Rao replied in a thread in #deals").await, 0);
+    t.ok(alice, "POST", &format!("/chat/channels/{deals_id}/messages"), &[], json!({"body": "but <@bob@acme.test>, you"})).await;
+    assert_eq!(t.notifications(bob, "Alice Rao mentioned you in #deals").await, 2);
+    // A message is found in its place, and a channel searched on its own.
+    let all = t.ok(bob, "GET", &format!("/chat/channels/{general}/messages"), &[("limit", "50")], Value::Null).await;
+    let note = |n: &str| uid(all["messages"].as_array().unwrap().iter().find(|m| m["body"] == json!(n)).unwrap());
+    let window = t.ok(bob, "GET", &format!("/chat/channels/{general}/messages"), &[("around", &note("note 1").to_string()), ("limit", "2")], Value::Null).await;
+    let bodies: Vec<&str> = window["messages"].as_array().unwrap().iter().map(|m| m["body"].as_str().unwrap()).collect();
+    assert_eq!(
+        (bodies, window["newer"].clone(), window["target"]["body"].clone(), window["next_cursor"].clone()),
+        (vec!["note 2", "note 1", "note 0"], json!(true), json!("note 1"), Value::Null)
+    );
+    refused(t.call(Some(carol), "GET", &format!("/chat/channels/{deals_id}/messages"), &[("around", &hello_id.to_string())], Value::Null).await, "not found");
+    refused(t.call(Some(bob), "GET", &format!("/chat/channels/{general}/messages"), &[("around", &hello_id.to_string())], Value::Null).await, "not found");
+    assert_eq!(t.ok(bob, "GET", &format!("/chat/messages/{ping}"), &[], Value::Null).await["body"], json!("ping <@alice@acme.test>"));
+    refused(t.call(Some(carol), "GET", &format!("/chat/messages/{ping}"), &[], Value::Null).await, "not found");
+    let found = async |q: &str, channel: Uuid| t.ok(bob, "GET", "/chat/search", &[("q", q), ("channel", &channel.to_string())], Value::Null).await;
+    assert_eq!(found("note", general).await["messages"].as_array().unwrap().len(), 3);
+    assert!(found("note", deals_id).await["messages"].as_array().unwrap().is_empty());
+    let hit = found("Ready", deals_id).await;
+    assert_eq!(hit["results"][0]["url"], json!(format!("/chat/{deals_id}?m={}", hit["messages"][0]["id"].as_str().unwrap())));
+
     // ───────────── calendar: invitations, privacy, RSVP, free/busy, reminders once, feeds ─────────────
     let soon = chrono::Utc::now() + chrono::Duration::minutes(10);
     let iso = |t: chrono::DateTime<chrono::Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
@@ -1112,7 +1186,7 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
         (json!(3), json!(1), json!("33.33"))
     );
     let chats = report(&admin, "chat_activity").await.unwrap();
-    assert!(chats["rows"].as_array().unwrap().iter().any(|r| r["channel"] == json!("#general") && r["messages"] == json!(4)), "{chats}");
+    assert!(chats["rows"].as_array().unwrap().iter().any(|r| r["channel"] == json!("#general") && r["messages"] == json!(6)), "{chats}");
     refused(report(alice, "chat_activity").await, "forbidden");
 
     // Nothing is left in the outbox that failed.

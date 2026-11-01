@@ -3,14 +3,17 @@
 //! 404 — while public channels can be read and joined by every chat user. Writes go through the
 //! document pipeline with the caller's identity (audit trail, outbox), so the generic API stays
 //! the moderation tool of chat administrators. New, edited and deleted messages are pushed to
-//! every member's open apps (`notify::push`, kind `chat`); @mentions also notify.
+//! every member's open apps (`notify::push`, kind `chat`). People are told in the bar of what is for
+//! them: @mentions, direct messages, replies in threads they take part in, and, where a member
+//! chose it, every message of a channel (kinds `comms.mention`, `direct`, `thread`, `channel`).
 
 use crate::util::{self, id, rows, s};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use ferrum_kernel::{Ctx, Doc, DocHook, Error, FieldError, HookCtx, Kernel, Result, SiteRequest, SiteResponse, Tx, notify};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
 use uuid::Uuid;
 
@@ -136,18 +139,56 @@ impl DocHook for MessageHook {
 
 // ───────────────────────────── channels ─────────────────────────────
 
+/// How loud a channel is for one member (`ChatChannelMember.notify_level`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Loud {
+    /// Every message tells them.
+    All,
+    /// Mentions, and replies in threads they take part in.
+    Mentions,
+    /// Nothing: the channel is muted (only a mention by name still reaches them).
+    Nothing,
+}
+
+impl Loud {
+    /// The member's choice, else what the kind of channel suggests: a direct message tells, a
+    /// channel waits for a mention.
+    fn of(chosen: Option<&str>, kind: &str) -> Loud {
+        match chosen {
+            Some("All") => Loud::All,
+            Some("Mentions") => Loud::Mentions,
+            Some("Nothing") => Loud::Nothing,
+            _ if kind == "Direct" => Loud::All,
+            _ => Loud::Mentions,
+        }
+    }
+}
+
+struct Member {
+    email: String,
+    role: String,
+    notify: Option<String>,
+}
+
 struct Channel {
     id: Uuid,
     name: String,
     kind: String,
     archived: bool,
-    /// (email, role)
-    members: Vec<(String, String)>,
+    /// Only owners start posts (members still reply in threads).
+    owners_post: bool,
+    members: Vec<Member>,
 }
 
 impl Channel {
+    fn member(&self, email: &str) -> Option<&Member> {
+        self.members.iter().find(|m| m.email.eq_ignore_ascii_case(email))
+    }
     fn role(&self, email: &str) -> Option<&str> {
-        self.members.iter().find(|(m, _)| m.eq_ignore_ascii_case(email)).map(|(_, r)| r.as_str())
+        self.member(email).map(|m| m.role.as_str())
+    }
+    fn loud(&self, email: &str) -> Loud {
+        Loud::of(self.member(email).and_then(|m| m.notify.as_deref()), &self.kind)
     }
     fn readable(&self, ctx: &Ctx) -> bool {
         self.kind == "Public" || self.role(&ctx.email).is_some()
@@ -158,21 +199,22 @@ impl Channel {
 }
 
 async fn load_channel(tx: &mut Tx, tenant: Uuid, channel: Uuid) -> Result<Option<Channel>> {
-    let row: Option<(String, String, bool)> =
-        sqlx::query_as("select channel_name, channel_type, archived from e_chat_channel where tenant_id = $1 and id = $2")
+    let row: Option<(String, String, bool, Option<String>)> =
+        sqlx::query_as("select channel_name, channel_type, archived, post_policy from e_chat_channel where tenant_id = $1 and id = $2")
             .bind(tenant)
             .bind(channel)
             .fetch_optional(&mut **tx)
             .await?;
-    let Some((name, kind, archived)) = row else { return Ok(None) };
-    let members: Vec<(String, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "select member::text, coalesce(role, 'Member') from {MEMBERS} where tenant_id = $1 and parent_id = $2 order by idx"
+    let Some((name, kind, archived, policy)) = row else { return Ok(None) };
+    let members: Vec<(String, String, Option<String>)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "select member::text, coalesce(role, 'Member'), notify_level from {MEMBERS} where tenant_id = $1 and parent_id = $2 order by idx"
     )))
     .bind(tenant)
     .bind(channel)
     .fetch_all(&mut **tx)
     .await?;
-    Ok(Some(Channel { id: channel, name, kind, archived, members }))
+    let members = members.into_iter().map(|(email, role, notify)| Member { email, role, notify }).collect();
+    Ok(Some(Channel { id: channel, name, kind, archived, owners_post: policy.as_deref() == Some("Owners"), members }))
 }
 
 /// A channel the caller may read; private and direct ones of others are "not found".
@@ -207,12 +249,13 @@ async fn push(tx: &mut Tx, tenant: Uuid, emails: &[String], data: Value) -> Resu
 }
 
 fn member_emails(c: &Channel) -> Vec<String> {
-    c.members.iter().map(|(m, _)| m.clone()).collect()
+    c.members.iter().map(|m| m.email.clone()).collect()
 }
 
 async fn channel_json(tx: &mut Tx, ctx: &Ctx, channel: Uuid) -> Result<Value> {
     let sql = format!(
         "select jsonb_build_object('id', c.id, 'name', c.channel_name, 'type', c.channel_type, 'topic', c.topic, 'archived', c.archived, \
+         'post_policy', coalesce(c.post_policy, 'Members'), 'notify_level', me.notify_level, \
          'last_message_at', {last}, 'role', me.role, 'last_read_at', {read}, \
          'title', case when c.channel_type = 'Direct' then (select coalesce(nullif(u.full_name, ''), o.member::text) from {MEMBERS} o \
             left join app_user u on u.tenant_id = o.tenant_id and lower(u.email::text) = o.member \
@@ -235,17 +278,26 @@ async fn channel_json(tx: &mut Tx, ctx: &Ctx, channel: Uuid) -> Result<Value> {
         .ok_or_else(|| Error::NotFound("Chat Channel".into()))
 }
 
-/// `GET /chat/channels[?include=public]`: my channels with unread counts and the last message;
-/// `include=public` adds public channels I can join.
+/// What counts as unread for the member `$2` of channel `c` whose member row is `me`: messages
+/// from others after the read marker, and replies from others in threads they started or
+/// answered in (a reply in a thread of someone else's, which they never joined, is not theirs).
+const UNREAD: &str = "from e_chat_message x where x.tenant_id = c.tenant_id and x.channel = c.id and not x.deleted and x.sender <> $2 \
+    and x.posted_at > coalesce(me.last_read_at, '-infinity'::timestamptz) \
+    and (x.parent_message is null or exists (select 1 from e_chat_message t where t.tenant_id = x.tenant_id and t.channel = x.channel and t.sender = $2 \
+        and (t.id = x.parent_message or t.parent_message = x.parent_message)))";
+
+/// `GET /chat/channels[?include=public]`: my channels with unread counts (and how many of them
+/// mention me) and the last message; `include=public` adds public channels I can join.
 async fn list_channels(k: &Kernel, ctx: &Ctx, include_public: bool) -> Result<Value> {
     let sql = format!(
         "select jsonb_build_object('id', c.id, 'name', c.channel_name, 'type', c.channel_type, 'topic', c.topic, 'archived', c.archived, \
+         'post_policy', coalesce(c.post_policy, 'Members'), 'notify_level', me.notify_level, \
          'role', me.role, 'last_read_at', {read}, 'last_message_at', {last}, \
          'title', case when c.channel_type = 'Direct' then (select coalesce(nullif(u.full_name, ''), o.member::text) from {MEMBERS} o \
             left join app_user u on u.tenant_id = o.tenant_id and lower(u.email::text) = o.member \
             where o.tenant_id = c.tenant_id and o.parent_id = c.id and o.member <> $2 limit 1) else c.channel_name end, \
-         'unread', case when me.id is null then 0 else (select count(*) from e_chat_message x where x.tenant_id = c.tenant_id and x.channel = c.id \
-            and x.parent_message is null and not x.deleted and x.sender <> $2 and x.posted_at > coalesce(me.last_read_at, '-infinity'::timestamptz)) end, \
+         'unread', case when me.id is null then 0 else (select count(*) {UNREAD}) end, \
+         'unread_mentions', case when me.id is null then 0 else (select count(*) {UNREAD} and x.mentions @> to_jsonb($2::text)) end, \
          'last_message', (select jsonb_build_object('id', x.id, 'sender', x.sender, 'body', left(x.body, 200), 'posted_at', {posted}) \
             from e_chat_message x where x.tenant_id = c.tenant_id and x.channel = c.id and x.parent_message is null and not x.deleted \
             order by x.posted_at desc limit 1)) \
@@ -361,7 +413,7 @@ fn owner_or_admin(c: &Channel, ctx: &Ctx) -> Result<()> {
     }
 }
 
-/// `PATCH /chat/channels/{id}` `{name?, topic?, archived?}` (owners).
+/// `PATCH /chat/channels/{id}` `{name?, topic?, archived?, type?: Public|Private, post_policy?: Members|Owners}` (owners).
 async fn update_channel(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, Value>) -> Result<Value> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let c = readable_channel(&mut tx, ctx, channel).await?;
@@ -370,22 +422,38 @@ async fn update_channel(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, 
         return Err(Error::invalid("direct conversations have no name, topic or archive"));
     }
     let mut patch = Doc::new();
-    for (from, to) in [("name", "channel_name"), ("topic", "topic"), ("archived", "archived")] {
+    for (from, to) in [("name", "channel_name"), ("topic", "topic"), ("archived", "archived"), ("type", "channel_type"), ("post_policy", "post_policy")] {
         if let Some(v) = body.get(from) {
             patch.insert(to.into(), v.clone());
         }
     }
+    if body.get("type").is_some_and(|t| !matches!(t.as_str(), Some("Public" | "Private"))) {
+        return Err(Error::field("type", "must be Public or Private"));
+    }
     let name = body.get("name").and_then(Value::as_str).unwrap_or(&c.name).to_string();
     k.update_tx(&util::elevated(ctx), &mut tx, "ChatChannel", channel, patch, None).await.map_err(|e| named_conflict(e, &name))?;
+    // Everyone who may read it hears of it: members now, and the public channel's other readers on their next look.
     push(&mut tx, ctx.tenant, &member_emails(&c), json!({"event": "channel_updated", "channel": channel})).await?;
     let out = channel_json(&mut tx, ctx, channel).await?;
     tx.commit().await?;
     Ok(out)
 }
 
-/// `POST /chat/channels/{id}/members` `{add?: [emails], remove?: [emails]}` (owners).
+/// A channel always has an owner: when the last one went, the first member becomes one.
+fn ensure_owner(rows: &mut [Value]) {
+    if !rows.iter().any(|r| r.get("role").and_then(Value::as_str) == Some("Owner"))
+        && let Some(Value::Object(next)) = rows.first_mut()
+    {
+        next.insert("role".into(), json!("Owner"));
+    }
+}
+
+/// `POST /chat/channels/{id}/members` `{add?: [emails], remove?: [emails], promote?: [emails],
+/// demote?: [emails]}` (owners). People added start with nothing unread; promoting makes an owner,
+/// demoting a member; the last owner cannot be demoted.
 async fn change_members(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, Value>) -> Result<Value> {
     let (add, remove) = (emails(body.get("add")), emails(body.get("remove")));
+    let (promote, demote) = (emails(body.get("promote")), emails(body.get("demote")));
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let c = readable_channel(&mut tx, ctx, channel).await?;
     owner_or_admin(&c, ctx)?;
@@ -395,13 +463,33 @@ async fn change_members(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, 
     let current: BTreeSet<String> = member_emails(&c).into_iter().collect();
     let added: Vec<String> = add.iter().filter(|e| !current.contains(*e)).cloned().collect();
     let removed: Vec<String> = remove.iter().filter(|e| current.contains(*e)).cloned().collect();
+    // Owners once this is done; demoting the last one would leave the channel without.
+    let stays_owner = |email: &str, role: &str| {
+        !removed.iter().any(|x| x == email) && (promote.iter().any(|x| x == email) || (role == "Owner" && !demote.iter().any(|x| x == email)))
+    };
+    let owners_left = c.members.iter().filter(|m| stays_owner(&m.email, &m.role)).count() + added.iter().filter(|e| promote.contains(e)).count();
+    if owners_left == 0 && !demote.is_empty() {
+        return Err(Error::invalid("a channel needs an owner: make someone else an owner first"));
+    }
+    let joined = util::ts(util::now());
     set_members(k, ctx, &mut tx, channel, |rows| {
         rows.retain(|r| !r.get("member").and_then(Value::as_str).is_some_and(|m| removed.iter().any(|x| x == m)));
-        rows.extend(added.iter().map(|e| json!({"member": e, "role": "Member"})));
+        rows.extend(added.iter().map(|e| json!({"member": e, "role": "Member", "last_read_at": joined})));
+        for r in rows.iter_mut().filter_map(Value::as_object_mut) {
+            let who = r.get("member").and_then(Value::as_str).unwrap_or_default().to_string();
+            if promote.contains(&who) {
+                r.insert("role".into(), json!("Owner"));
+            } else if demote.contains(&who) {
+                r.insert("role".into(), json!("Member"));
+            }
+        }
+        ensure_owner(rows);
     })
     .await?;
     push(&mut tx, ctx.tenant, &added, json!({"event": "added", "channel": channel})).await?;
     push(&mut tx, ctx.tenant, &removed, json!({"event": "removed", "channel": channel})).await?;
+    let others: Vec<String> = member_emails(&c).into_iter().filter(|m| !added.contains(m) && !removed.contains(m)).collect();
+    push(&mut tx, ctx.tenant, &others, json!({"event": "channel_updated", "channel": channel})).await?;
     let out = channel_json(&mut tx, ctx, channel).await?;
     tx.commit().await?;
     Ok(out)
@@ -420,7 +508,10 @@ async fn join(k: &Kernel, ctx: &Ctx, channel: Uuid) -> Result<Value> {
     if c.role(&ctx.email).is_none() {
         let me = ctx.email.to_lowercase();
         let first = c.members.is_empty();
-        set_members(k, ctx, &mut tx, channel, |rows| rows.push(json!({"member": me, "role": if first { "Owner" } else { "Member" }}))).await?;
+        // Joining starts from now: the channel's history is there to read, not a count of unread.
+        let joined = util::ts(util::now());
+        set_members(k, ctx, &mut tx, channel, |rows| rows.push(json!({"member": me, "role": if first { "Owner" } else { "Member" }, "last_read_at": joined})))
+            .await?;
     }
     let out = channel_json(&mut tx, ctx, channel).await?;
     tx.commit().await?;
@@ -440,13 +531,12 @@ async fn leave(k: &Kernel, ctx: &Ctx, channel: Uuid) -> Result<Value> {
     let me = ctx.email.to_lowercase();
     set_members(k, ctx, &mut tx, channel, |rows| {
         rows.retain(|r| r.get("member").and_then(Value::as_str) != Some(me.as_str()));
-        if !rows.iter().any(|r| r.get("role").and_then(Value::as_str) == Some("Owner"))
-            && let Some(Value::Object(next)) = rows.first_mut()
-        {
-            next.insert("role".into(), json!("Owner"));
-        }
+        ensure_owner(rows);
     })
     .await?;
+    let others: Vec<String> = member_emails(&c).into_iter().filter(|m| *m != me).collect();
+    push(&mut tx, ctx.tenant, &others, json!({"event": "channel_updated", "channel": channel})).await?;
+    push(&mut tx, ctx.tenant, std::slice::from_ref(&me), json!({"event": "removed", "channel": channel})).await?;
     tx.commit().await?;
     Ok(json!({"left": channel}))
 }
@@ -478,10 +568,67 @@ async fn message_json(tx: &mut Tx, tenant: Uuid, message: Uuid) -> Result<Value>
         .ok_or_else(|| Error::NotFound("Chat Message".into()))
 }
 
-/// `GET /chat/channels/{id}/messages?cursor=&limit=&thread=`: top-level messages newest first,
-/// or a thread's replies oldest first.
+/// The window of top-level messages around one message (a reply counts as its thread's first
+/// message), newest first like the usual pages: `next_cursor` goes on to older ones, `newer` says
+/// the window ends before the latest message, `target` is the message asked for.
+async fn messages_around(k: &Kernel, ctx: &Ctx, channel: Uuid, target: Uuid, limit: i64) -> Result<Value> {
+    let half = (limit / 2).max(1);
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    readable_channel(&mut tx, ctx, channel).await?;
+    let anchor: Option<(DateTime<Utc>, Uuid)> = sqlx::query_as(
+        "select r.posted_at, r.id from e_chat_message m join e_chat_message r on r.tenant_id = m.tenant_id and r.id = coalesce(m.parent_message, m.id) \
+         where m.tenant_id = $1 and m.id = $2 and m.channel = $3",
+    )
+    .bind(ctx.tenant)
+    .bind(target)
+    .bind(channel)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (at, root) = anchor.ok_or_else(|| Error::NotFound("Chat Message".into()))?;
+    let window = |cmp: &str, dir: &str| {
+        message_sql(&format!(
+            "and x.channel = $2 and x.parent_message is null and (x.posted_at, x.id) {cmp} ($3::timestamptz, $4::uuid) order by x.posted_at {dir}, x.id {dir} limit $5"
+        ))
+    };
+    // The anchor and `half` before it (one more tells there are older ones); `half` after it (likewise).
+    let older: Vec<Value> = sqlx::query_scalar(sqlx::AssertSqlSafe(window("<=", "desc")))
+        .bind(ctx.tenant)
+        .bind(channel)
+        .bind(at)
+        .bind(root)
+        .bind(half + 2)
+        .fetch_all(&mut *tx)
+        .await?;
+    let newer: Vec<Value> = sqlx::query_scalar(sqlx::AssertSqlSafe(window(">", "asc")))
+        .bind(ctx.tenant)
+        .bind(channel)
+        .bind(at)
+        .bind(root)
+        .bind(half + 1)
+        .fetch_all(&mut *tx)
+        .await?;
+    let found = message_json(&mut tx, ctx.tenant, target).await?;
+    tx.commit().await?;
+    let (more_older, more_newer) = (older.len() as i64 > half + 1, newer.len() as i64 > half);
+    let older: Vec<Value> = older.into_iter().take(half as usize + 1).collect();
+    let next = if more_older {
+        older.last().and_then(|m| Some(ferrum_kernel::query::encode_cursor(m.get("posted_at")?.as_str()?, m.get("id")?.as_str()?)))
+    } else {
+        None
+    };
+    let mut messages: Vec<Value> = newer.into_iter().take(half as usize).rev().collect();
+    messages.extend(older);
+    Ok(json!({"messages": messages, "next_cursor": next, "newer": more_newer, "target": found}))
+}
+
+/// `GET /chat/channels/{id}/messages?cursor=&limit=&thread=&around=`: top-level messages newest
+/// first, or a thread's replies oldest first, or the window around one message.
 async fn list_messages(k: &Kernel, ctx: &Ctx, channel: Uuid, req: &SiteRequest) -> Result<Value> {
     let limit: i64 = util::param(req, "limit").and_then(|l| l.parse().ok()).unwrap_or(50).clamp(1, 200);
+    let around: Option<Uuid> = util::param(req, "around").map(|t| t.parse()).transpose().map_err(|_| Error::field("around", "must be a message id"))?;
+    if let Some(target) = around {
+        return messages_around(k, ctx, channel, target, limit).await;
+    }
     let thread: Option<Uuid> = util::param(req, "thread").map(|t| t.parse()).transpose().map_err(|_| Error::field("thread", "must be a message id"))?;
     let cursor = util::param(req, "cursor").map(ferrum_kernel::query::decode_cursor).transpose()?;
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
@@ -527,6 +674,17 @@ fn body_text(body: &Map<String, Value>) -> Result<String> {
     Ok(text)
 }
 
+/// Who is in a thread: whoever started it or answered in it.
+async fn thread_people(tx: &mut Tx, tenant: Uuid, root: Uuid) -> Result<Vec<String>> {
+    Ok(sqlx::query_scalar(
+        "select distinct sender from e_chat_message where tenant_id = $1 and (id = $2 or parent_message = $2) and not deleted and sender is not null",
+    )
+    .bind(tenant)
+    .bind(root)
+    .fetch_all(&mut **tx)
+    .await?)
+}
+
 /// `POST /chat/channels/{id}/messages` `{body, parent?, mentions?: [emails], attachments?}`.
 async fn post(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, Value>) -> Result<Value> {
     let text = body_text(&body)?;
@@ -555,6 +713,9 @@ async fn post(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, Value>) ->
         }
         None => None,
     };
+    if c.owners_post && root.is_none() && c.role(&ctx.email) != Some("Owner") {
+        return Err(Error::Forbidden("only the channel's owners start posts here; members can reply in threads".into()));
+    }
     let me = ctx.email.to_lowercase();
     let mut mentioned: BTreeSet<String> = emails(body.get("mentions")).into_iter().collect();
     mentioned.extend(MENTION.captures_iter(&text).map(|m| m[1].to_lowercase()));
@@ -580,10 +741,52 @@ async fn post(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, Value>) ->
     }
     push(&mut tx, ctx.tenant, &member_emails(&c), json!({"event": "message", "channel": channel, "message": message, "parent": root, "sender": me})).await?;
     let who = if ctx.full_name.trim().is_empty() { ctx.email.clone() } else { ctx.full_name.clone() };
-    let title = util::cut(&format!("{who} mentioned you in {}", c.label()), 200);
     let snippet = util::cut(&text, 200);
-    for u in util::users(&mut tx, ctx.tenant, &mentioned).await? {
-        notify::send_kind(&mut tx, ctx.tenant, u.id, "comms.mention", "inapp", &title, Some(&snippet), Some("ChatMessage"), Some(message)).await?;
+    let snippet = if snippet.trim().is_empty() { "Sent a file".to_string() } else { snippet };
+    // Each person hears once, of the most direct thing: a mention, then what the conversation is
+    // to them (a direct message, a thread they are in, a channel they chose to hear in full).
+    let mut hears: BTreeMap<String, &str> = mentioned.iter().map(|m| (m.clone(), "mention")).collect();
+    match root {
+        _ if c.kind == "Direct" => {
+            for m in c.members.iter().filter(|m| m.email != me && c.loud(&m.email) != Loud::Nothing) {
+                hears.entry(m.email.clone()).or_insert("direct");
+            }
+        }
+        Some(r) => {
+            for p in thread_people(&mut tx, ctx.tenant, r).await? {
+                if p != me && c.member(&p).is_some() && c.loud(&p) != Loud::Nothing {
+                    hears.entry(p).or_insert("thread");
+                }
+            }
+        }
+        None => {
+            for m in c.members.iter().filter(|m| m.email != me && c.loud(&m.email) == Loud::All) {
+                hears.entry(m.email.clone()).or_insert("channel");
+            }
+        }
+    }
+    let wanted: Vec<String> = hears.keys().cloned().collect();
+    let users: BTreeMap<String, Uuid> = util::users(&mut tx, ctx.tenant, &wanted).await?.into_iter().map(|u| (u.email, u.id)).collect();
+    for (email, by) in hears {
+        let Some(user) = users.get(&email) else { continue };
+        let title = match by {
+            "mention" => format!("{who} mentioned you in {}", c.label()),
+            "direct" => format!("{who} sent you a message"),
+            "thread" => format!("{who} replied in a thread in {}", c.label()),
+            _ => format!("{who} in {}", c.label()),
+        };
+        notify::send_kind(
+            &mut tx,
+            ctx.tenant,
+            *user,
+            &format!("comms.{by}"),
+            "inapp",
+            &util::cut(&title, 200),
+            Some(&snippet),
+            Some("ChatMessage"),
+            Some(message),
+        )
+        .await?;
     }
     let out = message_json(&mut tx, ctx.tenant, message).await?;
     tx.commit().await?;
@@ -638,18 +841,36 @@ async fn delete(k: &Kernel, ctx: &Ctx, message: Uuid) -> Result<Value> {
     Ok(json!({"id": message, "deleted": true}))
 }
 
-/// `POST /chat/channels/{id}/read` `{at?}`: moves my read marker forward (never back).
+/// `POST /chat/channels/{id}/read` `{at?}`: moves my read marker forward (never back); with
+/// `{unread_from: message}` it moves back to just before that message, so it and what follows are
+/// unread again.
 async fn mark_read(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, Value>) -> Result<Value> {
-    let at = match body.get("at").and_then(Value::as_str) {
-        Some(t) => util::parse_ts(t).ok_or_else(|| Error::field("at", "must be an RFC 3339 date-time"))?,
-        None => util::now(),
-    };
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     readable_channel(&mut tx, ctx, channel).await?;
     let me = ctx.email.to_lowercase();
+    let unread_from: Option<Uuid> =
+        body.get("unread_from").and_then(Value::as_str).map(|m| m.parse()).transpose().map_err(|_| Error::field("unread_from", "must be a message id"))?;
+    let (sql, at) = match unread_from {
+        Some(message) => {
+            let posted: Option<DateTime<Utc>> = sqlx::query_scalar("select posted_at from e_chat_message where tenant_id = $1 and id = $2 and channel = $3")
+                .bind(ctx.tenant)
+                .bind(message)
+                .bind(channel)
+                .fetch_optional(&mut *tx)
+                .await?;
+            let before = posted.ok_or_else(|| Error::NotFound("Chat Message".into()))? - chrono::Duration::milliseconds(1);
+            ("least(coalesce(last_read_at, 'infinity'::timestamptz), $4)", before)
+        }
+        None => {
+            let at = match body.get("at").and_then(Value::as_str) {
+                Some(t) => util::parse_ts(t).ok_or_else(|| Error::field("at", "must be an RFC 3339 date-time"))?,
+                None => util::now(),
+            };
+            ("greatest(coalesce(last_read_at, '-infinity'::timestamptz), $4)", at)
+        }
+    };
     let read: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "update {MEMBERS} set last_read_at = greatest(coalesce(last_read_at, '-infinity'::timestamptz), $4), updated_at = now() \
-         where tenant_id = $1 and parent_id = $2 and member = $3 returning {}",
+        "update {MEMBERS} set last_read_at = {sql}, updated_at = now() where tenant_id = $1 and parent_id = $2 and member = $3 returning {}",
         iso("last_read_at")
     )))
     .bind(ctx.tenant)
@@ -664,17 +885,74 @@ async fn mark_read(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, Value
     Ok(json!({"channel": channel, "last_read_at": read}))
 }
 
-/// `GET /chat/search?q=&limit=`: messages in channels I belong to and in public channels; also as
-/// the bar's search provider (`shell.search`: `results`, each opening its conversation).
+/// `POST /chat/read-all`: everything I am in is read up to now.
+async fn mark_all_read(k: &Kernel, ctx: &Ctx) -> Result<Value> {
+    let me = ctx.email.to_lowercase();
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let n = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "update {MEMBERS} set last_read_at = now(), updated_at = now() where tenant_id = $1 and member = $2 and (last_read_at is null or last_read_at < now())"
+    )))
+    .bind(ctx.tenant)
+    .bind(&me)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    push(&mut tx, ctx.tenant, &[me], json!({"event": "read"})).await?;
+    tx.commit().await?;
+    Ok(json!({"channels": n}))
+}
+
+/// `PUT /chat/channels/{id}/notify` `{level: All|Mentions|Nothing|null}`: how loud the channel is
+/// for me (null: what its kind suggests, everything for a direct message, mentions for a channel).
+async fn set_notify(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, Value>) -> Result<Value> {
+    let level = match body.get("level") {
+        Some(Value::String(l)) if ["All", "Mentions", "Nothing"].contains(&l.as_str()) => Some(l.clone()),
+        None | Some(Value::Null) => None,
+        _ => return Err(Error::field("level", "must be All, Mentions, Nothing or null")),
+    };
+    let me = ctx.email.to_lowercase();
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    readable_channel(&mut tx, ctx, channel).await?;
+    let n = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "update {MEMBERS} set notify_level = $4, updated_at = now() where tenant_id = $1 and parent_id = $2 and member = $3"
+    )))
+    .bind(ctx.tenant)
+    .bind(channel)
+    .bind(&me)
+    .bind(&level)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    if n == 0 {
+        return Err(Error::invalid("you are not a member of this channel"));
+    }
+    push(&mut tx, ctx.tenant, &[me], json!({"event": "channel_updated", "channel": channel})).await?;
+    tx.commit().await?;
+    Ok(json!({"channel": channel, "notify_level": level}))
+}
+
+/// `GET /chat/messages/{id}`: one message the caller may read (a link to it, a search result).
+async fn get_message(k: &Kernel, ctx: &Ctx, message: Uuid) -> Result<Value> {
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    readable_message(&mut tx, ctx, message).await?;
+    let out = message_json(&mut tx, ctx.tenant, message).await?;
+    tx.commit().await?;
+    Ok(out)
+}
+
+/// `GET /chat/search?q=&limit=&channel=`: messages in channels I belong to and in public channels,
+/// or in one of them; also as the bar's search provider (`shell.search`: `results`, each opening
+/// its conversation at the message).
 async fn search(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
     let q = util::param(req, "q").unwrap_or_default();
     if q.chars().count() < 2 {
         return Err(Error::field("q", "type at least two characters"));
     }
     let limit: i64 = util::param(req, "limit").and_then(|l| l.parse().ok()).unwrap_or(50).clamp(1, 100);
+    let one: Option<Uuid> = util::param(req, "channel").map(|c| c.parse()).transpose().map_err(|_| Error::field("channel", "must be a channel id"))?;
     let pattern = format!("%{}%", q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
     let filter = format!(
-        "and not x.deleted and x.body ilike $2 escape '\\' and exists (select 1 from e_chat_channel c where c.tenant_id = x.tenant_id and c.id = x.channel \
+        "and not x.deleted and x.body ilike $2 escape '\\' and ($5::uuid is null or x.channel = $5) and exists (select 1 from e_chat_channel c where c.tenant_id = x.tenant_id and c.id = x.channel \
          and (c.channel_type = 'Public' or exists (select 1 from {MEMBERS} m where m.tenant_id = c.tenant_id and m.parent_id = c.id and m.member = $3))) \
          order by x.posted_at desc limit $4"
     );
@@ -684,6 +962,7 @@ async fn search(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
         .bind(pattern)
         .bind(ctx.email.to_lowercase())
         .bind(limit)
+        .bind(one)
         .fetch_all(&mut *tx)
         .await?;
     tx.commit().await?;
@@ -695,7 +974,7 @@ async fn search(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
             json!({
                 "title": util::cut(&body, 120),
                 "subtitle": format!("{} · {when}", m["sender_name"].as_str().unwrap_or_default()),
-                "url": format!("/chat/{}", m["channel"].as_str().unwrap_or_default()),
+                "url": format!("/chat/{}?m={}", m["channel"].as_str().unwrap_or_default(), m["id"].as_str().unwrap_or_default()),
                 "icon": "message-square",
                 "updated_at": m["posted_at"],
             })
@@ -729,6 +1008,9 @@ pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> 
         ("GET", ["channels", c, "messages"]) => list_messages(k, ctx, uuid(c)?, req).await?,
         ("POST", ["channels", c, "messages"]) => return Ok(util::created(post(k, ctx, uuid(c)?, body()?).await?)),
         ("POST", ["channels", c, "read"]) => mark_read(k, ctx, uuid(c)?, body()?).await?,
+        ("PUT", ["channels", c, "notify"]) => set_notify(k, ctx, uuid(c)?, body()?).await?,
+        ("POST", ["read-all"]) => mark_all_read(k, ctx).await?,
+        ("GET", ["messages", m]) => get_message(k, ctx, uuid(m)?).await?,
         ("PATCH", ["messages", m]) => edit(k, ctx, uuid(m)?, body()?).await?,
         ("DELETE", ["messages", m]) => delete(k, ctx, uuid(m)?).await?,
         ("GET", ["search"]) => search(k, ctx, req).await?,
