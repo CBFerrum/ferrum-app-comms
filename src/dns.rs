@@ -813,6 +813,18 @@ _25._tcp.mail IN TLSA 3 1 1 ABCDEF
         assert_eq!(parse_zone(&z, "acme.test"), wants()[..4].to_vec());
     }
 
+    /// The client against the DNS servers of the machine it runs on (needs a network):
+    /// `cargo test --lib dns -- --ignored`.
+    #[tokio::test]
+    #[ignore = "asks the real DNS"]
+    async fn the_real_dns_answers() {
+        let mx = System.lookup("gmail.com", "MX").await.expect("an answer");
+        assert!(mx.iter().any(|m| m.contains("google")), "{mx:?}");
+        let txt = System.lookup("_dmarc.gmail.com", "TXT").await.expect("an answer");
+        assert!(txt.iter().any(|t| t.starts_with("v=DMARC1")), "{txt:?}");
+        assert!(System.lookup("nothing-here.invalid", "TXT").await.expect("an answer").is_empty(), "a name that does not exist has no records");
+    }
+
     #[tokio::test]
     async fn every_name_is_asked_once() {
         struct Fake;

@@ -1,8 +1,63 @@
 # Changelog
 
-## Unreleased
+## 0.8.0
 
-- Personal data: a person's request now reaches chat messages they sent, mailing lists they are on and their calendar feeds, which an erasure blanks.
+The interfaces of Chat, Mail, Calendar and Meet, worked through screen by screen.
+
+Chat
+- A direct message now tells the other person, and a reply tells the people of its thread. Each person
+  chooses how loud a channel is for them: every message, mentions and replies to them, or nothing
+  (muted, with no count, though a mention still marks it). Three new kinds of notification in the bell:
+  direct messages, thread replies, and every message of the channels you chose to hear in full.
+- Unread counts are right: replies in threads you started or answered in count, mentions are counted
+  apart, and someone who joins a channel or is added to it starts with nothing unread (before, the
+  whole history was unread). A conversation opens at its first unread message, marks itself read only
+  when you reach the bottom, and any message can be marked unread again. "Mark everything as read" is
+  in the list's menu, and Chat tells the bar how much waits to be read.
+- A channel's details open beside it: its name and topic, who can find it, who can post (every member,
+  or only owners start posts while members reply in threads), how loud it is for you, leaving, and its
+  members, which owners add, remove and make owners. The last owner cannot be demoted.
+- Typing @ offers the people to mention. Unsent text is kept for each conversation and thread. A message
+  that cannot be sent says why and stays. A mention's notification, a link to a message and a search
+  result open the message in its place; a thread shows the message it belongs to; a conversation can be
+  searched on its own.
+- For the API: `PATCH /chat/channels/{id}` takes `type` and `post_policy`; `POST …/members` takes
+  `promote` and `demote`; `PUT …/notify`, `POST /chat/read-all` and `GET /chat/messages/{id}` are new;
+  messages take `?around=` and the read marker `{unread_from}`; search takes `channel=`; channels answer
+  `unread_mentions`, `post_policy` and `notify_level`.
+
+Mail
+- A folder lists conversations, not single messages, with how many each holds; opening one shows its
+  messages one under another, the newest and unread ones open. Archive, delete, spam and unread act on
+  the whole conversation.
+- The keyboard drives it: j and k, Enter, r, a, f, e, #, !, s, Shift+U, c, / and ? (which lists them).
+- Writing is saved as a draft in the mailbox a moment after the last key, and kept in this browser until
+  the mail server has it. Closing keeps the draft; a draft opens from Drafts to be written on; a message
+  left unsent in this browser is offered again. A message that cannot be sent stays in the window with
+  the reason in words and is in Drafts. To, Cc and Bcc complete from the people in the workspace.
+- Mail domain health, for Comms managers (`/mail/domain`, `GET /api/app/comms/domain`): which DNS
+  records the domain's mail needs (from the mail server's own zone file for it, else the few every
+  domain needs), which are published, which are missing or different, and what to do, in words; copy a
+  value, download the zone file. Reverse DNS and port 25 are listed as checks by hand.
+
+Calendar and Meet
+- Guests outside the workspace answer from their invitation: it carries Yes, Maybe and No links to a page
+  of Calendar's own (public, signed for that event and that address) that takes the answer and a note
+  for the organizer. Colleagues add notes to their answers too, and the event lists each guest's answer.
+  A notification of an invitation opens the event in Calendar.
+- Calendar has its own event editor, with Find a time: when each colleague is busy that day (never why),
+  a warning when the chosen time clashes, and the times in the next week that suit everyone. The
+  schedule intent warns of a clash too. `POST /calendar/freebusy` takes `exclude`, an event to leave out.
+- Where meetings are not set up, the meeting page, a guest's link and the calendar say so and offer no
+  call. On a phone a call opens over the page and keeps the screen awake, and a browser without a camera
+  or microphone can join to listen. A call that cannot reach the meeting server says so.
+
+Not in this version: an emailed iCalendar reply (a guest's mail program answering the organizer) is not
+applied to the event, so guests answer with the link in the invitation; reactions, presence, scheduled
+messages, mail filters, outbound queue status, and recording are not built.
+
+Also in this release: a person's request for their data now reaches chat messages they sent, mailing
+lists they are on and their calendar feeds, which an erasure blanks.
 
 ## 0.7.4
 

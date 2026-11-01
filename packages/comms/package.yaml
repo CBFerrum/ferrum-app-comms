@@ -1,5 +1,5 @@
 package: comms
-version: 0.3.1
+version: 0.3.2
 label: Communication
 description: Mail (accounts, threaded communications on any record, templates, inbound mail, newsletters), team chat and calendars with ICS.
 # The people mail goes to and the address book calendar and contacts apps read (Ferrum
