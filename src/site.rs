@@ -4,7 +4,7 @@
 //! signed token). See README.md.
 
 use crate::util::{self, created, ok};
-use crate::{calendar, chat, dav, inbound, mail, meet, newsletter, webmail};
+use crate::{calendar, chat, dav, dns, inbound, mail, meet, newsletter, webmail};
 use async_trait::async_trait;
 use ferrum_kernel::{Access, Action, Ctx, Error, Kernel, Result, Site, SiteRequest, SiteResponse};
 use serde_json::{Value, json};
@@ -64,6 +64,7 @@ async fn app(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> Result<
         (_, ["calendar", rest @ ..]) => return calendar::handle(k, ctx, req, rest).await,
         (_, ["meet", rest @ ..]) => return meet::handle(k, ctx, req, rest).await,
         (_, ["dav", rest @ ..]) => return dav::handle(k, ctx, req, rest).await,
+        ("GET", ["domain"]) => ok(dns::health(k, ctx).await?),
         ("GET", ["accounts"]) => ok(mail::accounts(k, ctx).await?),
         ("POST", ["send"]) => created(mail::send(k, ctx, body()?).await?),
         ("POST", ["templates", "preview"]) => ok(mail::preview(k, ctx, body()?).await?),

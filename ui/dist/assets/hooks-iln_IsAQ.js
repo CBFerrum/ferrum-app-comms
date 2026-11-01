@@ -1,0 +1,1 @@
+import{r as t,s as a}from"./index-D_xBPet7.js";function l(e,s){const[r,u]=t.useState(!1);return t.useEffect(()=>{let n=!0;return a().canIntent(e,s).then(c=>n&&u(c)).catch(()=>{}),()=>{n=!1}},[e,s]),r}function o(e){t.useEffect(()=>{a().title(e)},[e])}export{o as a,l as u};

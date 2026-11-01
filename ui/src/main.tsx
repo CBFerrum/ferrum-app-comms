@@ -54,6 +54,7 @@ const chat = () => import("./Chat");
 const calendar = () => import("./Calendar");
 const meet = () => import("./Meet");
 const intents = () => import("./Intents");
+const domain = () => import("./MailDomain");
 
 const router = createBrowserRouter([
   {
@@ -65,6 +66,7 @@ const router = createBrowserRouter([
     children: [
       { path: `${at("mail")}/_intent/compose`, lazy: page(intents, "ComposeIntentPage") },
       { path: `${at("mail")}/compose`, lazy: () => mail().then((m) => ({ Component: () => <m.MailPage compose /> })) },
+      { path: `${at("mail")}/domain`, lazy: page(domain, "DomainPage") },
       { path: `${at("mail")}/:mailbox?/:email?`, lazy: page(mail, "MailPage") },
       { path: `${at("chat")}/_intent/share`, lazy: page(intents, "ShareIntentPage") },
       { path: `${at("chat")}/_panel/*`, lazy: page(intents, "ChatPanel") },
