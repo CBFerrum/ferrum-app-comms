@@ -7,7 +7,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { FolderOpen, Paperclip, Send, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { Badge, Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Input, Label, Textarea } from "@ferrum/kit/primitives";
-import { Alert, cn, confirmDialog, toast, useCanIntent } from "@ferrum/kit";
+import { Alert, cn, toast, useCanIntent } from "@ferrum/kit";
 import { errorMessage, fetchBlob, newKey, request, shell } from "@ferrum/client";
 import { formatDateTime } from "@ferrum/client";
 import { usePeople } from "@ferrum/records";
@@ -89,6 +89,8 @@ export function Compose({
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [status, setStatus] = useState<Saved>({ state: "idle" });
+  // A question to the person, asked in the window itself (a second dialog over this one would fight it for focus).
+  const [asking, setAsking] = useState<"subject" | "discard" | null>(null);
   const picker = useRef<HTMLInputElement>(null);
   const people = usePeople().data?.users ?? [];
   const identities = useQuery({
@@ -128,8 +130,14 @@ export function Compose({
     const { fields: f, identity: who, threading: thread } = latest.current;
     const at = edits.current;
     if (!hasContent(f) || at === kept.current) return true;
+    if (!who && identities.isLoading) {
+      // The mailbox has not said who the person writes as yet: try again in a moment, no alarm.
+      clearTimeout(timer.current);
+      timer.current = setTimeout(() => void save(), 1500);
+      return true;
+    }
     if (!who || !drafts) {
-      setStatus({ state: "failed", message: drafts ? "The mailbox has not answered yet." : "The mailbox has no Drafts folder." });
+      setStatus({ state: "failed", message: drafts ? "The mailbox has no address to write as." : "The mailbox has no Drafts folder." });
       return false;
     }
     setStatus({ state: "saving" });
@@ -225,9 +233,10 @@ export function Compose({
       onClose();
     }
   };
-  const discard = async () => {
+  const discard = async (sure = false) => {
     const something = hasContent(fields) || !!draftId.current;
-    if (something && !(await confirmDialog({ title: "Discard this draft?", message: "What you wrote is deleted and cannot be brought back.", confirmLabel: "Discard", danger: true }))) return;
+    if (something && !sure) return setAsking("discard");
+    setAsking(null);
     clearTimeout(timer.current);
     await queue.current;
     if (draftId.current) {
@@ -242,13 +251,14 @@ export function Compose({
     onClose();
   };
 
-  const send = async (e: FormEvent) => {
-    e.preventDefault();
+  const send = async (e?: FormEvent, anyway = false) => {
+    e?.preventDefault();
     setProblem(null);
+    setAsking(null);
     if (bad.length) return setProblem(`Not an email address: ${bad.join(", ")}. Fix it, or take it out, and send again.`);
     if (!fields.to.length && !fields.cc.length && !fields.bcc.length) return setProblem("Add at least one recipient.");
     if (!drafts || !sent || !identity) return setProblem("The mailbox has no Drafts or Sent folder, or no address to send as. Nothing was sent.");
-    if (!subject.trim() && !(await confirmDialog({ title: "Send without a subject?", confirmLabel: "Send anyway" }))) return;
+    if (!subject.trim() && !anyway) return setAsking("subject");
     clearTimeout(timer.current);
     await queue.current;
     setBusy(true);
@@ -333,6 +343,48 @@ export function Compose({
             </Alert>
           )}
           <fieldset disabled={busy} className="contents">
+          {asking === "subject" && (
+            <Alert
+              tone="warning"
+              action={
+                <span className="flex shrink-0 gap-1">
+                  <Button type="button" size="xs" onClick={() => void send(undefined, true)}>
+                    Send anyway
+                  </Button>
+                  <Button
+                    type="button"
+                    size="xs"
+                    variant="ghost"
+                    onClick={() => {
+                      setAsking(null);
+                      document.getElementById("mail-subject")?.focus();
+                    }}
+                  >
+                    Add a subject
+                  </Button>
+                </span>
+              }
+            >
+              <span>This message has no subject.</span>
+            </Alert>
+          )}
+          {asking === "discard" && (
+            <Alert
+              tone="warning"
+              action={
+                <span className="flex shrink-0 gap-1">
+                  <Button type="button" size="xs" variant="destructive" onClick={() => void discard(true)}>
+                    Delete the draft
+                  </Button>
+                  <Button type="button" size="xs" variant="ghost" onClick={() => setAsking(null)}>
+                    Keep writing
+                  </Button>
+                </span>
+              }
+            >
+              <span>Delete this draft? What you wrote cannot be brought back.</span>
+            </Alert>
+          )}
           {status.state === "failed" && (
             <Alert
               tone="warning"

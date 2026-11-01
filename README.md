@@ -5,7 +5,7 @@
   <img alt="Mail, Chat and Calendar" src="docs/assets/banner-light.svg" width="100%">
 </picture>
 
-[![CI](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml/badge.svg)](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml) ![Version](https://img.shields.io/badge/version-0.7.5-2563eb?style=flat-square) ![Ferrum](https://img.shields.io/badge/Ferrum-%3E%3D0.3.2%2C%20%3C0.4-2f5bea?style=flat-square) ![License](https://img.shields.io/badge/license-AGPL--3.0-3b82f6?style=flat-square) ![Rust](https://img.shields.io/badge/Rust-native%20app-b7410e?style=flat-square&logo=rust&logoColor=white) ![Interface](https://img.shields.io/badge/interface-React%20%2B%20Vite-0ea5e9?style=flat-square&logo=react&logoColor=white) ![MCP](https://img.shields.io/badge/AI%20agents-MCP-8b5cf6?style=flat-square)
+[![CI](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml/badge.svg)](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml) ![Version](https://img.shields.io/badge/version-0.8.0-2563eb?style=flat-square) ![Ferrum](https://img.shields.io/badge/Ferrum-%3E%3D0.3.2%2C%20%3C0.4-2f5bea?style=flat-square) ![License](https://img.shields.io/badge/license-AGPL--3.0-3b82f6?style=flat-square) ![Rust](https://img.shields.io/badge/Rust-native%20app-b7410e?style=flat-square&logo=rust&logoColor=white) ![Interface](https://img.shields.io/badge/interface-React%20%2B%20Vite-0ea5e9?style=flat-square&logo=react&logoColor=white) ![MCP](https://img.shields.io/badge/AI%20agents-MCP-8b5cf6?style=flat-square)
 
 **A native app for [Ferrum](https://github.com/CBFerrum/Ferrum), the open-source, AI-first business platform.**
 
@@ -26,14 +26,14 @@ meetings on a LiveKit server the operator runs.
 
 | At a glance | |
 |---|---|
-| 📦 Version | `0.7.5` |
+| 📦 Version | `0.8.0` |
 | 🧱 Platform | Ferrum `>=0.3.2, <0.4` |
 | 🔗 Requires | nothing else |
 | 🖥️ Interface | its own, at `/mail/`, `/chat/`, `/calendar/`, `/meet/` |
 | 🗃️ Records | 18 entities in 1 package |
 | 👥 Roles | 3: Comms User, Comms Manager, Chat Admin |
 | 📊 Reports | 3 |
-| 🧪 Tests | 36 Rust tests, 4 interface test files |
+| 🧪 Tests | 44 Rust tests, 5 interface test files |
 
 
 ## Highlights
@@ -49,7 +49,7 @@ SMTP/IMAP accounts, threaded communications, templates and newsletters with one-
 <td width="50%" valign="top">
 
 ### 💬 Team chat
-Public, private and direct channels; threads, mentions, edits, read markers and search, pushed live.
+Public, private and direct channels; direct messages that notify, threads, mentions, edits, read markers that are right and search, pushed live.
 
 </td>
 </tr>
@@ -57,7 +57,7 @@ Public, private and direct channels; threads, mentions, edits, read markers and 
 <td width="50%" valign="top">
 
 ### 📅 Calendars
-Attendees and RSVP, recurrence with exceptions, reminders, free/busy and ICS invitations.
+Attendees who answer from their invitation, find-a-time with free/busy, recurrence with exceptions, reminders and ICS invitations.
 
 </td>
 <td width="50%" valign="top">
@@ -164,10 +164,14 @@ with them under the same rules as people.
 | 🔔 Notification | Answers to your invitations |
 | 🔔 Notification | Event reminders |
 | 🔔 Notification | Someone mentions you in Chat |
+| 🔔 Notification | Direct messages in Chat |
+| 🔔 Notification | Replies in Chat threads you take part in |
+| 🔔 Notification | Every message in the Chat channels you chose to hear in full |
 | 🔔 Notification | Replies to email you sent |
 | 🔔 Notification | Email you sent that could not be delivered |
 | ✅ My work | Invitations |
 | 🌐 Public page | Meeting |
+| 🌐 Public page | Reply to an invitation |
 
 ## Data model
 
@@ -294,10 +298,10 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.8.0** | The interfaces of Chat, Mail, Calendar and Meet worked through screen by screen: direct messages and thread replies notify, unread counts and markers are right, channel details and members, mentions that complete, conversations in Mail with the keyboard and drafts that are kept, mail domain health, guests answering from their invitation, find a time, and meetings that never pretend a call is possible. |
 | **0.7.4** | The bar's search finds chat messages (`shell.search`): those in public channels and in the person's own, each opening its conversation. `GET … |
 | **0.7.3** | Pop out in a browser that says it floats videos but cannot float a call's (a camera stream): the person is told so in plain words and the button … |
 | **0.7.2** | Calls pop out: in a meeting, Pop out puts the call in a small window that stays above every other (Document Picture-in-Picture: a shared screen … |
-| **0.7.1** | Depends on the platform's `contacts`: every workspace with Comms has the shared contacts and addresses, without CRM. Comms users read them, so … |
 
 Every version is in [CHANGELOG.md](CHANGELOG.md).
 

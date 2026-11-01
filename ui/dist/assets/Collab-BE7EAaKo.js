@@ -1,1 +1,0 @@
-import{m as o}from"./index-Cxu77PIv.js";import{u as r}from"./toggle-group-DfSymUKr.js";const u=()=>r({queryKey:["people"],queryFn:({signal:e})=>o.get("/api/users",void 0,e),staleTime:5*6e4});export{u};
