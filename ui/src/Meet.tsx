@@ -3,7 +3,9 @@
 // components show the call. /meet starts a room; /meet/{kind}/{id} is a meeting's page: a chat
 // channel's call, a calendar event's meeting or a room. /meet/guest/{workspace}/{link} lets people
 // outside the workspace join by their link. A call pops out into a small window that stays above
-// every other one (PopOut), so people keep it in view while they work elsewhere.
+// every other one (PopOut), so people keep it in view while they work elsewhere. Where the
+// operator has not set meetings up, the page says so and offers no call; on a phone the call fills
+// the screen, the screen stays awake, and a browser without a camera or microphone can still join.
 
 import "@livekit/components-styles";
 import "./meet.css";
@@ -21,7 +23,7 @@ import {
 } from "@livekit/components-react";
 import { useQuery } from "@tanstack/react-query";
 import { ConnectionState, DisconnectReason, Track, type RoomOptions } from "livekit-client";
-import { Copy, PictureInPicture2, UserPlus, Video } from "lucide-react";
+import { Copy, PictureInPicture2, UserPlus, Video, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useParams } from "react-router";
@@ -31,9 +33,9 @@ import { Label } from "@ferrum/kit/primitives";
 import { Skeleton } from "@ferrum/kit/primitives";
 import { ApiError, api, errorMessage, shell } from "@ferrum/client";
 import { CHAT } from "./lib/chat";
-import { MEET, meetLink, useMeetAvailable, type MeetKind, type MeetPass } from "./lib/meet";
+import { MEET, mediaProblem, meetLink, notSetUp, useMeetAvailable, type MeetKind, type MeetPass } from "./lib/meet";
 import { useMe } from "@ferrum/records";
-import { EmptyState, ErrorState, toast } from "@ferrum/kit";
+import { Alert, EmptyState, ErrorState, toast } from "@ferrum/kit";
 import { goBack } from "@ferrum/kit";
 
 const KINDS: MeetKind[] = ["channel", "event", "room"];
@@ -50,15 +52,30 @@ const copy = async (link: string, what: string) => {
   }
 };
 
+/** Where meetings are not set up there is no call to join, and the page says so. */
+function NotSetUp({ onBack }: { onBack?: () => void }) {
+  return (
+    <EmptyState title="Video meetings are not set up on this server" icon="video">
+      <p className="max-w-md text-center text-sm text-muted-foreground">Nobody can join a call here yet. An administrator can turn meetings on: see “Meetings” in Ferrum's operations guide.</p>
+      {onBack && (
+        <Button variant="outline" onClick={onBack}>
+          Back
+        </Button>
+      )}
+    </EmptyState>
+  );
+}
+
 export function MeetPage() {
   const { kind = "", id = "" } = useParams();
   const navigate = useNavigate();
   const me = useMe().data;
+  const available = useMeetAvailable();
   const valid = (KINDS as string[]).includes(kind);
   const pass = useQuery({
     queryKey: ["meet", kind, id],
     queryFn: () => api.post<MeetPass>(`${MEET}/${kind}/${id}/token`),
-    enabled: valid,
+    enabled: valid && available.data === true,
     retry: false,
     staleTime: Infinity,
     gcTime: 0,
@@ -69,9 +86,15 @@ export function MeetPage() {
   useEffect(() => {
     if (pass.data?.title) shell().title(pass.data.title);
   }, [pass.data?.title]);
-  if (!valid) return <EmptyState title="Meeting not found" />;
-  if (pass.error) return <ErrorState title="You can't join this meeting" error={pass.error} onRetry={() => void pass.refetch()} />;
   const meetKind = kind as MeetKind;
+  // A call in its own window (opened from Chat or Calendar) closes it when done.
+  const leave = () => (shell().host === "companion" ? window.close() : goBack(navigate, home(meetKind, id)));
+  if (!valid) return <EmptyState title="Meeting not found" />;
+  if (available.isLoading) return <Skeleton className="m-6 h-64" />;
+  if (!available.data) return <NotSetUp onBack={leave} />;
+  if (pass.error) {
+    return notSetUp(errorMessage(pass.error)) ? <NotSetUp onBack={leave} /> : <ErrorState title="You can't join this meeting" error={pass.error} onRetry={() => void pass.refetch()} />;
+  }
   return (
     <div data-fullbleed className="grid h-[calc(100dvh-var(--ferrum-bar-height,48px))] min-h-0 grid-rows-[auto_minmax(0,1fr)]">
       <header className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
@@ -79,27 +102,50 @@ export function MeetPage() {
         <h1 className="min-w-0 flex-1 truncate font-semibold">{pass.data?.title ?? "Meeting"}</h1>
         <span ref={setTools} className="contents" />
         {meetKind === "room" && pass.data && <GuestLink room={id} initial={pass.data.guest_path ?? null} />}
-        <Button variant="outline" size="sm" onClick={() => void copy(meetLink(meetKind, id), "Meeting link")}>
-          <Copy /> Copy link
+        <Button variant="outline" size="sm" aria-label="Copy the meeting link" onClick={() => void copy(meetLink(meetKind, id), "Meeting link")}>
+          <Copy /> <span className="hidden sm:inline">Copy link</span>
         </Button>
       </header>
       <div data-lk-theme="default" className="ferrum-meet min-h-0">
         {!pass.data ? (
           <Skeleton className="m-6 h-64" />
         ) : (
-          <Stage
-            pass={pass.data}
-            name={me?.user.full_name || me?.user.email || ""}
-            onRejoin={() => pass.refetch()}
-            // A call in its own window (opened from Chat or Calendar) closes it when done.
-            onBack={() => (shell().host === "companion" ? window.close() : goBack(navigate, home(meetKind, id)))}
-            channel={meetKind === "channel" ? id : undefined}
-            tools={tools}
-          />
+          <Stage pass={pass.data} name={me?.user.full_name || me?.user.email || ""} onRejoin={() => pass.refetch()} onBack={leave} channel={meetKind === "channel" ? id : undefined} tools={tools} />
         )}
       </div>
     </div>
   );
+}
+
+/** Keeps a phone's screen on while a call runs (where the browser lets a page ask). */
+function useWakeLock(on: boolean) {
+  useEffect(() => {
+    if (!on || !("wakeLock" in navigator)) return;
+    let lock: WakeLockSentinel | null = null;
+    const ask = () => void navigator.wakeLock.request("screen").then((l) => (lock = l), () => undefined);
+    ask();
+    const again = () => document.visibilityState === "visible" && ask();
+    document.addEventListener("visibilitychange", again);
+    return () => {
+      document.removeEventListener("visibilitychange", again);
+      void lock?.release();
+    };
+  }, [on]);
+}
+
+/** A connection problem as a person would put it. */
+const plain = (message: string) =>
+  /signal|websocket|connect|fetch|timeout|timed out|network/i.test(message)
+    ? "Could not reach the meeting server. Check your connection; if it keeps failing, the meeting server may be down, and an administrator should look."
+    : message;
+
+/** Tells the room it is connected (clears an earlier problem). */
+function Connected({ onConnected }: { onConnected: () => void }) {
+  const state = useConnectionState();
+  useEffect(() => {
+    if (state === ConnectionState.Connected) onConnected();
+  }, [state, onConnected]);
+  return null;
 }
 
 /** Getting ready (camera and microphone), the call, and after leaving it, a way back in. */
@@ -120,6 +166,9 @@ function Stage({
 }) {
   const [choices, setChoices] = useState<LocalUserChoices | null>(null);
   const [left, setLeft] = useState<DisconnectReason | undefined | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const unable = mediaProblem();
+  useWakeLock(!!choices && left === null);
   const options = useMemo<RoomOptions>(
     () => ({
       adaptiveStream: true,
@@ -143,6 +192,20 @@ function Stage({
         </div>
       </div>
     );
+  if (!choices && unable)
+    return (
+      <div className="grid h-full place-content-center justify-items-center gap-4 overflow-auto p-6 text-center">
+        <p className="max-w-md">{unable}</p>
+        <div className="flex gap-2">
+          <Button onClick={() => setChoices({ username: name, videoEnabled: false, audioEnabled: false, videoDeviceId: "", audioDeviceId: "" })}>Join without camera or microphone</Button>
+          {onBack && (
+            <Button variant="outline" onClick={onBack}>
+              Back
+            </Button>
+          )}
+        </div>
+      </div>
+    );
   if (!choices)
     return (
       <div className="grid h-full place-items-center overflow-auto p-4">
@@ -157,22 +220,46 @@ function Stage({
       </div>
     );
   return (
-    <LiveKitRoom
-      serverUrl={pass.url}
-      token={pass.token}
-      connect
-      options={options}
-      video={choices.videoEnabled}
-      audio={choices.audioEnabled}
-      onDisconnected={(reason) => setLeft(reason)}
-      onError={(e) => toast(e.message, "error")}
-      onMediaDeviceFailure={() => toast("Your camera or microphone could not be used. Check the browser's permission for this site.", "error")}
-      className="h-full"
-    >
-      <VideoConference />
-      {channel && <Announce channel={channel} />}
-      {tools && <PopOut slot={tools} />}
-    </LiveKitRoom>
+    <div className="relative h-full">
+      {problem && (
+        <div className="absolute inset-x-0 top-0 z-30 p-2">
+          <Alert
+            tone="error"
+            action={
+              <span className="flex shrink-0 gap-1">
+                <Button size="xs" variant="outline" onClick={() => void onRejoin().then(() => setProblem(null))}>
+                  Try again
+                </Button>
+                {onBack && (
+                  <Button size="xs" variant="ghost" onClick={onBack}>
+                    Leave
+                  </Button>
+                )}
+              </span>
+            }
+          >
+            <span>{problem}</span>
+          </Alert>
+        </div>
+      )}
+      <LiveKitRoom
+        serverUrl={pass.url}
+        token={pass.token}
+        connect
+        options={options}
+        video={choices.videoEnabled}
+        audio={choices.audioEnabled}
+        onDisconnected={(reason) => setLeft(reason)}
+        onError={(e) => setProblem(plain(e.message))}
+        onMediaDeviceFailure={() => toast("Your camera or microphone could not be used. Check the browser's permission for this site.", "error")}
+        className="h-full"
+      >
+        <Connected onConnected={() => setProblem(null)} />
+        <VideoConference />
+        {channel && <Announce channel={channel} />}
+        {tools && <PopOut slot={tools} />}
+      </LiveKitRoom>
+    </div>
   );
 }
 
@@ -322,17 +409,17 @@ function GuestLink({ room, initial }: { room: string; initial: string | null }) 
   };
   if (!path)
     return (
-      <Button variant="outline" size="sm" disabled={busy} onClick={() => void change(true)}>
-        <UserPlus /> Invite guests
+      <Button variant="outline" size="sm" disabled={busy} aria-label="Invite guests" onClick={() => void change(true)}>
+        <UserPlus /> <span className="hidden sm:inline">Invite guests</span>
       </Button>
     );
   return (
     <>
-      <Button variant="outline" size="sm" onClick={() => void copy(`${location.origin}${path}`, "Guest link")}>
-        <UserPlus /> Copy guest link
+      <Button variant="outline" size="sm" aria-label="Copy the guest link" onClick={() => void copy(`${location.origin}${path}`, "Guest link")}>
+        <UserPlus /> <span className="hidden sm:inline">Copy guest link</span>
       </Button>
-      <Button variant="ghost" size="sm" disabled={busy} onClick={() => void change(false)}>
-        Turn off guest link
+      <Button variant="ghost" size="sm" disabled={busy} aria-label="Turn off the guest link" onClick={() => void change(false)}>
+        <X /> <span className="hidden sm:inline">Turn off guest link</span>
       </Button>
     </>
   );
@@ -356,12 +443,7 @@ export function MeetHomePage() {
     }
   };
   if (available.isLoading) return <Skeleton className="mx-auto mt-10 h-48 max-w-md" />;
-  if (!available.data)
-    return (
-      <EmptyState title="Video meetings are not set up" icon="video">
-        An administrator of this server can set them up: see “Meetings” in Ferrum's operations guide.
-      </EmptyState>
-    );
+  if (!available.data) return <NotSetUp />;
   return (
     <div className="mx-auto grid max-w-md gap-4 py-10">
       <h1 className="text-xl font-semibold">Meet</h1>
@@ -424,8 +506,17 @@ export function GuestMeetPage() {
       <main className="min-h-0">
         {error ? (
           <div className="grid h-full place-content-center gap-2 p-6 text-center">
-            <p className="text-lg">You can't join this meeting</p>
-            <p className="opacity-70">{errorMessage(error)}</p>
+            {notSetUp(errorMessage(error)) ? (
+              <>
+                <p className="text-lg">Video meetings are not set up here</p>
+                <p className="opacity-70">The organization that invited you has not turned them on yet. Ask the person who invited you.</p>
+              </>
+            ) : (
+              <>
+                <p className="text-lg">You can't join this meeting</p>
+                <p className="opacity-70">{errorMessage(error)}</p>
+              </>
+            )}
           </div>
         ) : pass ? (
           <Stage pass={pass} name={pass.name} onRejoin={() => ask(askName ? name.trim() : undefined)} tools={tools} />

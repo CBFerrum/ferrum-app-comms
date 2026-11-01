@@ -84,8 +84,25 @@ export function CalendarPage() {
   const refresh = useCallback(() => void qc.invalidateQueries({ queryKey: ["calendar"] }), [qc]);
   useLiveEntity("CalendarEvent", refresh);
   const list = useMemo(() => events.data?.occurrences ?? [], [events.data]);
+  // A link that names an event but not when (a notification of an invitation) goes to the month it is in.
+  const [locating, setLocating] = useState(!!wanted && !wantedAt);
   useEffect(() => {
-    if (!wanted || !events.data) return;
+    if (!wanted || wantedAt) return;
+    let live = true;
+    api.get<{ starts_at: string; recurrence?: string | null }>(docPath("CalendarEvent", wanted)).then(
+      (d) => {
+        if (!live) return;
+        setAnchor(new Date(d.recurrence ? Math.max(Date.parse(d.starts_at), Date.now()) : Date.parse(d.starts_at)));
+        setLocating(false);
+      },
+      () => live && setLocating(false),
+    );
+    return () => {
+      live = false;
+    };
+  }, [wanted, wantedAt]);
+  useEffect(() => {
+    if (!wanted || !events.data || locating) return;
     const at = wantedAt ? new Date(wantedAt).getTime() : NaN;
     const o = list.find((x) => x.event === wanted && new Date(x.start).getTime() === at) ?? list.find((x) => x.event === wanted);
     if (o) setOpen(o);
@@ -98,7 +115,7 @@ export function CalendarPage() {
       },
       { replace: true },
     );
-  }, [wanted, wantedAt, events.data, list, setParams]);
+  }, [wanted, wantedAt, events.data, list, locating, setParams]);
   const days = useMemo(() => byDay(list), [list]);
   const today = isoDay(new Date());
   const setView = (v: View) => {
