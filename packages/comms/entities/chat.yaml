@@ -5,6 +5,7 @@
     - {name: member, type: email, required: true, in_list: true, description: Email the member signs in with}
     - {name: role, type: select, options: [Owner, Member], default: Member, required: true, in_list: true}
     - {name: last_read_at, type: datetime, in_list: true}
+    - {name: notify_level, type: select, options: [All, Mentions, Nothing], description: "How loud the channel is for this member: every message, mentions and replies in their threads, or nothing (muted). Empty: everything in a direct message, mentions in a channel"}
 
 - name: ChatChannel
   label: Chat Channel
@@ -18,6 +19,7 @@
     - {name: topic, type: text, max_length: 500}
     - {name: members, type: table, of: ChatChannelMember}
     - {name: archived, type: check, in_list: true, in_filter: true}
+    - {name: post_policy, type: select, options: [Members, Owners], default: Members, in_filter: true, description: "Who starts posts: every member, or only the owners (members still reply in threads)"}
     - {name: direct_key, type: data, unique: true, read_only: true, hidden: true, no_copy: true}
     - {name: last_message_at, type: datetime, read_only: true, no_copy: true, in_list: true}
   list: {columns: [channel_name, channel_type, archived, last_message_at], sort: channel_name asc}
