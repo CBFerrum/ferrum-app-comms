@@ -1,19 +1,20 @@
 // The calendar on the Mail app's calendar API: my events, invitations and public events with
 // recurrences expanded by the server, as a month grid or a week of hours (an agenda on phones),
-// with RSVPs. Events I organize move by dragging them to another day or time; they are created
-// and edited in the Calendar Event form.
+// with answers to invitations (and a note with them). Events I organize move by dragging them to
+// another day or time, or by their editor (CalendarEditor.tsx), where times are found for everyone.
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CalendarDays, ChevronLeft, ChevronRight, MapPin, Plus, Repeat, Video } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent } from "react";
-import { useSearchParams } from "react-router";
+import { Link, useNavigate, useSearchParams } from "react-router";
 import { Badge } from "@ferrum/kit/primitives";
 import { Button } from "@ferrum/kit/primitives";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@ferrum/kit/primitives";
 import { Skeleton } from "@ferrum/kit/primitives";
-import { api, docPath, errorMessage, shell } from "@ferrum/client";
+import { Textarea } from "@ferrum/kit/primitives";
+import { api, docPath, errorMessage } from "@ferrum/client";
 import { meetLink, meetPath, openCall, useMeetAvailable } from "./lib/meet";
-import { byDay, CALENDAR, isoDay, monthGrid, movable, moved, placeDay, safeColor, safeLink, sameTimeOn, weekOf, type Occurrence } from "./lib/calendar";
+import { answerWord, byDay, CALENDAR, isoDay, monthGrid, movable, moved, placeDay, safeColor, safeLink, sameTimeOn, tally, weekOf, type Guest, type Occurrence } from "./lib/calendar";
 import { useLiveEntity } from "@ferrum/kit";
 import { cn } from "@ferrum/kit";
 import { ErrorState, toast } from "@ferrum/kit";
@@ -29,13 +30,12 @@ const VIEW_KEY = "ferrum.calendar.view";
 
 type View = "month" | "week";
 
-/** The new-event form for an hour from `start`. */
+/** The editor for a new event of an hour from `start` (Calendar's own, with times found for everyone). */
 const newEventAt = (start: Date) => {
   const end = new Date(start.getTime() + 3_600_000);
-  // Events are written in the records' form: the app that shows them, else the shell's records.
-  return `/open/CalendarEvent/new?starts_at=${encodeURIComponent(start.toISOString())}&ends_at=${encodeURIComponent(end.toISOString())}`;
+  return `/calendar/e/new?starts_at=${encodeURIComponent(start.toISOString())}&ends_at=${encodeURIComponent(end.toISOString())}`;
 };
-/** The new-event form for a day, 09:00 to 10:00 local time. */
+/** The editor for a new event on a day, 09:00 to 10:00 local time. */
 const newEventLink = (day: string) => newEventAt(new Date(`${day}T09:00:00`));
 
 /** Accepts a dragged occurrence: `onDrop` gets its id. */
@@ -61,6 +61,7 @@ function savedView(): View {
 
 export function CalendarPage() {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const [view, setViewState] = useState<View>(savedView);
   // A link to an event (`?event={id}&at={start}`: Home's My work, a notification) opens it.
   const [params, setParams] = useSearchParams();
@@ -153,9 +154,9 @@ export function CalendarPage() {
           ))}
         </div>
         <Button asChild size="sm" className="ml-auto">
-          <a href={newEventLink(today)}>
+          <Link to={newEventLink(today)}>
             <Plus /> New event
-          </a>
+          </Link>
         </Button>
       </header>
       {events.error ? (
@@ -163,7 +164,7 @@ export function CalendarPage() {
       ) : (
         <>
           {view === "week" ? (
-            <WeekGrid week={week} list={list} loading={events.isLoading} today={today} onOpen={setOpen} onMove={(id, start) => void move(id, start)} />
+            <WeekGrid week={week} list={list} loading={events.isLoading} today={today} onOpen={setOpen} onMove={(id, start) => void move(id, start)} onNew={(at) => navigate(newEventAt(at))} />
           ) : (
             /* Month grid: tablets and up. */
             <div className="hidden overflow-hidden rounded-lg border bg-card md:block">
@@ -188,13 +189,13 @@ export function CalendarPage() {
                       })}
                     >
                       <div className="flex items-center justify-between">
-                        <a
-                          href={newEventLink(key)}
+                        <Link
+                          to={newEventLink(key)}
                           aria-label={`New event on ${longDay(key)}`}
                           className={cn("grid size-6 place-items-center rounded-full text-xs hover:bg-accent", key === today && "bg-primary text-primary-foreground hover:bg-primary")}
                         >
                           {d.getDate()}
-                        </a>
+                        </Link>
                       </div>
                       <ul className="mt-0.5 grid grid-cols-1 gap-0.5">
                         {events.isLoading && <Skeleton className="h-4" />}
@@ -233,7 +234,7 @@ export function CalendarPage() {
           </div>
         </>
       )}
-      {open && <OccurrenceDialog o={open} onClose={() => setOpen(null)} onChanged={refresh} />}
+      {open && <OccurrenceDialog o={open} onClose={() => setOpen(null)} onChanged={refresh} onEdit={() => navigate(`/calendar/e/${open.event}`)} />}
     </div>
   );
 }
@@ -246,6 +247,7 @@ function WeekGrid({
   today,
   onOpen,
   onMove,
+  onNew,
 }: {
   week: Date[];
   list: Occurrence[];
@@ -253,6 +255,7 @@ function WeekGrid({
   today: string;
   onOpen: (o: Occurrence) => void;
   onMove: (id: string, start: Date) => void;
+  onNew: (at: Date) => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   // Minutes between the dragged event's start and where it was picked up, so it lands where it is dropped.
@@ -321,7 +324,7 @@ function WeekGrid({
                 className="relative border-l"
                 style={{ backgroundImage: `repeating-linear-gradient(to bottom, var(--border) 0, var(--border) 1px, transparent 1px, transparent ${HOUR}px)` }}
                 onClick={(e) => {
-                  if (e.target === e.currentTarget) shell().navigate(newEventAt(timeAt(d, e, 30)));
+                  if (e.target === e.currentTarget) onNew(timeAt(d, e, 30));
                 }}
                 {...dropTarget((id, e) => onMove(id, timeAt(d, e, 15, grab.current)))}
               >
@@ -402,15 +405,29 @@ function OccurrenceChip({ o, onOpen, large }: { o: Occurrence; onOpen: () => voi
 
 const RESPONSES = ["Accepted", "Tentative", "Declined"] as const;
 
-function OccurrenceDialog({ o, onClose, onChanged }: { o: Occurrence; onClose: () => void; onChanged: () => void }) {
+/** Who is on an event and what each answered (`GET /calendar/events/{id}`: for the organizer and the guests). */
+interface Detail {
+  attendees: Guest[];
+  owner: string;
+  owner_name?: string | null;
+}
+
+function OccurrenceDialog({ o, onClose, onChanged, onEdit }: { o: Occurrence; onClose: () => void; onChanged: () => void; onEdit: () => void }) {
+  const qc = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [response, setResponse] = useState(o.my_response ?? null);
+  const [note, setNote] = useState("");
+  const [problem, setProblem] = useState<string | null>(null);
   const [meetingLink, setMeetingLink] = useState(o.meeting_link);
-  const meet = useMeetAvailable().data === true;
+  const meets = useMeetAvailable();
+  const meet = meets.data === true;
+  const detail = useQuery({ queryKey: ["calendar", "detail", o.event], queryFn: ({ signal }) => api.get<Detail>(`${CALENDAR}/events/${o.event}`, undefined, signal), retry: false });
   const link = safeLink(meetingLink);
   // A meeting of this app opens here; any other link (another service's meeting) in a new tab.
   const meeting = meetPath(link);
   const cancelled = o.status === "Cancelled";
+  const guests = detail.data?.attendees ?? [];
+  const by = detail.data?.owner_name || detail.data?.owner || o.owner;
   const addMeeting = async () => {
     setBusy(true);
     try {
@@ -429,22 +446,25 @@ function OccurrenceDialog({ o, onClose, onChanged }: { o: Occurrence; onClose: (
     : `${new Date(o.start).toLocaleString([], { weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" })} – ${timeOf(o.end)}`;
   const rsvp = async (r: (typeof RESPONSES)[number]) => {
     setBusy(true);
+    setProblem(null);
     try {
-      await api.post(`${CALENDAR}/events/${o.event}/rsvp`, { response: r });
+      await api.post(`${CALENDAR}/events/${o.event}/rsvp`, { response: r, note: note.trim() });
       setResponse(r);
+      setNote("");
       onChanged();
-      toast(`Replied: ${r.toLowerCase()}`);
+      void qc.invalidateQueries({ queryKey: ["calendar", "detail", o.event] });
+      toast(`Replied: ${answerWord(r).toLowerCase()}. ${by ? `${by} is told.` : ""}`.trim());
     } catch (e) {
-      toast(errorMessage(e), "error");
+      setProblem(`Your answer was not sent: ${errorMessage(e)}`);
     } finally {
       setBusy(false);
     }
   };
   return (
     <Dialog open onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="max-h-[92dvh] overflow-y-auto sm:max-w-md">
         <DialogHeader>
-          <DialogTitle className={cn(o.status === "Cancelled" && "line-through")}>{o.subject}</DialogTitle>
+          <DialogTitle className={cn(cancelled && "line-through")}>{o.subject}</DialogTitle>
           <DialogDescription>{when}</DialogDescription>
         </DialogHeader>
         <div className="grid gap-2 text-sm">
@@ -463,14 +483,21 @@ function OccurrenceDialog({ o, onClose, onChanged }: { o: Occurrence; onClose: (
             </p>
           )}
           {meeting ? (
-            !cancelled && (
+            !cancelled &&
+            (meet ? (
               <p className="flex items-center gap-1.5">
                 <Video className="size-4 text-muted-foreground" aria-hidden="true" />
                 <a href={meeting} onClick={(e) => openCall(e, meeting)} className="text-primary underline underline-offset-2">
                   Join video meeting
                 </a>
               </p>
-            )
+            ) : (
+              !meets.isLoading && (
+                <p className="flex items-start gap-1.5 text-muted-foreground">
+                  <Video className="mt-0.5 size-4 shrink-0" aria-hidden="true" /> This event has a video meeting, but video meetings are not set up on this server, so nobody can join it. An administrator can set them up.
+                </p>
+              )
+            ))
           ) : (
             link && (
               <p className="flex items-center gap-1.5">
@@ -487,17 +514,41 @@ function OccurrenceDialog({ o, onClose, onChanged }: { o: Occurrence; onClose: (
             </Button>
           )}
           {o.description && <p className="whitespace-pre-line text-muted-foreground">{o.description}</p>}
-          {o.owner && !o.is_organizer && <p className="text-xs text-muted-foreground">Organized by {o.owner}</p>}
-          {response !== null && (
-            <div className="grid gap-1.5 border-t pt-2">
-              <span className="text-xs font-medium text-muted-foreground">Going?</span>
+          {by && !o.is_organizer && <p className="text-xs text-muted-foreground">Organized by {by}</p>}
+          {response !== null && !cancelled && (
+            <div className="grid gap-2 border-t pt-2">
+              <span className="text-xs font-medium text-muted-foreground">{response === "Needs Action" ? "Will you go? You have not answered yet." : "Will you go?"}</span>
               <div className="flex gap-2">
                 {RESPONSES.map((r) => (
                   <Button key={r} size="sm" variant={response === r ? "default" : "outline"} disabled={busy} aria-pressed={response === r} onClick={() => void rsvp(r)}>
-                    {r === "Accepted" ? "Yes" : r === "Tentative" ? "Maybe" : "No"}
+                    {answerWord(r)}
                   </Button>
                 ))}
               </div>
+              <Textarea value={note} rows={2} maxLength={500} placeholder={`A note for ${by || "the organizer"} (sent with your next answer)`} aria-label="A note with your answer" onChange={(e) => setNote(e.target.value)} />
+              {problem && (
+                <p role="alert" className="text-xs text-destructive">
+                  {problem}
+                </p>
+              )}
+            </div>
+          )}
+          {guests.length > 0 && (
+            <div className="grid gap-1 border-t pt-2">
+              <span className="text-xs font-medium text-muted-foreground">
+                {guests.length} {guests.length === 1 ? "guest" : "guests"}: {tally(guests)}
+              </span>
+              <ul className="grid gap-1" aria-label="Guests">
+                {guests.map((g) => (
+                  <li key={g.email} className="grid">
+                    <span className="flex items-baseline gap-2">
+                      <span className="min-w-0 flex-1 truncate">{g.name || g.email}</span>
+                      <span className={cn("shrink-0 text-xs", g.response === "Accepted" ? "text-success" : g.response === "Declined" ? "text-destructive" : "text-muted-foreground")}>{answerWord(g.response)}</span>
+                    </span>
+                    {g.comment && <span className="border-l-2 pl-2 text-xs text-muted-foreground">{g.comment}</span>}
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
         </div>
@@ -505,7 +556,7 @@ function OccurrenceDialog({ o, onClose, onChanged }: { o: Occurrence; onClose: (
           <Button variant="outline" onClick={onClose}>
             Close
           </Button>
-          {o.is_organizer && <Button onClick={() => shell().navigate({ entity: "CalendarEvent", id: o.event })}>Edit event</Button>}
+          {o.is_organizer && <Button onClick={onEdit}>Edit event</Button>}
         </DialogFooter>
       </DialogContent>
     </Dialog>

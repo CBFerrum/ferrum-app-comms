@@ -45,6 +45,8 @@ async fn public(k: &Kernel, req: &SiteRequest, path: &[&str]) -> Result<SiteResp
         }
         ("GET" | "POST", ["unsubscribe"]) => newsletter::unsubscribe(k, req).await,
         ("POST", ["meet", "guest"]) => meet::guest(k, req).await,
+        ("GET", ["rsvp"]) => Ok(ok(calendar::answer_info(k, req.tenant, util::param(req, "token").unwrap_or_default()).await?)),
+        ("POST", ["rsvp"]) => Ok(ok(calendar::answer(k, req.tenant, &req.client_ip, &util::body_json(req)?).await?)),
         ("GET", ["calendar", file]) => match file.strip_suffix(".ics") {
             Some(token) => calendar::feed(k, req.tenant, token).await,
             None => Err(Error::NotFound("calendar".into())),
