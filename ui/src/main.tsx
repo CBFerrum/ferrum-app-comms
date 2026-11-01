@@ -55,6 +55,8 @@ const calendar = () => import("./Calendar");
 const meet = () => import("./Meet");
 const intents = () => import("./Intents");
 const domain = () => import("./MailDomain");
+const editor = () => import("./CalendarEditor");
+const rsvp = () => import("./CalendarRsvp");
 
 const router = createBrowserRouter([
   {
@@ -73,6 +75,8 @@ const router = createBrowserRouter([
       { path: `${at("chat")}/m/:message`, lazy: page(chat, "ChatMessagePage") },
       { path: `${at("chat")}/:channel?`, lazy: page(chat, "ChatPage") },
       { path: `${at("calendar")}/_intent/schedule`, lazy: page(intents, "ScheduleIntentPage") },
+      { path: `${at("calendar")}/e/:event`, lazy: page(editor, "EventPage") },
+      { path: `${at("calendar")}/rsvp/:tenant/:link`, lazy: page(rsvp, "RsvpPage") },
       { path: at("calendar"), lazy: page(calendar, "CalendarPage") },
       { path: at("meet"), lazy: page(meet, "MeetHomePage") },
       { path: `${at("meet")}/guest/:tenant/:link`, lazy: page(meet, "GuestMeetPage") },

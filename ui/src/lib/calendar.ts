@@ -24,6 +24,15 @@ export interface Occurrence {
   recurring?: boolean;
 }
 
+/** A person on the guest list of an event, and what they answered. */
+export interface Guest {
+  email: string;
+  name?: string | null;
+  response: string;
+  /** A note that came with their answer (the organizer sees it). */
+  comment?: string | null;
+}
+
 /** A local date as `YYYY-MM-DD`. */
 export function isoDay(d: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");
@@ -141,4 +150,174 @@ export function safeColor(c: string | null | undefined): string | undefined {
 /** `http(s)` meeting links only. */
 export function safeLink(href: string | null | undefined): string | undefined {
   return href && /^https?:\/\/[^\s]+$/i.test(href.trim()) ? href.trim() : undefined;
+}
+
+// ───────────────────────────── guests and their answers ─────────────────────────────
+
+/** An answer as people say it. */
+export function answerWord(response: string | null | undefined): "Yes" | "Maybe" | "No" | "No reply yet" {
+  return response === "Accepted" ? "Yes" : response === "Tentative" ? "Maybe" : response === "Declined" ? "No" : "No reply yet";
+}
+
+/** How many said what: "3 yes, 1 maybe, 2 waiting". */
+export function tally(guests: Pick<Guest, "response">[]): string {
+  const n = (r: string) => guests.filter((g) => g.response === r).length;
+  const parts: [number, string][] = [[n("Accepted"), "yes"], [n("Tentative"), "maybe"], [n("Declined"), "no"], [guests.length - n("Accepted") - n("Tentative") - n("Declined"), "waiting"]];
+  return parts.filter(([c]) => c > 0).map(([c, w]) => `${c} ${w}`).join(", ");
+}
+
+const ADDRESS = /^[^\s@<>(),;:"]+@[^\s@<>(),;:"]+\.[^\s@<>(),;:"]+$/;
+
+/** Addresses typed or pasted (commas, semicolons, spaces or lines apart); what is not one is told apart. */
+export function parseGuests(text: string): { emails: string[]; bad: string[] } {
+  const emails: string[] = [];
+  const bad: string[] = [];
+  for (const raw of text.split(/[\s,;]+/)) {
+    const part = raw.trim().replace(/^<|>$/g, "");
+    if (!part) continue;
+    if (!ADDRESS.test(part)) bad.push(part);
+    else if (!emails.includes(part.toLowerCase())) emails.push(part.toLowerCase());
+  }
+  return { emails, bad };
+}
+
+/** The guest list after the editor: those who stay keep their answers, new ones are waiting. */
+export function mergeGuests(existing: Guest[], emails: string[], names: Record<string, string | undefined> = {}): { email: string; attendee_name?: string; response: string; comment?: string }[] {
+  const kept = new Map(existing.map((g) => [g.email.toLowerCase(), g]));
+  return emails.map((email) => {
+    const g = kept.get(email.toLowerCase());
+    const name = g?.name || names[email.toLowerCase()];
+    return { email, ...(name ? { attendee_name: name } : {}), response: g?.response ?? "Needs Action", ...(g?.comment ? { comment: g.comment } : {}) };
+  });
+}
+
+// ───────────────────────────── finding a time ─────────────────────────────
+
+/** Someone's busy time, as `/calendar/freebusy` answers (no details of what it is). */
+export interface Busy {
+  start: string;
+  end: string;
+}
+
+/** Busy time by person (lower-case address). */
+export type BusyMap = Record<string, Busy[]>;
+
+const ms = (d: Date | string) => (typeof d === "string" ? new Date(d).getTime() : d.getTime());
+
+/** Who is busy at some point between `start` and `end`. */
+export function clashes(busy: BusyMap, start: Date, end: Date): string[] {
+  return Object.entries(busy)
+    .filter(([, list]) => list.some((b) => ms(b.start) < ms(end) && ms(b.end) > ms(start)))
+    .map(([who]) => who);
+}
+
+/** Times for a meeting of `minutes` that suit everyone in `busy`: on the marks of `step` minutes,
+ *  within working hours (`start` to `end`, in hours of the viewer's day), from `from` on, over the
+ *  next `days` days; weekends are skipped unless asked for. */
+export function suggestSlots(
+  busy: BusyMap,
+  o: { from: Date; days: number; minutes: number; start?: number; end?: number; step?: number; limit?: number; weekends?: boolean },
+): Date[] {
+  const { start = 9, end = 18, step = 30, limit = 5 } = o;
+  const out: Date[] = [];
+  for (let d = 0; d < o.days && out.length < limit; d++) {
+    const day = new Date(o.from.getFullYear(), o.from.getMonth(), o.from.getDate() + d);
+    if (!o.weekends && (day.getDay() === 0 || day.getDay() === 6)) continue;
+    for (let m = start * 60; m + o.minutes <= end * 60 && out.length < limit; m += step) {
+      const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, m);
+      if (at.getTime() < o.from.getTime()) continue;
+      if (!clashes(busy, at, new Date(at.getTime() + o.minutes * 60_000)).length) out.push(at);
+    }
+  }
+  return out;
+}
+
+/** Busy time laid on a day's hours as shares of the width (percent), cut to the hours shown. */
+export function bars(busy: Busy[], day: Date, fromHour: number, toHour: number): { left: number; width: number }[] {
+  const base = new Date(day.getFullYear(), day.getMonth(), day.getDate(), fromHour).getTime();
+  const span = (toHour - fromHour) * 3_600_000;
+  return busy
+    .map((b) => ({ a: Math.max(ms(b.start), base), z: Math.min(ms(b.end), base + span) }))
+    .filter((b) => b.z > b.a)
+    .map((b) => ({ left: ((b.a - base) / span) * 100, width: ((b.z - b.a) / span) * 100 }));
+}
+
+/** "10:00–11:00" for a busy stretch, in the viewer's time. */
+export const stretch = (b: Busy) => {
+  const t = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return `${t(b.start)}–${t(b.end)}`;
+};
+
+// ───────────────────────────── the editor's fields ─────────────────────────────
+
+const two = (n: number) => String(n).padStart(2, "0");
+
+/** A date and time for `<input type="datetime-local">`, in the viewer's time. */
+export const toInput = (d: Date) => `${isoDay(d)}T${two(d.getHours())}:${two(d.getMinutes())}`;
+
+/** The date of a `datetime-local` or `date` input in the viewer's time; none if it is not one. */
+export function fromInput(v: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?$/.exec(v.trim());
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4] ?? 0), Number(m[5] ?? 0));
+  return Number.isNaN(d.getTime()) || d.getMonth() !== Number(m[2]) - 1 ? null : d;
+}
+
+/** The next whole hour from `now`. */
+export function nextHour(now = new Date()): Date {
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1);
+  return d;
+}
+
+export type Repeat = "none" | "daily" | "weekdays" | "weekly" | "monthly" | "yearly" | "custom";
+
+export const REPEATS: { value: Exclude<Repeat, "custom">; label: string }[] = [
+  { value: "none", label: "Does not repeat" },
+  { value: "daily", label: "Every day" },
+  { value: "weekdays", label: "Every weekday" },
+  { value: "weekly", label: "Every week" },
+  { value: "monthly", label: "Every month" },
+  { value: "yearly", label: "Every year" },
+];
+
+const RULES: Record<Exclude<Repeat, "none" | "custom">, string> = {
+  daily: "FREQ=DAILY",
+  weekdays: "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR",
+  weekly: "FREQ=WEEKLY",
+  monthly: "FREQ=MONTHLY",
+  yearly: "FREQ=YEARLY",
+};
+
+/** What a stored rule is, in the editor's terms (and until when); anything else is "custom", kept as it is. */
+export function repeatOf(rule: string | null | undefined): { kind: Repeat; until: string } {
+  const text = (rule ?? "").trim();
+  if (!text) return { kind: "none", until: "" };
+  const m = /^(.*?)(?:;UNTIL=(\d{4})(\d{2})(\d{2})(?:T\d{6}Z?)?)?$/i.exec(text);
+  const base = (m?.[1] ?? text).toUpperCase();
+  const kind = (Object.entries(RULES).find(([, r]) => r === base)?.[0] as Repeat | undefined) ?? "custom";
+  return { kind, until: kind !== "custom" && m?.[2] ? `${m[2]}-${m[3]}-${m[4]}` : "" };
+}
+
+/** The rule for the editor's choice; none for no repeat. */
+export function ruleFor(kind: Exclude<Repeat, "custom">, until: string): string | null {
+  if (kind === "none") return null;
+  const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(until);
+  return day ? `${RULES[kind]};UNTIL=${day[1]}${day[2]}${day[3]}T235959Z` : RULES[kind];
+}
+
+/** Reminders the editor offers, minutes before. */
+export const REMINDERS: { minutes: number; label: string }[] = [
+  { minutes: 0, label: "When it starts" },
+  { minutes: 5, label: "5 minutes before" },
+  { minutes: 10, label: "10 minutes before" },
+  { minutes: 15, label: "15 minutes before" },
+  { minutes: 30, label: "30 minutes before" },
+  { minutes: 60, label: "1 hour before" },
+  { minutes: 1440, label: "1 day before" },
+];
+
+/** The one reminder the editor shows for a list of them: none, one of the offered, or "custom" (kept). */
+export function reminderOf(minutes: number[]): number | "none" | "custom" {
+  if (!minutes.length) return "none";
+  return minutes.length === 1 && REMINDERS.some((r) => r.minutes === minutes[0]) ? minutes[0]! : "custom";
 }

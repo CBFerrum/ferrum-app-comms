@@ -5,6 +5,7 @@
     - {name: email, type: email, required: true, in_list: true, description: "A colleague's sign-in email or an outside address (outside guests get an invitation email)"}
     - {name: attendee_name, type: data, in_list: true}
     - {name: response, type: select, options: [Needs Action, Accepted, Declined, Tentative], default: Needs Action, required: true, in_list: true}
+    - {name: comment, type: text, max_length: 500, description: A note that came with their answer}
 
 - name: CalendarEventReminder
   label: Reminder

@@ -7,6 +7,8 @@ use crate::ics::{self, Attendee, VEvent};
 use crate::recur::{self, Exception, Series};
 use crate::util::{self, b, id, int, rows, s};
 use async_trait::async_trait;
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use ferrum_kernel::{Action, Ctx, Doc, DocHook, Error, FieldError, HookCtx, Kernel, Result, SiteRequest, SiteResponse, Tx, notify};
 use serde_json::{Map, Value, json};
@@ -147,6 +149,15 @@ async fn queue_invitation(hc: &mut HookCtx<'_>, doc: &Doc, to: &str, method: &st
     }
     if let Some(l) = &join {
         html.push_str(&format!("<p>Join: <a href=\"{0}\">{0}</a></p>", e(l)));
+    }
+    // Someone outside the workspace answers from the invitation itself, with no account.
+    if method != "CANCEL"
+        && let Some(base) = answer_link(hc.kernel, hc.tx, hc.ctx.tenant, doc, to).await?
+    {
+        html.push_str(&format!(
+            "<p>Will you come? <a href=\"{0}?r=yes\">Yes</a> · <a href=\"{0}?r=maybe\">Maybe</a> · <a href=\"{0}?r=no\">No</a></p>",
+            e(&base)
+        ));
     }
     if let Some(d) = s(doc, "description") {
         html.push_str(&format!("<p>{}</p>", e(d).replace('\n', "<br>")));
@@ -537,7 +548,7 @@ fn merge(mut v: Vec<(DateTime<Utc>, DateTime<Utc>)>) -> Vec<(DateTime<Utc>, Date
     out
 }
 
-/// `POST /calendar/freebusy` `{users: [emails], from, to}`: busy intervals only, no details.
+/// `POST /calendar/freebusy` `{users: [emails], from, to, exclude?: event}`: busy intervals only, no details.
 async fn free_busy(k: &Kernel, ctx: &Ctx, body: Map<String, Value>) -> Result<Value> {
     let users: Vec<String> =
         body.get("users").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(|e| e.trim().to_lowercase()).collect()).unwrap_or_default();
@@ -545,12 +556,14 @@ async fn free_busy(k: &Kernel, ctx: &Ctx, body: Map<String, Value>) -> Result<Va
         return Err(Error::field("users", "give 1 to 50 emails"));
     }
     let (from, to) = range(body.get("from").and_then(Value::as_str), body.get("to").and_then(Value::as_str))?;
+    // An event being edited does not count against its own time.
+    let exclude: Option<Uuid> = body.get("exclude").and_then(Value::as_str).and_then(|e| e.parse().ok());
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let mut busy = Map::new();
     for u in users {
         let mut intervals = Vec::new();
         for (doc, _) in events_of(&mut tx, ctx.tenant, &u, from, to, false, false).await? {
-            if s(&doc, "status") == Some("Cancelled") {
+            if s(&doc, "status") == Some("Cancelled") || (exclude.is_some() && id(&doc, "id") == exclude) {
                 continue;
             }
             if let Some(sr) = series(&doc) {
@@ -563,42 +576,184 @@ async fn free_busy(k: &Kernel, ctx: &Ctx, body: Map<String, Value>) -> Result<Va
     Ok(json!({"from": util::ts(from), "to": util::ts(to), "busy": busy}))
 }
 
-/// `POST /calendar/events/{id}/rsvp` `{response: Accepted|Declined|Tentative|Needs Action}`.
+/// The words an organizer reads for an answer.
+fn answered(response: &str) -> &'static str {
+    match response {
+        "Accepted" => "accepted",
+        "Declined" => "declined",
+        "Tentative" => "might attend",
+        _ => "has not decided on",
+    }
+}
+
+/// Writes one attendee's answer (and a note that came with it) on the event, and tells its
+/// organizer. `write` is who changes the event (the person, or the system for someone answering
+/// from a link); `who` is how the organizer should read the name.
+async fn record_answer(
+    k: &Kernel,
+    tx: &mut Tx,
+    tenant: Uuid,
+    write: &Ctx,
+    doc: &Doc,
+    email: &str,
+    response: &str,
+    note: Option<&str>,
+    who: &str,
+) -> Result<()> {
+    let event = util::doc_id(doc)?;
+    let mut list: Vec<Value> = doc.get("attendees").and_then(Value::as_array).cloned().unwrap_or_default();
+    let Some(row) = list.iter_mut().find(|r| r.get("email").and_then(Value::as_str).is_some_and(|e| e.eq_ignore_ascii_case(email))) else {
+        return Err(Error::NotFound("Event".into()));
+    };
+    row["response"] = json!(response);
+    if let Some(note) = note {
+        row["comment"] = if note.is_empty() { Value::Null } else { json!(note) };
+    }
+    let mut patch = Doc::new();
+    patch.insert("attendees".into(), Value::Array(list));
+    k.update_tx(write, tx, "CalendarEvent", event, patch, None).await?;
+    if let Some(owner) = s(doc, "owner").filter(|o| !o.eq_ignore_ascii_case(email))
+        && let Some(user) = util::user_id(tx, tenant, owner).await?
+    {
+        let title = util::cut(&format!("{who} {}: {}", answered(response), s(doc, "subject").unwrap_or_default()), 200);
+        notify::send_kind(tx, tenant, user, "comms.rsvp", "inapp", &title, note.filter(|n| !n.is_empty()), Some("CalendarEvent"), Some(event)).await?;
+    }
+    Ok(())
+}
+
+const RESPONSES: &[&str] = &["Accepted", "Declined", "Tentative", "Needs Action"];
+
+/// `POST /calendar/events/{id}/rsvp` `{response: Accepted|Declined|Tentative|Needs Action, note?}`.
 pub(crate) async fn rsvp(k: &Kernel, ctx: &Ctx, event: Uuid, body: Map<String, Value>) -> Result<Value> {
     let response = body.get("response").and_then(Value::as_str).unwrap_or_default().to_string();
-    if !["Accepted", "Declined", "Tentative", "Needs Action"].contains(&response.as_str()) {
+    if !RESPONSES.contains(&response.as_str()) {
         return Err(Error::field("response", "must be Accepted, Declined, Tentative or Needs Action"));
     }
+    let note = body.get("note").and_then(Value::as_str).map(|n| util::clean_line(n, 500));
     let me = ctx.email.to_lowercase();
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let doc = k.get_tx(&util::sys(ctx), &mut tx, "CalendarEvent", event, true).await.map_err(|_| Error::NotFound("Event".into()))?;
-    let mut list: Vec<Value> = doc.get("attendees").and_then(Value::as_array).cloned().unwrap_or_default();
-    let Some(row) = list.iter_mut().find(|r| r.get("email").and_then(Value::as_str).is_some_and(|e| e.eq_ignore_ascii_case(&me))) else {
+    if !attendees(&doc).iter().any(|a| a.0 == me) {
         return Err(if lower(s(&doc, "owner")) == me || s(&doc, "visibility") == Some("Public") {
             Error::invalid("you are not on this event's guest list")
         } else {
             Error::NotFound("Event".into())
         });
-    };
-    row["response"] = json!(response);
-    let mut patch = Doc::new();
-    patch.insert("attendees".into(), Value::Array(list));
-    k.update_tx(&util::elevated(ctx), &mut tx, "CalendarEvent", event, patch, None).await?;
-    if let Some(owner) = s(&doc, "owner").filter(|o| !o.eq_ignore_ascii_case(&me))
-        && let Some(user) = util::user_id(&mut tx, ctx.tenant, owner).await?
-    {
-        let who = if ctx.full_name.trim().is_empty() { ctx.email.clone() } else { ctx.full_name.clone() };
-        let verb = match response.as_str() {
-            "Accepted" => "accepted",
-            "Declined" => "declined",
-            "Tentative" => "might attend",
-            _ => "has not decided on",
-        };
-        let title = util::cut(&format!("{who} {verb}: {}", s(&doc, "subject").unwrap_or_default()), 200);
-        notify::send_kind(&mut tx, ctx.tenant, user, "comms.rsvp", "inapp", &title, None, Some("CalendarEvent"), Some(event)).await?;
     }
+    let who = if ctx.full_name.trim().is_empty() { ctx.email.clone() } else { ctx.full_name.clone() };
+    record_answer(k, &mut tx, ctx.tenant, &util::elevated(ctx), &doc, &me, &response, note.as_deref(), &who).await?;
     tx.commit().await?;
     Ok(json!({"event": event, "response": response}))
+}
+
+/// `GET /calendar/events/{id}`: who is invited and what each answered (with their notes, for the
+/// organizer), for the organizer and the guests. Anyone else who may see the event gets no list.
+async fn event_detail(k: &Kernel, ctx: &Ctx, event: Uuid) -> Result<Value> {
+    let me = ctx.email.to_lowercase();
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let doc = k.get_tx(&util::sys(ctx), &mut tx, "CalendarEvent", event, false).await.map_err(|_| Error::NotFound("Event".into()))?;
+    let organizer = lower(s(&doc, "owner")) == me;
+    let guest = attendees(&doc).iter().any(|a| a.0 == me);
+    if !organizer && !guest && s(&doc, "visibility") != Some("Public") {
+        return Err(Error::NotFound("Event".into()));
+    }
+    let guests: Vec<Value> = if organizer || guest {
+        rows(&doc, "attendees")
+            .iter()
+            .map(|a| json!({"email": a.get("email"), "name": a.get("attendee_name"), "response": a.get("response"), "comment": if organizer { a.get("comment").cloned() } else { None }}))
+            .collect()
+    } else {
+        vec![]
+    };
+    let owner = lower(s(&doc, "owner"));
+    let owner_name = display_name(&mut tx, ctx.tenant, &owner).await?;
+    tx.commit().await?;
+    Ok(json!({"id": event, "version": doc.get("version"), "attendees": guests, "owner": owner, "owner_name": owner_name}))
+}
+
+// ───────────────────────────── answering from the invitation ─────────────────────────────
+
+/// What an answer link stands for: the event, and the address the invitation went to.
+fn answer_claim(event: Uuid, email: &str) -> String {
+    format!("rsvp|{event}|{}", email.to_lowercase())
+}
+
+/// The token in an answer link: only the invitation's recipient has it, and it works for no other event or address.
+fn answer_token(key: &[u8], event: Uuid, email: &str) -> String {
+    let email = email.to_lowercase();
+    format!("r.{}.{}.{}", event.simple(), URL_SAFE_NO_PAD.encode(&email), util::sign(key, &answer_claim(event, &email)))
+}
+
+/// The address of Calendar's page for answering an invitation (`/calendar/rsvp/{workspace}/{token}`),
+/// when the workspace's public address is known.
+async fn answer_link(k: &Kernel, tx: &mut Tx, tenant: Uuid, doc: &Doc, email: &str) -> Result<Option<String>> {
+    let Some(event) = id(doc, "id") else { return Ok(None) };
+    let base = util::settings(tx, tenant).await?.public_url.or_else(|| k.settings.public_url.clone().map(|u| u.trim_end_matches('/').to_string()));
+    let Some(base) = base else { return Ok(None) };
+    let key = util::signing_key(k, tenant).await?;
+    Ok(Some(format!("{base}/calendar/rsvp/{}/{}", util::slug(tx, tenant).await?, answer_token(&key, event, email))))
+}
+
+/// The event and the address an answer link is for, when the link is genuine and the person is
+/// still invited.
+async fn open_answer(k: &Kernel, tenant: Uuid, token: &str) -> Result<(Doc, String)> {
+    let gone = || Error::invalid("This link no longer works. Ask the person who invited you to send it again.");
+    let parts: Vec<&str> = token.split('.').collect();
+    let [kind, event, email, signature] = parts.as_slice() else { return Err(gone()) };
+    let (event, email) = match (*kind, event.parse::<Uuid>(), URL_SAFE_NO_PAD.decode(email).ok().and_then(|e| String::from_utf8(e).ok())) {
+        ("r", Ok(event), Some(email)) => (event, email),
+        _ => return Err(gone()),
+    };
+    if !util::verify(&util::signing_key(k, tenant).await?, &answer_claim(event, &email), signature) {
+        return Err(gone());
+    }
+    let sys = Ctx::system(tenant, k.registry.schema(tenant).await?);
+    let mut tx = k.db.tenant_tx(tenant).await?;
+    let doc = k.get_tx(&sys, &mut tx, "CalendarEvent", event, false).await.map_err(|_| gone())?;
+    tx.commit().await?;
+    if !attendees(&doc).iter().any(|a| a.0 == email.to_lowercase()) {
+        return Err(gone());
+    }
+    Ok((doc, email.to_lowercase()))
+}
+
+/// `GET /api/site/{workspace}/comms/rsvp?token=` (public): what the invitation is for, to show on the page that takes the answer.
+pub async fn answer_info(k: &Kernel, tenant: Uuid, token: &str) -> Result<Value> {
+    let (doc, email) = open_answer(k, tenant, token).await?;
+    let mine = attendees(&doc).into_iter().find(|a| a.0 == email);
+    let mut tx = k.db.tenant_tx(tenant).await?;
+    let owner = lower(s(&doc, "owner"));
+    let by = display_name(&mut tx, tenant, &owner).await?.unwrap_or_else(|| owner.clone());
+    tx.commit().await?;
+    Ok(json!({
+        "subject": s(&doc, "subject"), "when": when(&doc), "where": s(&doc, "location"), "description": s(&doc, "description"),
+        "organizer": by, "guest": {"email": email, "name": mine.as_ref().and_then(|m| m.1.clone())},
+        "response": mine.map(|m| m.2).unwrap_or_else(|| "Needs Action".into()),
+        "cancelled": s(&doc, "status") == Some("Cancelled"),
+    }))
+}
+
+/// `POST /api/site/{workspace}/comms/rsvp {token, response: Accepted|Tentative|Declined, note?}` (public).
+pub async fn answer(k: &Kernel, tenant: Uuid, client: &str, body: &Map<String, Value>) -> Result<Value> {
+    k.rate_limit(&format!("comms-rsvp|{tenant}|{client}"), std::time::Duration::from_secs(60), 20, "Too many answers from here. Try again in a minute.")
+        .await?;
+    let response = body.get("response").and_then(Value::as_str).unwrap_or_default();
+    if !["Accepted", "Tentative", "Declined"].contains(&response) {
+        return Err(Error::field("response", "must be Accepted, Tentative or Declined"));
+    }
+    let (doc, email) = open_answer(k, tenant, body.get("token").and_then(Value::as_str).unwrap_or_default()).await?;
+    if s(&doc, "status") == Some("Cancelled") {
+        return Err(Error::invalid("this event was cancelled"));
+    }
+    let note = body.get("note").and_then(Value::as_str).map(|n| util::clean_line(n, 500));
+    let name = attendees(&doc).into_iter().find(|a| a.0 == email).and_then(|a| a.1).unwrap_or_else(|| email.clone());
+    let sys = Ctx::system(tenant, k.registry.schema(tenant).await?);
+    let mut tx = k.db.tenant_tx(tenant).await?;
+    // Read again inside the transaction that changes it, so two answers at once do not undo each other.
+    let current = k.get_tx(&sys, &mut tx, "CalendarEvent", util::doc_id(&doc)?, true).await?;
+    record_answer(k, &mut tx, tenant, &sys, &current, &email, response, note.as_deref(), &name).await?;
+    tx.commit().await?;
+    Ok(json!({"response": response}))
 }
 
 // ───────────────────────────── feed and import ─────────────────────────────
@@ -845,6 +1000,7 @@ pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> 
         ("GET", ["events"]) => my_calendar(k, ctx, req).await?,
         ("GET", ["invitations"]) => invitations(k, ctx).await?,
         ("POST", ["freebusy"]) => free_busy(k, ctx, util::body_json(req)?).await?,
+        ("GET", ["events", e]) => event_detail(k, ctx, uuid(e)?).await?,
         ("POST", ["events", e, "rsvp"]) => rsvp(k, ctx, uuid(e)?, util::body_json(req)?).await?,
         (m, ["feed"]) => feed_token(k, ctx, m).await?,
         ("POST", ["import"]) => import(k, ctx, req).await?,

@@ -11,11 +11,13 @@ import { Route, Routes } from "react-router";
 import { api, docPath, errorMessage, shell, type IntentRequest } from "@ferrum/client";
 import { EmptyState, Spinner, toast } from "@ferrum/kit";
 import { Button, Input, Label, Textarea } from "@ferrum/kit/primitives";
+import { useMe, usePeople } from "@ferrum/records";
 import { ChatBase, ChatPage } from "./Chat";
 import { Compose, MailUnavailable, useMailboxes } from "./Mail";
 import { CHAT, type ChannelSummary } from "./lib/chat";
 import { mailAccount, useMailSession } from "./lib/mail";
-import { meetLink } from "./lib/meet";
+import { CALENDAR, clashes, fromInput, parseGuests, stretch, suggestSlots, toInput, type BusyMap } from "./lib/calendar";
+import { meetLink, useMeetAvailable } from "./lib/meet";
 
 /** The intent this page answers, once the asking page has said. */
 function useIntent() {
@@ -68,6 +70,9 @@ function localInput(d: Date): string {
 export function ScheduleIntentPage() {
   const { req, error } = useIntent();
   const ids = useId();
+  const meets = useMeetAvailable().data === true;
+  const me = useMe().data?.user.email.toLowerCase();
+  const people = usePeople().data?.users ?? [];
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState<{ subject: string; starts: string; ends: string; attendees: string; location: string; description: string; meeting: boolean } | null>(null);
   useEffect(() => {
@@ -90,9 +95,24 @@ export function ScheduleIntentPage() {
       meeting: d.meeting === true,
     });
   }, [req, form]);
+  // Colleagues among the guests: when they are free, so a clash shows before the invitation goes.
+  const guests = parseGuests(form?.attendees ?? "").emails.filter((e) => people.some((p) => p.email.toLowerCase() === e));
+  const span = form ? { starts: fromInput(form.starts), ends: fromInput(form.ends) } : null;
+  const day = span?.starts ? new Date(span.starts.getFullYear(), span.starts.getMonth(), span.starts.getDate()) : null;
+  const free = useQuery({
+    queryKey: ["calendar", "busy", "intent", guests.join(","), day?.toISOString()],
+    queryFn: ({ signal }) =>
+      api.post<{ busy: BusyMap }>(`${CALENDAR}/freebusy`, { users: [...new Set([me, ...guests])].filter(Boolean), from: day!.toISOString(), to: new Date(day!.getTime() + 8 * 86_400_000).toISOString() }, { signal }).then((r) => r.busy),
+    enabled: !!me && guests.length > 0 && !!day,
+    staleTime: 60_000,
+  });
   if (error) return <EmptyState title="Nothing to schedule">{error}</EmptyState>;
   if (!req || !form) return <Spinner label="Opening Calendar" />;
   const set = (patch: Partial<typeof form>) => setForm({ ...form, ...patch });
+  const names = (list: string[]) => list.map((e) => (e === me ? "You" : people.find((p) => p.email.toLowerCase() === e)?.full_name || e));
+  const clash = free.data && span?.starts && span.ends ? clashes(free.data, span.starts, span.ends) : [];
+  const minutes = span?.starts && span.ends ? Math.max(15, Math.round((span.ends.getTime() - span.starts.getTime()) / 60_000)) : 30;
+  const better = clash.length && free.data && span?.starts ? suggestSlots(free.data, { from: new Date(Math.max(Date.now(), span.starts.getTime() - 3_600_000)), days: 8, minutes, limit: 3 }) : [];
   const record = (req.data as { record?: { entity?: unknown; id?: unknown } } | null)?.record;
   const save = async (e: FormEvent) => {
     e.preventDefault();
@@ -117,7 +137,7 @@ export function ScheduleIntentPage() {
         reference_entity: typeof record?.entity === "string" ? record.entity : null,
         reference_id: typeof record?.id === "string" ? record.id : null,
       });
-      if (form.meeting) await api.patch(docPath("CalendarEvent", made.id), { meeting_link: meetLink("event", made.id) });
+      if (form.meeting && meets) await api.patch(docPath("CalendarEvent", made.id), { meeting_link: meetLink("event", made.id) });
       shell().intent.done({ id: made.id });
     } catch (err) {
       toast(errorMessage(err), "error");
@@ -141,6 +161,23 @@ export function ScheduleIntentPage() {
           <Input id={`${ids}-to`} type="datetime-local" value={form.ends} onChange={(e) => set({ ends: e.target.value })} />
         </div>
       </div>
+      {clash.length > 0 && span?.starts && span.ends && (
+        <div role="status" className="grid gap-1.5 rounded-md border border-warning bg-warning-soft px-3 py-2 text-sm">
+          <span>
+            {names(clash).join(" and ")} {clash.length === 1 ? "is" : "are"} busy ({clash.map((c) => (free.data?.[c] ?? []).filter((b) => Date.parse(b.start) < span.ends!.getTime() && Date.parse(b.end) > span.starts!.getTime()).map(stretch).join(", ")).join("; ")}) then.
+          </span>
+          {better.length > 0 && (
+            <span className="flex flex-wrap items-center gap-1.5">
+              Everyone is free:
+              {better.map((b) => (
+                <Button key={b.getTime()} type="button" size="xs" variant="outline" onClick={() => set({ starts: toInput(b), ends: toInput(new Date(b.getTime() + minutes * 60_000)) })}>
+                  {b.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })}, {b.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                </Button>
+              ))}
+            </span>
+          )}
+        </div>
+      )}
       <div className="grid gap-1.5">
         <Label htmlFor={`${ids}-a`}>Guests</Label>
         <Input id={`${ids}-a`} value={form.attendees} placeholder="ana@acme.example, …" onChange={(e) => set({ attendees: e.target.value })} />
@@ -153,9 +190,13 @@ export function ScheduleIntentPage() {
         <Label htmlFor={`${ids}-d`}>Notes</Label>
         <Textarea id={`${ids}-d`} rows={4} value={form.description} onChange={(e) => set({ description: e.target.value })} />
       </div>
-      <label className="flex items-center gap-2 text-sm">
-        <input type="checkbox" checked={form.meeting} onChange={(e) => set({ meeting: e.target.checked })} /> Add a video meeting
-      </label>
+      {meets ? (
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={form.meeting} onChange={(e) => set({ meeting: e.target.checked })} /> Add a video meeting
+        </label>
+      ) : (
+        <p className="text-xs text-muted-foreground">Video meetings are not set up on this server, so this one will not have a call.</p>
+      )}
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" onClick={() => shell().intent.cancel()} disabled={busy}>
           Cancel

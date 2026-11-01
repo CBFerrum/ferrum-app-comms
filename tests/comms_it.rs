@@ -1002,6 +1002,17 @@ async fn scenario() {
     assert_eq!(busy["busy"]["bob@acme.test"].as_array().unwrap().len(), 4);
     assert!(busy["busy"]["carol@acme.test"].as_array().unwrap().is_empty());
     assert!(busy["busy"]["alice@acme.test"][0].get("subject").is_none(), "no details in free/busy");
+    // An event being edited does not count against its own time.
+    let without = t
+        .ok(
+            alice,
+            "POST",
+            "/calendar/freebusy",
+            &[],
+            json!({"users": ["alice@acme.test", "bob@acme.test"], "from": window[0].1, "to": window[1].1, "exclude": event_id}),
+        )
+        .await;
+    assert!(without["busy"]["alice@acme.test"].as_array().unwrap().is_empty() && without["busy"]["bob@acme.test"].as_array().unwrap().is_empty());
     // Home's My work: the invitation Bob has not answered, its next occurrence, opening in Calendar.
     let waiting = t.ok(bob, "GET", "/calendar/invitations", &[], Value::Null).await;
     let items = waiting["items"].as_array().unwrap();
@@ -1132,6 +1143,36 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     let parts: Vec<&str> = pats.split('.').collect();
     let eve = format!("e.{}.{}.{}", parts[1], base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("eve@partner.test"), parts[3]);
     refused(guest(json!({"token": eve})).await, "not found");
+    // Answering from the invitation: its link carries the answer, needs no account, and is the guest's alone.
+    let answer_link = regex::Regex::new(r"https://erp\.acme\.test/calendar/rsvp/acme/(r\.[A-Za-z0-9._-]+)\?r=yes").unwrap();
+    let answer_token = answer_link.captures(&invitation).unwrap_or_else(|| panic!("an answer link in {invitation}"))[1].to_string();
+    let info = t.call(None, "GET", "/rsvp", &[("token", &answer_token)], Value::Null).await.unwrap();
+    assert_eq!(
+        (info["subject"].clone(), info["guest"]["name"].clone(), info["response"].clone()),
+        (json!("Supplier review"), json!("Pat Lee"), json!("Needs Action"))
+    );
+    let mut forged_answer = answer_token.clone();
+    forged_answer.replace_range(forged_answer.len() - 1.., if answer_token.ends_with('0') { "1" } else { "0" });
+    refused(t.call(None, "GET", "/rsvp", &[("token", &forged_answer)], Value::Null).await, "invalid");
+    refused(t.call(None, "POST", "/rsvp", &[], json!({"token": forged_answer, "response": "Accepted"})).await, "invalid");
+    refused(t.call(None, "POST", "/rsvp", &[], json!({"token": answer_token, "response": "Maybe"})).await, "invalid");
+    let said = t.call(None, "POST", "/rsvp", &[], json!({"token": answer_token, "response": "Tentative", "note": "Can I bring a colleague?"})).await.unwrap();
+    assert_eq!(said["response"], json!("Tentative"));
+    let seen = t.ok(alice, "GET", &format!("/calendar/events/{review}"), &[], Value::Null).await;
+    let pat = seen["attendees"].as_array().unwrap().iter().find(|a| a["email"] == json!("pat@partner.test")).unwrap();
+    assert_eq!((pat["response"].clone(), pat["comment"].clone()), (json!("Tentative"), json!("Can I bring a colleague?")));
+    assert_eq!(t.notifications(alice, "Pat Lee might attend: Supplier review").await, 1);
+    // A colleague sees who is invited and what they answered, not the notes the organizer was given.
+    let bobs_view = t.ok(bob, "GET", &format!("/calendar/events/{review}"), &[], Value::Null).await;
+    assert_eq!(bobs_view["attendees"].as_array().unwrap().len(), 2);
+    assert!(bobs_view["attendees"].as_array().unwrap().iter().all(|a| a["comment"].is_null()));
+    assert_eq!(bobs_view["attendees"][0]["response"], json!("Tentative"));
+    refused(t.call(Some(carol), "GET", &format!("/calendar/events/{review}"), &[], Value::Null).await, "not found");
+    // Colleagues add a note to their answers too.
+    t.ok(bob, "POST", &format!("/calendar/events/{review}/rsvp"), &[], json!({"response": "Accepted", "note": "Yes, with the contract"})).await;
+    let seen = t.ok(alice, "GET", &format!("/calendar/events/{review}"), &[], Value::Null).await;
+    let bobs = seen["attendees"].as_array().unwrap().iter().find(|a| a["email"] == json!("bob@acme.test")).unwrap();
+    assert_eq!((bobs["response"].clone(), bobs["comment"].clone()), (json!("Accepted"), json!("Yes, with the contract")));
     // Removing the guest from the event stops their link.
     k.update(alice, "CalendarEvent", review, obj(json!({"attendees": [{"email": "bob@acme.test"}]})), None).await.unwrap();
     refused(guest(json!({"token": pats})).await, "not found");

@@ -38,11 +38,13 @@ contributes:
     - {id: share, action: share, type: record, path: chat/_intent/share, title: Share in Chat}
   shell.sidepanel:
     - {id: chat, title: Chat, path: chat/_panel}
-  # A channel opens in Chat (`/open/ChatChannel/{id}`: links, search results, notifications), and
-  # a message in its channel at that message (what a mention's notification links to).
+  # A channel opens in Chat (`/open/ChatChannel/{id}`: links, search results, notifications), a
+  # message in its channel at that message (what a mention's notification links to), and an event
+  # in Calendar (an invitation's notification opens it to be answered; `new` is the editor).
   shell.open:
     - {id: channel, entity: ChatChannel, path: "chat/{id}"}
     - {id: message, entity: ChatMessage, path: "chat/m/{id}"}
+    - {id: event, entity: CalendarEvent, path: "calendar/e/{id}"}
   # The bar's search asks Chat for the messages the person may read (Ferrum apps-ui.md §12.8).
   shell.search:
     - {id: chat, title: Chat, endpoint: /api/app/comms/chat/search}
@@ -61,5 +63,7 @@ contributes:
     - {id: channel, label: Every message in the Chat channels you chose to hear in full, default: [inapp]}
     - {id: reply, label: Replies to email you sent, default: [inapp]}
     - {id: undelivered, label: Email you sent that could not be delivered, default: [inapp]}
+  # Pages anyone with a link opens: a meeting's guest page, and where a guest answers an invitation.
   shell.public:
     - {id: guest, path: meet/guest, title: Meeting}
+    - {id: rsvp, path: calendar/rsvp, title: Reply to an invitation}

@@ -146,7 +146,7 @@ mod tests {
         let m = ferrum_apps::AppManifest::parse(super::MANIFEST).expect("app.yaml");
         let routes: Vec<String> = m.routes().into_iter().map(|(r, _)| r).collect();
         assert_eq!(routes, ["mail", "chat", "calendar", "meet"]);
-        assert_eq!(m.public_paths(), ["meet/guest"]);
+        assert_eq!(m.public_paths(), ["calendar/rsvp", "meet/guest"]);
         let files = super::UI.iter().map(|(p, b)| (p.to_string(), b.to_vec())).collect();
         let ui = ferrum_apps::ui::prepare("comms", files).expect("ui/dist is an interface release");
         assert!(super::UI.iter().any(|(p, _)| *p == "index.html") && !super::UI.iter().any(|(p, _)| p.starts_with('.')), "{}", ui.digest);
