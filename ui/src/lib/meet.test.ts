@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { meetLink, meetPath } from "./meet";
+import { mediaProblem, meetLink, meetPath, notSetUp, openCall, opensBeside } from "./meet";
 
 const ORIGIN = "https://erp.example.com";
 const ID = "74486aa5-c53f-4a79-9861-c44e700c1197";
@@ -25,5 +25,29 @@ describe("meet", () => {
       null,
     ])
       expect(meetPath(href, ORIGIN), String(href)).toBeNull();
+  });
+});
+
+describe("calls on phones", () => {
+  it("opens a call beside the page on a computer and over it on a phone", () => {
+    expect([opensBeside({ coarse: false, width: 1280 }), opensBeside({ coarse: true, width: 1280 }), opensBeside({ coarse: false, width: 390 }), opensBeside({ coarse: true, width: 820 })]).toEqual([true, false, false, false]);
+    const click = () => ({ prevented: false, preventDefault() { this.prevented = true; } });
+    const phone = click();
+    openCall(phone, "/meet/room/1", { coarse: true, width: 390 });
+    expect(phone.prevented).toBe(false); // the link goes where it points
+    const keyed = { ...click(), ctrlKey: true };
+    openCall(keyed, "/meet/room/1", { coarse: false, width: 1280 });
+    expect(keyed.prevented).toBe(false);
+  });
+
+  it("says what keeps a camera and microphone from working", () => {
+    expect(mediaProblem({ secure: true, devices: true })).toBeNull();
+    expect(mediaProblem({ secure: false, devices: false })).toContain("secure connection");
+    expect(mediaProblem({ secure: true, devices: false })).toContain("cannot use a camera");
+  });
+
+  it("tells a meeting server that is not there from one that failed", () => {
+    expect(notSetUp("video meetings are not set up on this server")).toBe(true);
+    expect(notSetUp("could not establish signal connection")).toBe(false);
   });
 });

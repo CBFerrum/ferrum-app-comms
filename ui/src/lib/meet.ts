@@ -46,11 +46,37 @@ export function meetPath(href: string | null | undefined, origin = location.orig
   return m ? `/meet/${m[1].toLowerCase()}/${m[2].toLowerCase()}` : null;
 }
 
+/** What the browser and the device are, as far as opening a call goes. */
+export interface Setting {
+  /** A touch screen is the main way of pointing. */
+  coarse: boolean;
+  width: number;
+}
+
+/** Whether a call opens in a window of its own beside the page: on a computer yes; on a phone or
+ *  a small tablet the call takes the whole screen, and Back returns to where it began. */
+export const opensBeside = (s: Setting) => !s.coarse && s.width >= 768;
+
+const here = (): Setting => ({
+  coarse: typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches,
+  width: typeof innerWidth === "number" ? innerWidth : 1024,
+});
+
 /** Opens a meeting in its companion window, which outlives the page that opened it (Ferrum
  *  docs/plan/apps-ui.md §12.6): inside the click, or the browser blocks it. A click with a modifier
- *  opens the link as the browser would. */
-export function openCall(e: { preventDefault(): void; metaKey?: boolean; ctrlKey?: boolean; shiftKey?: boolean }, url: string) {
-  if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+ *  opens the link as the browser would, and so does one on a phone, where the call fills the screen. */
+export function openCall(e: { preventDefault(): void; metaKey?: boolean; ctrlKey?: boolean; shiftKey?: boolean }, url: string, setting: Setting = here()) {
+  if (e.metaKey || e.ctrlKey || e.shiftKey || !opensBeside(setting)) return;
   e.preventDefault();
   shell().companion({ kind: "meet", url, width: 1100, height: 720 });
 }
+
+/** What stands between this browser and a camera or microphone, in words; none if nothing does. */
+export function mediaProblem(env: { secure: boolean; devices: boolean } = { secure: typeof isSecureContext === "boolean" ? isSecureContext : true, devices: typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia }): string | null {
+  if (!env.secure) return "This page was not opened over a secure connection (https), so your browser will not let it use the camera or the microphone. You can still join and listen, and watch others.";
+  if (!env.devices) return "This browser cannot use a camera or a microphone. You can still join and listen, and watch others.";
+  return null;
+}
+
+/** Whether a failure was the server saying video meetings are not set up (as opposed to this one failing). */
+export const notSetUp = (message: string) => /not set up/i.test(message);
