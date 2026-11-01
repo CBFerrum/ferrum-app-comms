@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Personal data: a person's request now reaches chat messages they sent, mailing lists they are on and their calendar feeds, which an erasure blanks.
+
 ## 0.7.4
 
 - The bar's search finds chat messages (`shell.search`): those in public channels and in the
