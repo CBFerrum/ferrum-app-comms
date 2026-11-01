@@ -17,7 +17,7 @@ Chat
 - A channel's details open beside it: its name and topic, who can find it, who can post (every member,
   or only owners start posts while members reply in threads), how loud it is for you, leaving, and its
   members, which owners add, remove and make owners. The last owner cannot be demoted.
-- Typing @ offers the people to mention. Unsent text is kept for each conversation and thread. A message
+- Typing @ offers the people to mention (in a private conversation, only those who can read it). Unsent text is kept for each conversation and thread. A message
   that cannot be sent says why and stays. A mention's notification, a link to a message and a search
   result open the message in its place; a thread shows the message it belongs to; a conversation can be
   searched on its own.

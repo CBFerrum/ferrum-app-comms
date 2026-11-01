@@ -322,6 +322,11 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
   const owner = view?.role === "Owner";
   const meet = useMeetAvailable().data === true;
   const latest = list[list.length - 1]?.id;
+  // Only people who can read a private conversation can be told of a mention in it.
+  const mentionable = useMemo(
+    () => (!c || view?.type === "Public" ? people : people.filter((p) => c.members.some((m) => m.email.toLowerCase() === p.email.toLowerCase()))),
+    [people, c, view?.type],
+  );
 
   // Where "new" starts is decided when the conversation opens: reading it must not move it, and
   // the list waits for it, or it would open at the bottom and then jump.
@@ -464,7 +469,7 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
         {!view ? (
           <Skeleton className="h-10" />
         ) : state.state === "ok" ? (
-          <Composer channel={id} people={people} placeholder={`Message ${direct ? view.title : `#${view.name}`}`} onSent={target ? () => patch({ m: null }) : undefined} />
+          <Composer channel={id} people={mentionable} placeholder={`Message ${direct ? view.title : `#${view.name}`}`} onSent={target ? () => patch({ m: null }) : undefined} />
         ) : state.state === "join" ? (
           <div className="flex items-center gap-3 text-sm">
             <span className="flex-1 text-muted-foreground">You are reading a public channel. Join it to post and to hear of new messages.</span>
@@ -480,6 +485,7 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
           root={threadId}
           highlight={target}
           people={people}
+          mentionable={mentionable}
           me={email}
           canModerate={owner}
           posting={view ? posting(view, true) : { state: "ok" }}
@@ -881,6 +887,7 @@ function Thread({
   root,
   highlight,
   people,
+  mentionable,
   me,
   canModerate,
   posting: allowed,
@@ -893,6 +900,8 @@ function Thread({
   /** A reply to bring into view. */
   highlight?: string | null;
   people: Person[];
+  /** Those who can be mentioned in this thread's replies. */
+  mentionable: Person[];
   me: string;
   canModerate: boolean;
   posting: ReturnType<typeof posting>;
@@ -934,7 +943,7 @@ function Thread({
       />
       <div className="border-t p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         {allowed.state === "ok" ? (
-          <Composer channel={channel} parent={root} people={people} placeholder="Reply in thread" autoFocus={!highlight} />
+          <Composer channel={channel} parent={root} people={mentionable} placeholder="Reply in thread" autoFocus={!highlight} />
         ) : allowed.state === "join" ? (
           <Button className="w-full" onClick={onJoin}>
             Join the channel to reply
