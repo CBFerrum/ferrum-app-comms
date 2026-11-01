@@ -252,7 +252,7 @@ function Card({ account, summary, open, fill, onToggle, me, onDraft }: { account
       <div>
         <button type="button" onClick={onToggle} aria-expanded={open} className="flex w-full items-center gap-2 px-4 py-2 text-left hover:bg-accent/50 pointer-coarse:min-h-11">
           {open ? <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" /> : <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />}
-          {unread && <span className="size-2 shrink-0 rounded-full bg-primary" aria-label="Unread" />}
+          {unread && <span className="size-2 shrink-0 rounded-full bg-primary" role="img" aria-label="Unread" />}
           <span className={cn("shrink-0 text-sm", unread ? "font-semibold" : "font-medium")}>{mine ? "You" : from || "(unknown sender)"}</span>
           {!open && <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">{summary.preview}</span>}
           {open && <span className="flex-1" />}
