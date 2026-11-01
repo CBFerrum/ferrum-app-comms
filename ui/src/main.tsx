@@ -8,7 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Link, Outlet, RouterProvider, useLocation, useRouteError } from "react-router";
-import { routeBase, shell } from "@ferrum/client";
+import { isPublicPage, routeBase, shell } from "@ferrum/client";
 import { ConfirmHost, EmptyState, ErrorState, Toaster } from "@ferrum/kit";
 import "./styles.css";
 
@@ -26,8 +26,9 @@ function Frame() {
   useEffect(() => shell().ready(), []);
   // Moving between Mail, Chat, Calendar and Meet stays in this page: the bar follows.
   const title = TITLES[pathname.split("/")[1] ?? ""];
+  // A page anyone with a link opens names itself (the event answered, the meeting).
   useEffect(() => {
-    if (title) shell().title(title);
+    if (title && !isPublicPage()) shell().title(title);
   }, [title]);
   return (
     <main id="main" className="comms-app">

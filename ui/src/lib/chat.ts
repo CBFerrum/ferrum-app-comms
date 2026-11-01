@@ -324,6 +324,11 @@ export const keys = {
   message: (id: string) => ["chat", "message", id] as const,
 };
 
+/** Fetches again whatever shows messages, but not the files they carry (an image would flicker). */
+export function refreshMessages(qc: { invalidateQueries(o: { queryKey: readonly unknown[] }): unknown }) {
+  for (const queryKey of [["chat", "messages"], ["chat", "thread"], ["chat", "message"], ["chat", "channels"]]) void qc.invalidateQueries({ queryKey });
+}
+
 /** Two letters for someone's picture: their name's first letters, else their address's. */
 export const initials = (name: string) =>
   name

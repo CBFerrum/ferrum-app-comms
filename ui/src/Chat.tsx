@@ -51,6 +51,7 @@ import {
   loudness,
   mentionsMe,
   posting,
+  refreshMessages,
   showMentions,
   startsDay,
   timeline,
@@ -672,7 +673,7 @@ function MessageRow({
     if (!(await confirmDialog({ title: "Delete this message?", message: "Its text and attachments are erased for everyone.", confirmLabel: "Delete", danger: true }))) return;
     try {
       await api.del(`${CHAT}/messages/${m.id}`);
-      void qc.invalidateQueries({ queryKey: ["chat"] });
+      refreshMessages(qc);
     } catch (e) {
       toast(errorMessage(e), "error");
     }
@@ -833,7 +834,7 @@ function EditBox({ m, onDone }: { m: Message; onDone: () => void }) {
     setFailed(null);
     try {
       await api.patch(`${CHAT}/messages/${m.id}`, { body });
-      void qc.invalidateQueries({ queryKey: ["chat"] });
+      refreshMessages(qc);
       onDone();
     } catch (e) {
       setFailed(errorMessage(e));
