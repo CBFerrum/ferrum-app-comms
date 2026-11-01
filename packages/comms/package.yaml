@@ -50,3 +50,4 @@ roles:
     permissions:
       - {entity: ChatChannel, read: true, write: true, create: true, delete: true, export: true}
       - {entity: ChatMessage, read: true, write: true, create: true, delete: true, export: true}
+export_tables: [comms_newsletter_delivery, comms_reminder_log, comms_meeting]

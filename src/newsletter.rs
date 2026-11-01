@@ -235,6 +235,17 @@ async fn send_batch(k: &Kernel, tenant: Uuid, newsletter: Uuid, budget: Duration
             break;
         }
         let mut tx = k.db.tenant_tx(tenant).await?;
+        // Recorded, so the next batch does not come back to them.
+        if !k.may_contact(&mut tx, tenant, &email).await? {
+            sqlx::query("insert into comms_newsletter_delivery (tenant_id, newsletter_id, email, status, error) values ($1, $2, $3, 'failed', 'processing of this person''s data is restricted') on conflict do nothing")
+                .bind(tenant)
+                .bind(newsletter)
+                .bind(&email)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            continue;
+        }
         // Claimed only while still subscribed to one of the groups (they may have just left).
         let claimed = sqlx::query(sqlx::AssertSqlSafe(format!(
             "insert into comms_newsletter_delivery (tenant_id, newsletter_id, email, status) \
