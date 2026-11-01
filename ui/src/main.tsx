@@ -68,6 +68,7 @@ const router = createBrowserRouter([
       { path: `${at("mail")}/:mailbox?/:email?`, lazy: page(mail, "MailPage") },
       { path: `${at("chat")}/_intent/share`, lazy: page(intents, "ShareIntentPage") },
       { path: `${at("chat")}/_panel/*`, lazy: page(intents, "ChatPanel") },
+      { path: `${at("chat")}/m/:message`, lazy: page(chat, "ChatMessagePage") },
       { path: `${at("chat")}/:channel?`, lazy: page(chat, "ChatPage") },
       { path: `${at("calendar")}/_intent/schedule`, lazy: page(intents, "ScheduleIntentPage") },
       { path: at("calendar"), lazy: page(calendar, "CalendarPage") },
