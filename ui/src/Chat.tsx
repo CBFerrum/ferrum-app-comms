@@ -1,69 +1,82 @@
 // Team chat on the Mail app's chat API: channels and direct conversations, threads, mentions,
 // edits, read markers, all kept current by the live socket's `chat` pushes (ids only; the
-// screen refetches through the API, which enforces membership).
+// screen refetches through the API, which enforces membership). A conversation opens at its first
+// unread message; a link, a search result or a notification opens it at the message itself
+// (`?m=`); its threads and details open beside it (`?thread=`, `?panel=`).
 
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, AtSign, Hash, Lock, MessageSquare, MessagesSquare, Paperclip, Pencil, Plus, Search, Trash2, Video, X } from "lucide-react";
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { Link, useNavigate, useParams } from "react-router";
-import { Badge } from "@ferrum/kit/primitives";
-import { Button } from "@ferrum/kit/primitives";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@ferrum/kit/primitives";
-import { Input } from "@ferrum/kit/primitives";
-import { Label } from "@ferrum/kit/primitives";
-import { Skeleton } from "@ferrum/kit/primitives";
-import { Textarea } from "@ferrum/kit/primitives";
-import { api, download, errorMessage, fetchBlob, newKey } from "@ferrum/client";
+import { ArrowLeft, BellOff, ChevronDown, Hash, Info, Lock, MessageSquare, MessagesSquare, MoreHorizontal, Paperclip, Plus, Search, Users, Video, X } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useContext, type FormEvent } from "react";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router";
+import {
+  Badge,
+  Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+  Input,
+  Label,
+  Skeleton,
+  Textarea,
+} from "@ferrum/kit/primitives";
+import { api, download, errorMessage, fetchBlob, relativeTime, shell } from "@ferrum/client";
+import { cn, confirmDialog, EmptyState, ErrorState, Markdown, toast, useLivePush } from "@ferrum/kit";
+import { useMe, usePeople } from "@ferrum/records";
+import { Composer, PeoplePicker } from "./ChatComposer";
+import { ChannelDetails, type DetailsTab } from "./ChatDetails";
+import { ChannelSearch, SearchDialog } from "./ChatSearch";
+import { Base } from "./chatBase";
 import {
   CHAT,
-  MAX_FILES,
+  SIDE_PANEL,
   attachmentPath,
   attachmentsOf,
+  badge,
   bodyTooLong,
   continues,
   fileSize,
-  mentionsIn,
+  filterChannels,
+  firstUnread,
+  groupChannels,
+  initials,
+  keys,
+  loudness,
+  mentionsMe,
+  posting,
   showMentions,
-  splitChannels,
   startsDay,
   timeline,
+  unreadTotal,
   type Attachment,
   type Channel,
   type ChannelSummary,
   type Message,
   type Person,
+  type Show,
 } from "./lib/chat";
-import { uploadFile, type StoredFile } from "@ferrum/client";
-import { relativeTime } from "@ferrum/client";
 import { openCall, useMeetAvailable } from "./lib/meet";
-import { useLivePush } from "@ferrum/kit";
-import { useMe } from "@ferrum/records";
-import { cn } from "@ferrum/kit";
-import { confirmDialog, ErrorState, toast } from "@ferrum/kit";
-import { Markdown } from "@ferrum/kit";
-import { usePeople } from "@ferrum/records";
-
-const keys = {
-  channels: ["chat", "channels"] as const,
-  channel: (id: string) => ["chat", "channel", id] as const,
-  messages: (id: string) => ["chat", "messages", id] as const,
-  thread: (id: string) => ["chat", "thread", id] as const,
-};
-
-const initials = (name: string) =>
-  name
-    .split(/[\s@.]+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((w) => w[0]!.toUpperCase())
-    .join("");
 
 const time = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const day = (iso: string) => new Date(iso).toLocaleDateString([], { weekday: "long", day: "numeric", month: "long" });
 
 /** Where Chat's pages are: `/chat` on its own page, `/chat/_panel` in the bar's side panel. */
-const Base = createContext("/chat");
 export const ChatBase = Base.Provider;
+
+/** One page of messages: the latest, an older one, or the window around a message. */
+interface Page {
+  messages: Message[];
+  next_cursor?: string | null;
+  newer?: boolean;
+  target?: Message;
+}
 
 function ChannelIcon({ c }: { c: Pick<ChannelSummary, "type"> }) {
   if (c.type === "Direct") return <MessageSquare className="size-4 shrink-0" aria-hidden="true" />;
@@ -92,51 +105,109 @@ export function ChatPage() {
   );
   useLivePush("chat", onPush);
 
-  if (channels.error) return <ErrorState error={channels.error} onRetry={() => void channels.refetch()} />;
+  // What waits to be read, on the launcher.
+  const waiting = unreadTotal(channels.data?.channels ?? []);
+  useEffect(() => shell().badge(waiting), [waiting]);
+  useEffect(() => () => shell().badge(0), []);
+
   return (
     <div data-fullbleed className="grid h-[calc(100dvh-var(--ferrum-bar-height,48px))] min-h-0 md:grid-cols-[280px_minmax(0,1fr)]">
       <aside className={cn("min-h-0 border-r", channel && "hidden md:block")} aria-label="Conversations">
-        <ChannelList list={channels.data?.channels} loading={channels.isLoading} active={channel} />
+        <ChannelList list={channels.data?.channels} loading={channels.isLoading} error={channels.error} onRetry={() => void channels.refetch()} active={channel} waiting={waiting} />
       </aside>
       <section className={cn("min-h-0", !channel && "hidden md:grid md:place-items-center")}>
         {channel ? (
           <Conversation key={channel} id={channel} summary={channels.data?.channels.find((c) => c.id === channel)} />
         ) : (
-          <p className="text-sm text-muted-foreground">Pick a conversation, or start one.</p>
+          <EmptyState title="Pick a conversation" icon="chat">
+            <p className="text-sm text-muted-foreground">Or start a new one from the buttons beside “Chat”.</p>
+          </EmptyState>
         )}
       </section>
     </div>
   );
 }
 
-function ChannelList({ list, loading, active }: { list?: ChannelSummary[]; loading: boolean; active?: string }) {
+const SHOWS: { id: Show; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "unread", label: "Unread" },
+  { id: "mentions", label: "Mentions" },
+];
+
+function ChannelList({
+  list,
+  loading,
+  error,
+  onRetry,
+  active,
+  waiting,
+}: {
+  list?: ChannelSummary[];
+  loading: boolean;
+  error: unknown;
+  onRetry: () => void;
+  active?: string;
+  waiting: number;
+}) {
   const base = useContext(Base);
+  const qc = useQueryClient();
   const [filter, setFilter] = useState("");
+  const [show, setShow] = useState<Show>("all");
   const [creating, setCreating] = useState<"channel" | "direct" | null>(null);
   const [searching, setSearching] = useState(false);
-  const f = filter.trim().toLowerCase();
-  const { mine, joinable } = splitChannels((list ?? []).filter((c) => !f || c.title.toLowerCase().includes(f) || c.name.toLowerCase().includes(f)));
-  const row = (c: ChannelSummary) => (
-    <li key={c.id}>
-      <Link
-        to={`${base}/${c.id}`}
-        aria-current={c.id === active ? "page" : undefined}
-        className={cn(
-          "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent pointer-coarse:min-h-11",
-          c.id === active && "bg-accent font-medium",
-          c.unread > 0 && "font-semibold",
-        )}
-      >
-        <ChannelIcon c={c} />
-        <span className="min-w-0 flex-1 truncate">{c.title || c.name}</span>
-        {c.unread > 0 && (
-          <Badge className="h-5 min-w-5 justify-center px-1.5" aria-label={`${c.unread} unread`}>
-            {c.unread > 99 ? "99+" : c.unread}
-          </Badge>
-        )}
-      </Link>
-    </li>
-  );
+  const shown = filterChannels(list ?? [], filter, show);
+  const { direct, channels, joinable } = groupChannels(shown);
+  const none = !loading && !error && !shown.length;
+
+  const readAll = async () => {
+    try {
+      await api.post(`${CHAT}/read-all`, {});
+      void qc.invalidateQueries({ queryKey: keys.channels });
+      toast("Everything is marked as read");
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    }
+  };
+
+  const row = (c: ChannelSummary) => {
+    const b = badge(c);
+    const quiet = loudness(c) === "Nothing";
+    return (
+      <li key={c.id}>
+        <Link
+          to={`${base}/${c.id}`}
+          aria-current={c.id === active ? "page" : undefined}
+          className={cn(
+            "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent pointer-coarse:min-h-11",
+            c.id === active && "bg-accent font-medium",
+            (b.count > 0 || b.mention) && "font-semibold",
+            quiet && "text-muted-foreground",
+          )}
+        >
+          <ChannelIcon c={c} />
+          <span className="min-w-0 flex-1 truncate">{c.title || c.name}</span>
+          {quiet && <BellOff className="size-3.5 shrink-0" aria-label="Muted" />}
+          {b.mention && (
+            <span className="grid size-5 shrink-0 place-items-center rounded-full border border-destructive bg-destructive-soft text-[11px] leading-none font-bold text-destructive" aria-hidden="true">
+              @
+            </span>
+          )}
+          {b.count > 0 && (
+            <Badge className="h-5 min-w-5 justify-center px-1.5" aria-hidden="true">
+              {b.count > 99 ? "99+" : b.count}
+            </Badge>
+          )}
+          {(b.count > 0 || b.mention) && (
+            <span className="sr-only">
+              {b.count > 0 ? `${b.count} unread` : ""}
+              {b.mention ? ", you were mentioned" : ""}
+            </span>
+          )}
+        </Link>
+      </li>
+    );
+  };
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 p-2">
       <div className="flex items-center gap-1">
@@ -150,22 +221,57 @@ function ChannelList({ list, loading, active }: { list?: ChannelSummary[]; loadi
         <Button size="icon-sm" variant="ghost" aria-label="New channel" onClick={() => setCreating("channel")}>
           <Plus />
         </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button size="icon-sm" variant="ghost" aria-label="More">
+              <MoreHorizontal />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem disabled={waiting === 0} onSelect={() => void readAll()}>
+              Mark everything as read
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
-      <Input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Find a conversation" aria-label="Find a conversation" />
-      <nav className="min-h-0 flex-1 overflow-y-auto">
+      <Input type="search" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Find a conversation" aria-label="Find a conversation" />
+      <div className="flex gap-1" role="group" aria-label="Show">
+        {SHOWS.map((s) => (
+          <Button key={s.id} size="xs" variant={show === s.id ? "secondary" : "ghost"} aria-pressed={show === s.id} onClick={() => setShow(s.id)}>
+            {s.label}
+          </Button>
+        ))}
+      </div>
+      <nav className="min-h-0 flex-1 overflow-y-auto" aria-label="Conversations" aria-busy={loading}>
         {loading && <Skeleton className="h-40" />}
-        <ul className="grid gap-0.5">{mine.map(row)}</ul>
-        {!loading && !mine.length && <p className="px-2 py-4 text-sm text-muted-foreground">No conversations yet.</p>}
+        {!!error && <ErrorState error={error} onRetry={onRetry} />}
+        {direct.length > 0 && (
+          <>
+            <h2 className="px-2 pt-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">Direct messages</h2>
+            <ul className="mt-1 grid gap-0.5">{direct.map(row)}</ul>
+          </>
+        )}
+        {channels.length > 0 && (
+          <>
+            <h2 className="mt-3 px-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">Channels</h2>
+            <ul className="mt-1 grid gap-0.5">{channels.map(row)}</ul>
+          </>
+        )}
         {joinable.length > 0 && (
           <>
             <h2 className="mt-4 px-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">Channels you can join</h2>
             <ul className="mt-1 grid gap-0.5">{joinable.map(row)}</ul>
           </>
         )}
+        {none && (
+          <p className="px-2 py-4 text-sm text-muted-foreground">
+            {filter.trim() ? `No conversation matches “${filter.trim()}”.` : show === "unread" ? "Nothing unread. You are up to date." : show === "mentions" ? "Nobody has mentioned you lately." : "No conversations yet. Start one with the buttons above."}
+          </p>
+        )}
       </nav>
       {creating === "channel" && <NewChannel onClose={() => setCreating(null)} />}
       {creating === "direct" && <NewDirect onClose={() => setCreating(null)} />}
-      {searching && <SearchDialog onClose={() => setSearching(false)} />}
+      {searching && <SearchDialog base={base} onClose={() => setSearching(false)} />}
     </div>
   );
 }
@@ -174,33 +280,105 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
   const base = useContext(Base);
   const qc = useQueryClient();
   const me = useMe().data;
+  const email = me?.user.email ?? "";
   const people = usePeople().data?.users ?? [];
-  const [thread, setThread] = useState<string | null>(null);
-  const channel = useQuery({ queryKey: keys.channel(id), queryFn: ({ signal }) => api.get<Channel>(`${CHAT}/channels/${id}`, undefined, signal) });
-  const messages = useInfiniteQuery({
-    queryKey: keys.messages(id),
+  const [params, setParams] = useSearchParams();
+  const target = params.get("m");
+  const threadId = params.get("thread");
+  const panel = params.get("panel");
+  const patch = useCallback(
+    (change: Record<string, string | null>) =>
+      setParams(
+        (p) => {
+          for (const [k, v] of Object.entries(change)) {
+            if (v === null) p.delete(k);
+            else p.set(k, v);
+          }
+          return p;
+        },
+        { replace: true },
+      ),
+    [setParams],
+  );
+
+  const channel = useQuery({
+    queryKey: keys.channel(id),
+    queryFn: ({ signal }) => api.get<Channel>(`${CHAT}/channels/${id}`, undefined, signal),
+    refetchOnMount: "always",
+  });
+  const feed = useInfiniteQuery({
+    queryKey: keys.messages(id, target),
     queryFn: ({ pageParam, signal }) =>
-      api.get<{ messages: Message[]; next_cursor?: string | null }>(`${CHAT}/channels/${id}/messages`, { limit: 50, cursor: pageParam || undefined }, signal),
+      api.get<Page>(`${CHAT}/channels/${id}/messages`, pageParam ? { limit: 50, cursor: pageParam } : target ? { around: target, limit: 40 } : { limit: 50 }, signal),
     initialPageParam: "",
     getNextPageParam: (last) => last.next_cursor || undefined,
   });
-  const list = useMemo(() => timeline((messages.data?.pages ?? []).map((p) => p.messages)), [messages.data]);
-  const member = !!(channel.data?.role ?? summary?.role);
-  const owner = (channel.data?.role ?? summary?.role) === "Owner";
+  const list = useMemo(() => timeline((feed.data?.pages ?? []).map((p) => p.messages)), [feed.data]);
+  const found = target ? feed.data?.pages[0]?.target : undefined;
+  const c = channel.data;
+  const view = c ?? summary;
+  const member = !!view?.role;
+  const owner = view?.role === "Owner";
   const meet = useMeetAvailable().data === true;
   const latest = list[list.length - 1]?.id;
 
-  // Read up to the newest message while the conversation is open and visible.
+  // Where "new" starts is decided when the conversation opens: reading it must not move it, and
+  // the list waits for it, or it would open at the bottom and then jump.
+  const [readAt, setReadAt] = useState<string | null | undefined>(undefined);
+  const [divider, setDivider] = useState<string | null | undefined>(undefined);
   useEffect(() => {
-    if (!latest || !member || document.visibilityState !== "visible") return;
+    if (readAt === undefined && channel.data && channel.isFetchedAfterMount) setReadAt(channel.data.last_read_at ?? null);
+  }, [readAt, channel.data, channel.isFetchedAfterMount]);
+  useEffect(() => {
+    if (divider !== undefined || feed.isLoading) return;
+    if (target) setDivider(null);
+    else if (readAt !== undefined) setDivider(member ? (firstUnread(list, readAt, email)?.id ?? null) : null);
+  }, [divider, feed.isLoading, target, readAt, member, list, email]);
+  const placing = divider === undefined && !channel.isError;
+
+  // A message found by a link that is a reply opens its thread.
+  const opened = useRef<string | null>(null);
+  useEffect(() => {
+    if (found?.parent && opened.current !== found.id) {
+      opened.current = found.id;
+      patch({ thread: found.parent, panel: null });
+    }
+  }, [found, patch]);
+
+  // Read up to the newest message once the person is at the bottom of an open, visible conversation;
+  // not while looking at older messages, and not after they marked one unread on purpose.
+  const [atBottom, setAtBottom] = useState(true);
+  const [visible, setVisible] = useState(() => document.visibilityState === "visible");
+  const kept = useRef(false);
+  useEffect(() => {
+    const on = () => setVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", on);
+    return () => document.removeEventListener("visibilitychange", on);
+  }, []);
+  const waiting = summary ? summary.unread > 0 || (summary.unread_mentions ?? 0) > 0 : true;
+  useEffect(() => {
+    if (!member || !!target || !latest || !atBottom || !visible || kept.current || !waiting) return;
     const t = setTimeout(() => {
       void api
         .post(`${CHAT}/channels/${id}/read`, {})
         .then(() => qc.invalidateQueries({ queryKey: keys.channels }))
         .catch(() => undefined);
-    }, 400);
+    }, 500);
     return () => clearTimeout(t);
-  }, [latest, member, id, qc]);
+  }, [latest, member, target, atBottom, visible, waiting, id, qc]);
+
+  const markUnread = async (m: Message) => {
+    kept.current = true;
+    try {
+      await api.post(`${CHAT}/channels/${id}/read`, { unread_from: m.id });
+      setDivider(m.id);
+      void qc.invalidateQueries({ queryKey: keys.channels });
+      toast("Marked as unread from that message");
+    } catch (e) {
+      kept.current = false;
+      toast(errorMessage(e), "error");
+    }
+  };
 
   const join = async () => {
     try {
@@ -211,64 +389,119 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
     }
   };
 
-  if (channel.error) return <ErrorState error={channel.error} onRetry={() => void channel.refetch()} />;
-  const c = channel.data;
+  if (channel.error && !summary) return <ErrorState error={channel.error} onRetry={() => void channel.refetch()} />;
+  const state = view ? posting(view) : ({ state: "ok" } as const);
+  const direct = view?.type === "Direct";
+  const open = (tab: DetailsTab | "search") => patch({ panel: tab, thread: null });
+  const side = panel === "search" ? "search" : panel ? "details" : threadId ? "thread" : null;
+
   return (
     <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto] xl:grid-cols-[minmax(0,1fr)_auto]">
-      <header className="flex items-center gap-2 border-b px-3 py-2 xl:col-span-2">
-        <Button asChild variant="ghost" size="icon-sm" className="md:hidden" aria-label="Back to conversations">
-          <Link to={base}>
-            <ArrowLeft />
-          </Link>
-        </Button>
-        {c ? <ChannelIcon c={c} /> : null}
-        <div className="min-w-0 flex-1">
-          <h2 className="truncate font-semibold">{c?.title || c?.name || summary?.title || "…"}</h2>
-          {c?.topic && <p className="truncate text-xs text-muted-foreground">{c.topic}</p>}
-        </div>
-        {c && c.type !== "Direct" && (
-          <span className="text-xs text-muted-foreground">
-            {c.members.length} {c.members.length === 1 ? "member" : "members"}
-          </span>
-        )}
-        {c && meet && !c.archived && (
-          <Button asChild variant="ghost" size="icon-sm" aria-label="Call" title="Start or join this conversation's call">
-            {/* The call opens in a window of its own, which outlives this page (docs/plan/apps-ui.md §12.6). */}
-            <a href={`/meet/channel/${id}`} onClick={(e) => openCall(e, `/meet/channel/${id}`)}>
-              <Video />
-            </a>
+      <div className="xl:col-span-2">
+        <header className="flex items-center gap-2 border-b px-3 py-2">
+          <Button asChild variant="ghost" size="icon-sm" className="md:hidden" aria-label="Back to conversations">
+            <Link to={base}>
+              <ArrowLeft />
+            </Link>
           </Button>
-        )}
-      </header>
-      <MessageList
-        list={list}
-        people={people}
-        me={me?.user.email ?? ""}
-        canModerate={owner}
-        loading={messages.isLoading}
-        error={messages.error}
-        hasMore={!!messages.hasNextPage}
-        loadMore={() => void messages.fetchNextPage()}
-        loadingMore={messages.isFetchingNextPage}
-        onThread={setThread}
-        className="row-start-2"
-      />
-      <div className="row-start-3 border-t p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-        {member ? (
-          <Composer channel={id} people={people} placeholder={`Message ${c?.type === "Direct" ? c.title : `#${c?.name ?? ""}`}`} />
-        ) : (
-          <div className="flex items-center gap-3 text-sm">
-            <span className="flex-1 text-muted-foreground">You are reading a public channel.</span>
-            <Button onClick={() => void join()}>Join channel</Button>
+          {view ? <ChannelIcon c={view} /> : null}
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate font-semibold">{c?.title || c?.name || summary?.title || "…"}</h2>
+            {c?.topic && <p className="truncate text-xs text-muted-foreground">{c.topic}</p>}
+          </div>
+          {c && !direct && (
+            <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => open("members")} aria-label={`${c.members.length} ${c.members.length === 1 ? "member" : "members"}: see who is in`}>
+              <Users aria-hidden="true" />
+              <span className="tabular-nums">{c.members.length}</span>
+            </Button>
+          )}
+          <Button variant="ghost" size="icon-sm" aria-label="Search this conversation" aria-pressed={side === "search"} onClick={() => (side === "search" ? patch({ panel: null }) : open("search"))}>
+            <Search />
+          </Button>
+          {c && meet && !c.archived && (
+            <Button asChild variant="ghost" size="icon-sm" aria-label="Call" title="Start or join this conversation's call">
+              {/* The call opens in a window of its own, which outlives this page (docs/plan/apps-ui.md §12.6). */}
+              <a href={`/meet/channel/${id}`} onClick={(e) => openCall(e, `/meet/channel/${id}`)}>
+                <Video />
+              </a>
+            </Button>
+          )}
+          <Button variant="ghost" size="icon-sm" aria-label="Details and notifications" aria-pressed={side === "details"} onClick={() => (side === "details" ? patch({ panel: null }) : open(direct ? "personal" : "general"))}>
+            <Info />
+          </Button>
+        </header>
+        {target && (
+          <div role="status" className="flex items-center gap-2 border-b bg-muted px-3 py-1.5 text-sm">
+            <span className="min-w-0 flex-1">{feed.error ? "That message could not be found." : "Showing the messages around the one you picked."}</span>
+            <Button size="xs" variant="outline" onClick={() => patch({ m: null })}>
+              Back to the latest
+            </Button>
           </div>
         )}
       </div>
-      {thread && <Thread channel={id} root={thread} people={people} me={me?.user.email ?? ""} canModerate={owner} member={member} onClose={() => setThread(null)} />}
+      <MessageList
+        scope="main"
+        list={placing ? [] : list}
+        people={people}
+        me={email}
+        canModerate={owner}
+        loading={feed.isLoading || placing}
+        error={feed.error && !target ? feed.error : null}
+        hasMore={!!feed.hasNextPage}
+        loadMore={() => void feed.fetchNextPage()}
+        loadingMore={feed.isFetchingNextPage}
+        onThread={(m) => patch({ thread: m, panel: null })}
+        onUnread={member ? (m) => void markUnread(m) : undefined}
+        marks={divider ? { [divider]: "New messages" } : undefined}
+        focus={target ? (found?.parent ?? found?.id ?? target) : undefined}
+        start={divider ?? undefined}
+        onBottom={setAtBottom}
+        empty={state.state === "owners" ? "No posts yet." : "No messages yet. Say hello."}
+        className="row-start-2"
+      />
+      <div className="row-start-3 border-t p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        {!view ? (
+          <Skeleton className="h-10" />
+        ) : state.state === "ok" ? (
+          <Composer channel={id} people={people} placeholder={`Message ${direct ? view.title : `#${view.name}`}`} onSent={target ? () => patch({ m: null }) : undefined} />
+        ) : state.state === "join" ? (
+          <div className="flex items-center gap-3 text-sm">
+            <span className="flex-1 text-muted-foreground">You are reading a public channel. Join it to post and to hear of new messages.</span>
+            <Button onClick={() => void join()}>Join channel</Button>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">{state.why}</p>
+        )}
+      </div>
+      {side === "thread" && threadId && (
+        <Thread
+          channel={id}
+          root={threadId}
+          highlight={target}
+          people={people}
+          me={email}
+          canModerate={owner}
+          posting={view ? posting(view, true) : { state: "ok" }}
+          onJoin={() => void join()}
+          onUnread={member ? (m) => void markUnread(m) : undefined}
+          onClose={() => patch({ thread: null })}
+        />
+      )}
+      {side === "details" && <ChannelDetails id={id} tab={(["general", "personal", "members"].includes(panel ?? "") ? panel : "general") as DetailsTab} onTab={(t) => patch({ panel: t })} onClose={() => patch({ panel: null })} />}
+      {side === "search" && (
+        <ChannelSearch
+          channel={id}
+          onPick={(m) => patch({ m: m.id, panel: null, thread: m.parent ?? null })}
+          onClose={() => patch({ panel: null })}
+        />
+      )}
     </div>
   );
 }
 
 function MessageList(p: {
+  /** Which list this is, so a message in two lists (a thread's first) has two places. */
+  scope: string;
   list: Message[];
   people: Person[];
   me: string;
@@ -279,55 +512,159 @@ function MessageList(p: {
   loadMore: () => void;
   loadingMore: boolean;
   onThread?: (id: string) => void;
+  onUnread?: (m: Message) => void;
+  /** Words on a line above a message: where the new ones start, how many replies follow. */
+  marks?: Record<string, string>;
+  /** A message to bring into view and mark. */
+  focus?: string;
+  /** Where the list opens when it has no `focus`: at this message, else the bottom. */
+  start?: string;
+  onBottom?: (atBottom: boolean) => void;
+  empty?: string;
   className?: string;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
+  const placed = useRef(false);
   const last = p.list[p.list.length - 1]?.id;
-  // Stay at the newest message unless the reader scrolled up to older ones.
+  const [seen, setSeen] = useState(last);
+
+  const report = (el: HTMLDivElement) => {
+    const now = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (now !== atBottom.current) {
+      atBottom.current = now;
+      p.onBottom?.(now);
+    }
+    if (now) setSeen(last);
+  };
+
+  // Opens at the message asked for, else the first unread one, else the newest; afterwards stays
+  // with the newest unless the reader scrolled up to older ones. A new message asked for is found
+  // again, and asking for none goes back to the newest.
+  const asked = useRef(p.focus);
   useLayoutEffect(() => {
     const el = box.current;
-    if (el && atBottom.current) el.scrollTop = el.scrollHeight;
-  }, [last, p.list.length]);
+    if (asked.current !== p.focus) {
+      asked.current = p.focus;
+      placed.current = !p.focus;
+      if (!p.focus) atBottom.current = true;
+    }
+    if (!el || !p.list.length) return;
+    if (!placed.current) {
+      const wanted = p.focus ?? p.start;
+      const at = wanted ? document.getElementById(p.focus ? `msg-${p.scope}-${wanted}` : `mark-${p.scope}-${wanted}`) : null;
+      if (wanted && !at) return;
+      placed.current = true;
+      if (at) el.scrollTop = p.focus ? at.offsetTop - el.clientHeight / 3 : at.offsetTop - 8;
+      else el.scrollTop = el.scrollHeight;
+      report(el);
+      return;
+    }
+    if (atBottom.current) {
+      el.scrollTop = el.scrollHeight;
+      setSeen(last);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- placing and following depend on what arrived, not on every render
+  }, [last, p.list.length, p.focus, p.start]);
+
+  const behind = !atBottom.current && seen !== last;
   return (
-    <div
-      ref={box}
-      onScroll={(e) => {
-        const el = e.currentTarget;
-        atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-      }}
-      className={cn("min-h-0 overflow-y-auto px-3 py-2", p.className)}
-      role="log"
-      aria-live="polite"
-      aria-label="Messages"
-    >
-      {p.hasMore && (
-        <div className="py-2 text-center">
-          <Button variant="ghost" size="sm" onClick={p.loadMore} disabled={p.loadingMore}>
-            {p.loadingMore ? "Loading…" : "Earlier messages"}
-          </Button>
-        </div>
+    <div className={cn("relative grid min-h-0 grid-rows-[minmax(0,1fr)]", p.className)}>
+      <div
+        ref={box}
+        onScroll={(e) => report(e.currentTarget)}
+        className="relative min-h-0 overflow-y-auto px-3 py-2"
+        role="log"
+        aria-live="polite"
+        aria-label="Messages"
+        tabIndex={-1}
+      >
+        {p.hasMore && (
+          <div className="py-2 text-center">
+            <Button variant="ghost" size="sm" onClick={p.loadMore} disabled={p.loadingMore}>
+              {p.loadingMore ? "Loading…" : "Earlier messages"}
+            </Button>
+          </div>
+        )}
+        {p.loading && <Skeleton className="h-32" />}
+        {!!p.error && (
+          <p role="alert" className="text-sm text-destructive">
+            {errorMessage(p.error)}
+          </p>
+        )}
+        {!p.loading && !p.error && !p.list.length && <p className="py-8 text-center text-sm text-muted-foreground">{p.empty ?? "No messages yet."}</p>}
+        {p.list.map((m, i) => (
+          <div key={m.id}>
+            {startsDay(m, p.list[i - 1]) && (
+              <div className="my-3 flex items-center gap-3 text-xs text-muted-foreground" role="separator">
+                <span className="h-px flex-1 bg-border" />
+                {day(m.posted_at)}
+                <span className="h-px flex-1 bg-border" />
+              </div>
+            )}
+            {p.marks?.[m.id] && (
+              <div id={`mark-${p.scope}-${m.id}`} className="my-2 flex items-center gap-3 text-xs font-medium text-primary" role="separator" aria-label={p.marks[m.id]}>
+                <span className="h-px flex-1 bg-primary/40" />
+                {p.marks[m.id]}
+                <span className="h-px flex-1 bg-primary/40" />
+              </div>
+            )}
+            <MessageRow
+              m={m}
+              scope={p.scope}
+              compact={continues(m, p.list[i - 1]) && !p.marks?.[m.id]}
+              people={p.people}
+              mine={m.sender.toLowerCase() === p.me.toLowerCase()}
+              toMe={mentionsMe(m, p.me)}
+              picked={m.id === p.focus}
+              canModerate={p.canModerate}
+              onThread={p.onThread}
+              onUnread={p.onUnread}
+            />
+          </div>
+        ))}
+      </div>
+      {behind && (
+        <Button
+          size="sm"
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 shadow-md"
+          onClick={() => {
+            const el = box.current;
+            if (el) el.scrollTop = el.scrollHeight;
+          }}
+        >
+          <ChevronDown aria-hidden="true" /> New messages
+        </Button>
       )}
-      {p.loading && <Skeleton className="h-32" />}
-      {!!p.error && <p className="text-sm text-destructive">{errorMessage(p.error)}</p>}
-      {!p.loading && !p.list.length && <p className="py-8 text-center text-sm text-muted-foreground">No messages yet. Say hello.</p>}
-      {p.list.map((m, i) => (
-        <div key={m.id}>
-          {startsDay(m, p.list[i - 1]) && (
-            <div className="my-3 flex items-center gap-3 text-xs text-muted-foreground" role="separator">
-              <span className="h-px flex-1 bg-border" />
-              {day(m.posted_at)}
-              <span className="h-px flex-1 bg-border" />
-            </div>
-          )}
-          <MessageRow m={m} compact={continues(m, p.list[i - 1])} people={p.people} mine={m.sender.toLowerCase() === p.me.toLowerCase()} canModerate={p.canModerate} onThread={p.onThread} />
-        </div>
-      ))}
     </div>
   );
 }
 
-function MessageRow({ m, compact, people, mine, canModerate, onThread }: { m: Message; compact: boolean; people: Person[]; mine: boolean; canModerate: boolean; onThread?: (id: string) => void }) {
+function MessageRow({
+  m,
+  scope,
+  compact,
+  people,
+  mine,
+  toMe,
+  picked,
+  canModerate,
+  onThread,
+  onUnread,
+}: {
+  m: Message;
+  scope: string;
+  compact: boolean;
+  people: Person[];
+  mine: boolean;
+  /** The message mentions the reader. */
+  toMe: boolean;
+  /** The message a link or a search result led to. */
+  picked: boolean;
+  canModerate: boolean;
+  onThread?: (id: string) => void;
+  onUnread?: (m: Message) => void;
+}) {
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
   const name = m.sender_name || m.sender;
@@ -340,12 +677,31 @@ function MessageRow({ m, compact, people, mine, canModerate, onThread }: { m: Me
       toast(errorMessage(e), "error");
     }
   };
+  const link = async () => {
+    const url = `${location.origin}/open/ChatMessage/${m.id}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      toast("Link copied");
+    } catch {
+      toast(`Copy this link: ${url}`);
+    }
+  };
+  const canDelete = mine || canModerate;
   return (
     // Focusable so a tap (or Tab) shows the message's actions on touch screens and keyboards.
     <article
+      id={`msg-${scope}-${m.id}`}
       tabIndex={0}
-      className={cn("group relative flex gap-2 rounded-md px-1 outline-none hover:bg-muted/40 focus-visible:bg-muted/40", compact ? "py-0.5" : "mt-2 py-1")}
-      aria-label={`${name} at ${time(m.posted_at)}`}
+      onClick={(e) => {
+        if (!(e.target as HTMLElement).closest("a,button,input,textarea,[role=menuitem]")) e.currentTarget.focus();
+      }}
+      className={cn(
+        "group relative flex gap-2 rounded-md px-1 outline-none hover:bg-muted/40 focus-visible:bg-muted/40",
+        compact ? "py-0.5" : "mt-2 py-1",
+        toMe && "border-l-2 border-primary bg-primary/5",
+        picked && "bg-warning-soft ring-1 ring-warning",
+      )}
+      aria-label={`${name} at ${time(m.posted_at)}${toMe ? ", mentions you" : ""}`}
     >
       <div className="w-8 shrink-0">
         {!compact && (
@@ -388,20 +744,28 @@ function MessageRow({ m, compact, people, mine, canModerate, onThread }: { m: Me
       {!m.deleted && !editing && (
         <div className="absolute -top-3 right-1 z-10 hidden gap-0.5 rounded-md border bg-background p-0.5 shadow-sm group-focus-within:flex group-hover:flex">
           {onThread && (
-            <Button variant="ghost" size="icon-sm" aria-label="Reply in thread" onClick={() => onThread(m.id)}>
+            <Button variant="ghost" size="icon-sm" aria-label="Reply in thread" title="Reply in thread" onClick={() => onThread(m.id)}>
               <MessagesSquare />
             </Button>
           )}
-          {mine && (
-            <Button variant="ghost" size="icon-sm" aria-label="Edit message" onClick={() => setEditing(true)}>
-              <Pencil />
-            </Button>
-          )}
-          {(mine || canModerate) && (
-            <Button variant="ghost" size="icon-sm" aria-label="Delete message" onClick={() => void remove()}>
-              <Trash2 />
-            </Button>
-          )}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon-sm" aria-label="More actions" title="More actions">
+                <MoreHorizontal />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {mine && <DropdownMenuItem onSelect={() => setEditing(true)}>Edit</DropdownMenuItem>}
+              {onUnread && <DropdownMenuItem onSelect={() => onUnread(m)}>Mark as unread from here</DropdownMenuItem>}
+              <DropdownMenuItem onSelect={() => void link()}>Copy link</DropdownMenuItem>
+              {canDelete && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => void remove()}>Delete</DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       )}
     </article>
@@ -462,15 +826,17 @@ function EditBox({ m, onDone }: { m: Message; onDone: () => void }) {
   const qc = useQueryClient();
   const [body, setBody] = useState(m.body);
   const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
   const save = async () => {
     if (!body.trim() || bodyTooLong(body)) return;
     setBusy(true);
+    setFailed(null);
     try {
       await api.patch(`${CHAT}/messages/${m.id}`, { body });
       void qc.invalidateQueries({ queryKey: ["chat"] });
       onDone();
     } catch (e) {
-      toast(errorMessage(e), "error");
+      setFailed(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -489,8 +855,14 @@ function EditBox({ m, onDone }: { m: Message; onDone: () => void }) {
           }
         }}
         aria-label="Edit message"
+        aria-invalid={!!failed || undefined}
         className="min-h-16"
       />
+      {failed && (
+        <p role="alert" className="text-xs text-destructive">
+          Not saved: {failed}
+        </p>
+      )}
       <div className="flex gap-2">
         <Button size="sm" onClick={() => void save()} disabled={busy || !body.trim()}>
           Save
@@ -503,174 +875,40 @@ function EditBox({ m, onDone }: { m: Message; onDone: () => void }) {
   );
 }
 
-/** A file picked for the next message: uploading, uploaded (`stored`) or refused (`error`). */
-interface Pending {
-  key: string;
-  name: string;
-  size: number;
-  stored?: StoredFile;
-  error?: string;
-}
-
-function Composer({ channel, parent, people, placeholder }: { channel: string; parent?: string; people: Person[]; placeholder: string }) {
-  const qc = useQueryClient();
-  const [body, setBody] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [mentioning, setMentioning] = useState(false);
-  const [files, setFiles] = useState<Pending[]>([]);
-  const box = useRef<HTMLTextAreaElement>(null);
-  const picker = useRef<HTMLInputElement>(null);
-  const tooLong = bodyTooLong(body);
-  const uploading = files.some((f) => !f.stored && !f.error);
-  const ready = files.filter((f) => f.stored);
-  const addFiles = (list: FileList | null) => {
-    const picked = Array.from(list ?? []);
-    const room = Math.max(0, MAX_FILES - files.length);
-    if (picked.length > room) toast(`A message carries at most ${MAX_FILES} files.`, "error");
-    for (const file of picked.slice(0, room)) {
-      const key = newKey();
-      setFiles((fs) => [...fs, { key, name: file.name, size: file.size }]);
-      uploadFile(file).then(
-        (stored) => setFiles((fs) => fs.map((f) => (f.key === key ? { ...f, stored } : f))),
-        (e: unknown) => setFiles((fs) => fs.map((f) => (f.key === key ? { ...f, error: errorMessage(e) } : f))),
-      );
-    }
-  };
-  const send = async (e?: FormEvent) => {
-    e?.preventDefault();
-    const text = body.trim();
-    if ((!text && !ready.length) || tooLong || busy || uploading) return;
-    setBusy(true);
-    try {
-      const attachments = ready.map((f) => ({ id: f.stored!.id }));
-      await api.post(`${CHAT}/channels/${channel}/messages`, { body: text, parent, mentions: mentionsIn(text), attachments });
-      setBody("");
-      setFiles([]);
-      void qc.invalidateQueries({ queryKey: parent ? keys.thread(parent) : keys.messages(channel) });
-      if (parent) void qc.invalidateQueries({ queryKey: keys.messages(channel) });
-    } catch (err) {
-      toast(errorMessage(err), "error");
-    } finally {
-      setBusy(false);
-      box.current?.focus();
-    }
-  };
-  const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-      e.preventDefault();
-      void send();
-    }
-  };
-  const mention = (p: Person) => {
-    setBody((b) => `${b}${b && !b.endsWith(" ") ? " " : ""}<@${p.email}> `);
-    setMentioning(false);
-    box.current?.focus();
-  };
-  return (
-    <form
-      onSubmit={send}
-      className="grid gap-1.5"
-      onDragOver={(e) => e.dataTransfer.types.includes("Files") && e.preventDefault()}
-      onDrop={(e) => {
-        if (!e.dataTransfer.files.length) return;
-        e.preventDefault();
-        addFiles(e.dataTransfer.files);
-      }}
-    >
-      {files.length > 0 && (
-        <ul className="flex flex-wrap gap-1.5" aria-label="Files to send">
-          {files.map((f) => (
-            <li key={f.key} className={cn("flex max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-xs", f.error && "border-destructive text-destructive")}>
-              <Paperclip className="size-3.5 shrink-0" aria-hidden="true" />
-              <span className="truncate">{f.name}</span>
-              <span className="shrink-0 text-muted-foreground">{f.error ? f.error : f.stored ? fileSize(f.size) : "Uploading…"}</span>
-              <Button type="button" variant="ghost" size="icon-sm" aria-label={`Remove ${f.name}`} onClick={() => setFiles((fs) => fs.filter((x) => x.key !== f.key))}>
-                <X />
-              </Button>
-            </li>
-          ))}
-        </ul>
-      )}
-      <div className="flex items-end gap-2">
-        <Textarea
-          ref={box}
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          onKeyDown={onKey}
-          onPaste={(e) => {
-            if (!e.clipboardData.files.length) return;
-            e.preventDefault();
-            addFiles(e.clipboardData.files);
-          }}
-          placeholder={placeholder}
-          aria-label={placeholder}
-          aria-invalid={tooLong || undefined}
-          rows={1}
-          className="max-h-40 min-h-10 flex-1 resize-none"
-        />
-        <input
-          ref={picker}
-          type="file"
-          multiple
-          hidden
-          onChange={(e) => {
-            addFiles(e.target.files);
-            e.target.value = "";
-          }}
-        />
-        <Button type="button" variant="outline" size="icon" aria-label="Attach files" onClick={() => picker.current?.click()}>
-          <Paperclip />
-        </Button>
-        <Button type="button" variant="outline" size="icon" aria-label="Mention someone" onClick={() => setMentioning((v) => !v)}>
-          <AtSign />
-        </Button>
-        <Button type="submit" disabled={busy || uploading || (!body.trim() && !ready.length) || tooLong}>
-          Send
-        </Button>
-      </div>
-      {tooLong && <p className="text-xs text-destructive">Messages are at most 4 KB.</p>}
-      {mentioning && <PeoplePicker people={people} onPick={mention} onClose={() => setMentioning(false)} />}
-      <p className="text-xs text-muted-foreground">Enter sends, Shift+Enter starts a new line. **bold**, *italic*, `code` and links work.</p>
-    </form>
-  );
-}
-
-function PeoplePicker({ people, onPick, onClose }: { people: Person[]; onPick: (p: Person) => void; onClose: () => void }) {
-  const [q, setQ] = useState("");
-  const f = q.trim().toLowerCase();
-  const shown = people.filter((p) => !f || p.email.toLowerCase().includes(f) || (p.full_name ?? "").toLowerCase().includes(f)).slice(0, 8);
-  return (
-    <div className="rounded-md border bg-popover p-2 shadow-md">
-      <div className="flex items-center gap-2">
-        <Input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a person" aria-label="Find a person" onKeyDown={(e) => e.key === "Escape" && onClose()} />
-        <Button type="button" variant="ghost" size="icon-sm" aria-label="Close" onClick={onClose}>
-          <X />
-        </Button>
-      </div>
-      <ul className="mt-1 grid">
-        {shown.map((p) => (
-          <li key={p.id}>
-            <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-accent" onClick={() => onPick(p)}>
-              {p.full_name || p.email} <span className="text-muted-foreground">{p.email}</span>
-            </button>
-          </li>
-        ))}
-        {!shown.length && <li className="px-2 py-1.5 text-sm text-muted-foreground">Nobody matches.</li>}
-      </ul>
-    </div>
-  );
-}
-
-function Thread({ channel, root, people, me, canModerate, member, onClose }: { channel: string; root: string; people: Person[]; me: string; canModerate: boolean; member: boolean; onClose: () => void }) {
+function Thread({
+  channel,
+  root,
+  highlight,
+  people,
+  me,
+  canModerate,
+  posting: allowed,
+  onJoin,
+  onUnread,
+  onClose,
+}: {
+  channel: string;
+  root: string;
+  /** A reply to bring into view. */
+  highlight?: string | null;
+  people: Person[];
+  me: string;
+  canModerate: boolean;
+  posting: ReturnType<typeof posting>;
+  onJoin: () => void;
+  onUnread?: (m: Message) => void;
+  onClose: () => void;
+}) {
+  const first = useQuery({ queryKey: keys.message(root), queryFn: ({ signal }) => api.get<Message>(`${CHAT}/messages/${root}`, undefined, signal) });
   const replies = useQuery({
     queryKey: keys.thread(root),
     queryFn: ({ signal }) => api.get<{ messages: Message[] }>(`${CHAT}/channels/${channel}/messages`, { thread: root, limit: 200 }, signal),
   });
+  const rows = replies.data?.messages ?? [];
+  const list = useMemo(() => timeline([first.data ? [first.data] : [], rows]), [first.data, rows]);
+  const marks = rows.length && first.data ? { [timeline([rows])[0]!.id]: `${rows.length} ${rows.length === 1 ? "reply" : "replies"}` } : undefined;
   return (
-    <aside
-      className="fixed inset-y-0 right-0 z-40 grid w-full grid-rows-[auto_minmax(0,1fr)_auto] border-l bg-background shadow-xl sm:w-[420px] xl:static xl:z-auto xl:row-span-2 xl:row-start-2 xl:w-[360px] xl:shadow-none"
-      aria-label="Thread"
-    >
+    <aside className={cn(SIDE_PANEL, "grid-rows-[auto_minmax(0,1fr)_auto]")} aria-label="Thread" onKeyDown={(e) => e.key === "Escape" && onClose()}>
       <header className="flex items-center gap-2 border-b px-3 py-2">
         <h3 className="flex-1 font-semibold">Thread</h3>
         <Button variant="ghost" size="icon-sm" aria-label="Close thread" onClick={onClose}>
@@ -678,17 +916,32 @@ function Thread({ channel, root, people, me, canModerate, member, onClose }: { c
         </Button>
       </header>
       <MessageList
-        list={timeline([replies.data?.messages ?? []])}
+        scope="thread"
+        list={list}
         people={people}
         me={me}
         canModerate={canModerate}
-        loading={replies.isLoading}
-        error={replies.error}
+        loading={first.isLoading || replies.isLoading}
+        error={first.error ?? replies.error}
         hasMore={false}
         loadMore={() => undefined}
         loadingMore={false}
+        onUnread={onUnread}
+        marks={marks}
+        focus={highlight ?? undefined}
+        empty="This thread has no messages."
       />
-      <div className="border-t p-3">{member ? <Composer channel={channel} parent={root} people={people} placeholder="Reply in thread" /> : null}</div>
+      <div className="border-t p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        {allowed.state === "ok" ? (
+          <Composer channel={channel} parent={root} people={people} placeholder="Reply in thread" autoFocus={!highlight} />
+        ) : allowed.state === "join" ? (
+          <Button className="w-full" onClick={onJoin}>
+            Join the channel to reply
+          </Button>
+        ) : (
+          <p className="text-sm text-muted-foreground">{allowed.why}</p>
+        )}
+      </div>
     </aside>
   );
 }
@@ -704,16 +957,18 @@ function NewChannel({ onClose }: { onClose: () => void }) {
   const [type, setType] = useState<"Public" | "Private">("Public");
   const [members, setMembers] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
+    setFailed(null);
     try {
       const c = await api.post<Channel>(`${CHAT}/channels`, { name: name.trim(), type, topic: topic.trim() || undefined, members });
       void qc.invalidateQueries({ queryKey: keys.channels });
       onClose();
       navigate(`${base}/${c.id}`);
     } catch (err) {
-      toast(errorMessage(err), "error");
+      setFailed(errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -728,7 +983,12 @@ function NewChannel({ onClose }: { onClose: () => void }) {
           </DialogHeader>
           <div className="grid gap-1.5">
             <Label htmlFor="ch-name">Name</Label>
-            <Input id="ch-name" required autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="sales-team" />
+            <Input id="ch-name" required autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="sales-team" aria-invalid={!!failed || undefined} />
+            {failed && (
+              <p role="alert" className="text-xs text-destructive">
+                {failed}
+              </p>
+            )}
           </div>
           <div className="grid gap-1.5">
             <Label htmlFor="ch-topic">Topic (optional)</Label>
@@ -747,7 +1007,7 @@ function NewChannel({ onClose }: { onClose: () => void }) {
             {people
               .filter((p) => p.email.toLowerCase() !== me)
               .map((p) => (
-                <label key={p.id} className="flex items-center gap-2">
+                <label key={p.id} className="flex items-center gap-2 pointer-coarse:min-h-11">
                   <input
                     type="checkbox"
                     checked={members.includes(p.email)}
@@ -792,7 +1052,7 @@ function NewDirect({ onClose }: { onClose: () => void }) {
       <DialogContent>
         <DialogHeader>
           <DialogTitle>New direct message</DialogTitle>
-          <DialogDescription>Pick the person to talk to.</DialogDescription>
+          <DialogDescription>Pick the person to talk to. They are told of each message.</DialogDescription>
         </DialogHeader>
         <PeoplePicker people={people.filter((p) => p.email.toLowerCase() !== me)} onPick={(p) => void open(p)} onClose={onClose} />
       </DialogContent>
@@ -800,48 +1060,23 @@ function NewDirect({ onClose }: { onClose: () => void }) {
   );
 }
 
-function SearchDialog({ onClose }: { onClose: () => void }) {
+/** `/chat/m/{message}`: where a notification or a link to a message leads: the message, in its conversation. */
+export function ChatMessagePage() {
+  const { message = "" } = useParams();
   const base = useContext(Base);
-  const [q, setQ] = useState("");
-  const [term, setTerm] = useState("");
-  const people = usePeople().data?.users ?? [];
-  const results = useQuery({
-    queryKey: ["chat", "search", term],
-    queryFn: ({ signal }) => api.get<{ messages: Message[] }>(`${CHAT}/search`, { q: term, limit: 50 }, signal),
-    enabled: term.length >= 2,
-  });
-  return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>Search messages</DialogTitle>
-          <DialogDescription>In your conversations and public channels.</DialogDescription>
-        </DialogHeader>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            setTerm(q.trim());
-          }}
-          className="flex gap-2"
-        >
-          <Input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="At least two characters" aria-label="Search text" />
-          <Button type="submit" disabled={q.trim().length < 2}>
-            Search
-          </Button>
-        </form>
-        <ul className="grid max-h-80 gap-2 overflow-y-auto">
-          {results.isFetching && <Skeleton className="h-16" />}
-          {results.data?.messages.map((m) => (
-            <li key={m.id}>
-              <Link to={`${base}/${m.channel}`} onClick={onClose} className="block rounded-md border p-2 text-sm hover:bg-accent">
-                <span className="font-medium">{m.sender_name || m.sender}</span> <span className="text-xs text-muted-foreground">{relativeTime(m.posted_at)}</span>
-                <span className="mt-0.5 line-clamp-2 block text-muted-foreground">{showMentions(m.body, people)}</span>
-              </Link>
-            </li>
-          ))}
-          {results.data && !results.data.messages.length && <li className="text-sm text-muted-foreground">Nothing found.</li>}
-        </ul>
-      </DialogContent>
-    </Dialog>
-  );
+  const navigate = useNavigate();
+  const q = useQuery({ queryKey: keys.message(message), queryFn: ({ signal }) => api.get<Message>(`${CHAT}/messages/${message}`, undefined, signal), retry: false });
+  useEffect(() => {
+    if (q.data) navigate(`${base}/${q.data.channel}?m=${q.data.id}`, { replace: true });
+  }, [q.data, base, navigate]);
+  if (q.error)
+    return (
+      <EmptyState title="That message is not available" icon="chat">
+        <p className="text-sm text-muted-foreground">It was deleted, or it is in a conversation you cannot read.</p>
+        <Link className="text-primary underline" to={base}>
+          Go to Chat
+        </Link>
+      </EmptyState>
+    );
+  return <Skeleton className="m-4 h-24" />;
 }
