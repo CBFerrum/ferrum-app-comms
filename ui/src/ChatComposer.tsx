@@ -9,7 +9,7 @@ import { Button, Input, Textarea } from "@ferrum/kit/primitives";
 import { cn, toast } from "@ferrum/kit";
 import { errorMessage, newKey, uploadFile, type StoredFile, api } from "@ferrum/client";
 import { useMe } from "@ferrum/records";
-import { CHAT, MAX_FILES, bodyTooLong, completeMention, draftKey, fileSize, matchPeople, mentionAt, mentionsIn, readDraft, writeDraft, type Person } from "./lib/chat";
+import { CHAT, MAX_FILES, bodyTooLong, completeMention, draftKey, fileSize, matchPeople, mentionAt, mentionsIn, readDraft, refreshMessages, writeDraft, type Person } from "./lib/chat";
 
 /** A file picked for the next message: uploading, uploaded (`stored`) or refused (`error`). */
 interface Pending {
@@ -91,7 +91,7 @@ export function Composer({
       setBody("");
       setFiles([]);
       writeDraft(key, "");
-      void qc.invalidateQueries({ queryKey: ["chat"] });
+      refreshMessages(qc);
       onSent?.();
     } catch (err) {
       // The words stay where they are; the person is told why they did not go.
