@@ -522,6 +522,11 @@ pub struct MailSink;
 #[async_trait]
 impl EventSink for MailSink {
     async fn on_event(&self, k: &Kernel, ev: &Event) -> Result<()> {
+        if ev.topic == ferrum_kernel::lifecycle::DEPROVISIONED_TOPIC {
+            // Someone gone keeps no mailbox: it locks at the next round of maintenance.
+            crate::hosted::soon(ev.tenant_id);
+            return Ok(());
+        }
         if ev.entity.as_deref() != Some("Communication") || !(ev.topic.ends_with(".created") || ev.topic.ends_with(".updated")) {
             return Ok(());
         }
