@@ -492,7 +492,7 @@ function MessageList(p: {
                 )}
               >
                 <span className="flex items-center gap-2">
-                  {m.unread && <span className="size-2 shrink-0 rounded-full bg-primary" aria-label="Unread" />}
+                  {m.unread && <span className="size-2 shrink-0 rounded-full bg-primary" role="img" aria-label="Unread" />}
                   <span className={cn("min-w-0 flex-1 truncate", m.unread && "font-semibold")}>
                     {sender}
                     {m.count > 1 && (
