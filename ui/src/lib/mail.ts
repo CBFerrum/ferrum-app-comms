@@ -3,6 +3,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@ferrum/client";
+import { matchPeople, type Person } from "./chat";
 
 export const MAIL = "/api/app/comms/mail";
 
@@ -51,6 +52,14 @@ export interface Attachment {
   size: number;
 }
 
+/** A file on a message being written: already on the mail server (its blob). */
+export interface Upload {
+  blobId: string;
+  name: string;
+  type: string;
+  size: number;
+}
+
 /** A message to read, as `GET /mail/message/...` gives it: its HTML already made safe. */
 export interface Message extends Omit<EmailSummary, "hasAttachment"> {
   cc: Address[] | null;
@@ -58,6 +67,7 @@ export interface Message extends Omit<EmailSummary, "hasAttachment"> {
   replyTo: Address[] | null;
   sentAt: string | null;
   messageId: string[] | null;
+  inReplyTo?: string[] | null;
   references: string[] | null;
   html: string;
   text: string;
@@ -193,4 +203,276 @@ export function sizeLabel(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+// ───────────────────────────── conversations ─────────────────────────────
+
+/** A line of the list: the newest message of a conversation in this folder. */
+export interface Row extends EmailSummary {
+  /** Messages in the conversation, in any folder. */
+  count: number;
+  /** Any of them is unread. */
+  unread: boolean;
+  /** Its messages in this folder: what an action on the line reaches. */
+  folderIds: string[];
+}
+
+/** The list's rows from one JMAP answer: the emails (one per conversation, `collapseThreads`), the
+ *  conversations (`Thread/get`) and the flags and folders of every message in them. */
+export function conversationRows(
+  emails: EmailSummary[],
+  threads: { id: string; emailIds: string[] }[],
+  flags: { id: string; keywords: Record<string, boolean> | null; mailboxIds?: Record<string, boolean> | null }[],
+  folder: string,
+): Row[] {
+  const members = new Map(threads.map((t) => [t.id, t.emailIds]));
+  const known = new Map(flags.map((f) => [f.id, f]));
+  return emails.map((e) => {
+    const ids = members.get(e.threadId) ?? [e.id];
+    const unread = ids.some((id) => !(known.get(id) ? !!known.get(id)!.keywords?.$seen : !!e.keywords?.$seen));
+    const here = ids.filter((id) => (id === e.id ? true : !!known.get(id)?.mailboxIds?.[folder]));
+    return { ...e, count: ids.length, unread, folderIds: here };
+  });
+}
+
+/** The messages of a conversation that open expanded: the newest, and any not read yet. */
+export function expandedIds(messages: { id: string; keywords: Record<string, boolean> | null }[]): string[] {
+  return messages.filter((m, i) => i === messages.length - 1 || !m.keywords?.$seen).map((m) => m.id);
+}
+
+/** The messages of a conversation an action on it reaches: those in the folder it is seen from. */
+export function inFolder(messages: Pick<EmailSummary, "id" | "mailboxIds">[], folder: string | undefined, fallback: string): string[] {
+  const ids = messages.filter((m) => folder && m.mailboxIds[folder]).map((m) => m.id);
+  return ids.length ? ids : [fallback];
+}
+
+/** "3 messages" for a conversation's count. */
+export const messagesIn = (n: number) => `${n} ${n === 1 ? "message" : "messages"}`;
+
+// ───────────────────────────── keyboard ─────────────────────────────
+
+export type MailKey = "next" | "previous" | "open" | "back" | "reply" | "replyAll" | "forward" | "archive" | "delete" | "spam" | "unread" | "star" | "compose" | "search" | "help";
+
+/** What the keys do, for the list of shortcuts. */
+export const SHORTCUTS: { keys: string[]; action: MailKey; label: string }[] = [
+  { keys: ["j"], action: "next", label: "Next conversation" },
+  { keys: ["k"], action: "previous", label: "Previous conversation" },
+  { keys: ["Enter", "o"], action: "open", label: "Open the conversation" },
+  { keys: ["u", "Esc"], action: "back", label: "Back to the list" },
+  { keys: ["r"], action: "reply", label: "Reply" },
+  { keys: ["a"], action: "replyAll", label: "Reply to all" },
+  { keys: ["f"], action: "forward", label: "Forward" },
+  { keys: ["e"], action: "archive", label: "Archive" },
+  { keys: ["#"], action: "delete", label: "Delete" },
+  { keys: ["!"], action: "spam", label: "Mark as spam" },
+  { keys: ["Shift", "U"], action: "unread", label: "Mark as unread" },
+  { keys: ["s"], action: "star", label: "Star or unstar" },
+  { keys: ["c"], action: "compose", label: "Write a message" },
+  { keys: ["/"], action: "search", label: "Search" },
+  { keys: ["?"], action: "help", label: "Show these shortcuts" },
+];
+
+const KEYS: Record<string, MailKey> = {
+  j: "next",
+  k: "previous",
+  Enter: "open",
+  o: "open",
+  u: "back",
+  Escape: "back",
+  r: "reply",
+  a: "replyAll",
+  f: "forward",
+  e: "archive",
+  "#": "delete",
+  "!": "spam",
+  U: "unread",
+  s: "star",
+  c: "compose",
+  "/": "search",
+  "?": "help",
+};
+
+/** What a key press asks for, unless it is part of a shortcut of the browser or the system. */
+export function keyAction(e: { key: string; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean }): MailKey | null {
+  return e.ctrlKey || e.metaKey || e.altKey ? null : (KEYS[e.key] ?? null);
+}
+
+/** Whether a key press belongs to something being typed in or operated, not to the shortcuts. */
+export function busyWith(target: { tagName?: string; isContentEditable?: boolean; closest?: (s: string) => unknown } | null, key: string): boolean {
+  if (!target) return false;
+  const tag = (target.tagName ?? "").toUpperCase();
+  if (["INPUT", "TEXTAREA", "SELECT"].includes(tag) || target.isContentEditable) return true;
+  // Enter on a button or a link presses it; it is not "open".
+  if (key === "Enter" && ["BUTTON", "A", "SUMMARY"].includes(tag)) return true;
+  return !!target.closest?.("[role=dialog],[role=alertdialog],dialog,[role=menu],[role=listbox],[role=combobox]");
+}
+
+/** The index after a step in the list, kept inside it. */
+export const step = (index: number, count: number, by: 1 | -1) => (count ? Math.min(count - 1, Math.max(0, index + by)) : 0);
+
+// ───────────────────────────── writing ─────────────────────────────
+
+/** A message to write: new, an answer to one, or a forward of one. */
+export interface Draft {
+  kind: "new" | "reply" | "replyAll" | "forward";
+  original?: Message;
+  /** A new message's fields, filled in by another app (the `compose email` intent). */
+  prefill?: { to?: string; cc?: string; subject?: string; body?: string };
+  /** Files to attach first: this site's `/api/` addresses, fetched with the person's rights. */
+  attach?: { url: string; name: string }[];
+  /** A message already in Drafts that the person goes on with; saving replaces it. */
+  saved?: { id?: string; key?: string; files?: Upload[]; inReplyTo?: string[] | null; references?: string[] | null };
+}
+
+export interface Threading {
+  inReplyTo?: string[];
+  references?: string[];
+}
+
+/** The headers that keep a reply in its conversation (a forward starts its own). */
+export function threadingFor(original: Pick<Message, "messageId" | "references"> | undefined, kind: "new" | "reply" | "replyAll" | "forward"): Threading {
+  return original?.messageId?.length && kind !== "forward" && kind !== "new" ? { inReplyTo: original.messageId, references: [...(original.references ?? []), ...original.messageId] } : {};
+}
+
+export interface Fields {
+  to: Address[];
+  cc: Address[];
+  bcc: Address[];
+  subject: string;
+  body: string;
+  files: Upload[];
+}
+
+/** Whether there is anything written: recipients, a subject, words or a file. */
+export const hasContent = (f: Fields) => !!(f.to.length || f.cc.length || f.bcc.length || f.subject.trim() || f.body.trim() || f.files.length);
+
+/** The message as the mail server takes it into Drafts (and, when sending, the same message). */
+export function draftEmail(f: Fields, from: { name?: string | null; email: string }, drafts: string, threading: Threading = {}): Record<string, unknown> {
+  return {
+    mailboxIds: { [drafts]: true },
+    keywords: { $seen: true, $draft: true },
+    from: [{ name: from.name || undefined, email: from.email }],
+    to: f.to,
+    cc: f.cc,
+    bcc: f.bcc,
+    subject: f.subject.trim(),
+    bodyValues: { b: { value: f.body } },
+    textBody: [{ partId: "b", type: "text/plain" }],
+    attachments: f.files.map((u) => ({ blobId: u.blobId, type: u.type, name: u.name, disposition: "attachment" })),
+    ...threading,
+  };
+}
+
+const PROBLEMS: Record<string, string> = {
+  overQuota: "Your mailbox is full. Delete some mail and try again.",
+  tooLarge: "The message is too large for the mail server. Remove an attachment or two.",
+  invalidEmail: "The mail server could not accept the message. Check the addresses and the subject.",
+  tooManyRecipients: "There are too many recipients for one message.",
+  noRecipients: "The message has no recipients.",
+  forbiddenFrom: "The mail server does not let you send as that address.",
+  forbiddenMailFrom: "The mail server does not let you send as that address.",
+  forbiddenToSend: "Your mailbox is not allowed to send mail.",
+  rateLimit: "You have sent a lot of mail in a short time. Wait a little and try again.",
+};
+
+/** The mail server's refusal of a creation (`notCreated`) in plain words. */
+export function refusal(err: { type?: string; description?: string; properties?: string[] } | undefined, fallback = "The mail server refused it."): string {
+  if (!err) return fallback;
+  if (err.type && PROBLEMS[err.type]) return PROBLEMS[err.type]!;
+  if (err.type === "invalidProperties" && err.properties?.length) return `The mail server did not accept the message (${err.properties.join(", ")}).`;
+  return err.description ? `The mail server said: ${err.description}` : fallback;
+}
+
+/** The part of a typed list of addresses the caret is in, and what has been typed there. */
+export function addressToken(text: string, caret: number): { from: number; to: number; query: string } {
+  const before = text.slice(0, caret);
+  const start = Math.max(before.lastIndexOf(","), before.lastIndexOf(";"), before.lastIndexOf("\n")) + 1;
+  const after = [",", ";", "\n"].map((c) => text.indexOf(c, caret)).filter((i) => i >= 0);
+  const end = after.length ? Math.min(...after) : text.length;
+  const raw = text.slice(start, end);
+  const lead = raw.length - raw.trimStart().length;
+  return { from: start + lead, to: end, query: raw.trim() };
+}
+
+/** People offered for the address being typed: nobody for a name already in full (an address). */
+export function addressChoices(people: Person[], text: string, caret: number): Person[] {
+  const q = addressToken(text, caret).query;
+  return q.length < 1 || q.includes("@") && q.includes(".") ? [] : matchPeople(people, q, undefined, 6);
+}
+
+/** The typed part replaced by the person, with a comma to go on with. */
+export function completeAddress(text: string, caret: number, p: Person): { text: string; caret: number } {
+  const t = addressToken(text, caret);
+  const address = `${p.full_name ? `${p.full_name} <${p.email}>` : p.email}, `;
+  const rest = text.slice(t.to).replace(/^[,;]\s*/, "");
+  return { text: text.slice(0, t.from) + address + rest, caret: t.from + address.length };
+}
+
+// ───────────────────────────── drafts kept in the browser ─────────────────────────────
+
+/** What the browser keeps of a message being written, until the mail server has it. */
+export interface Kept {
+  key: string;
+  account: string;
+  savedAt: string;
+  to: string;
+  cc: string;
+  bcc: string;
+  subject: string;
+  body: string;
+  files: Upload[];
+  /** The message in Drafts it replaces. */
+  draftId?: string;
+  inReplyTo?: string[] | null;
+  references?: string[] | null;
+}
+
+interface Store {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+  readonly length: number;
+  key(i: number): string | null;
+}
+
+const PREFIX = "ferrum.mail.draft.";
+
+const local = (): Store | null => {
+  try {
+    return localStorage;
+  } catch {
+    return null;
+  }
+};
+
+export function keepDraft(k: Kept, store: Store | null = local()): void {
+  try {
+    store?.setItem(`${PREFIX}${k.account}.${k.key}`, JSON.stringify(k));
+  } catch {
+    // The window still holds it; it just cannot come back after a crash.
+  }
+}
+
+export function dropDraft(account: string, key: string, store: Store | null = local()): void {
+  try {
+    store?.removeItem(`${PREFIX}${account}.${key}`);
+  } catch {
+    // nothing kept, nothing to drop
+  }
+}
+
+/** Messages left unsent in this browser for an account, newest first. */
+export function keptDrafts(account: string, store: Store | null = local()): Kept[] {
+  const out: Kept[] = [];
+  try {
+    for (let i = 0; store && i < store.length; i++) {
+      const name = store.key(i);
+      if (!name?.startsWith(`${PREFIX}${account}.`)) continue;
+      const k = JSON.parse(store.getItem(name) ?? "null") as Kept | null;
+      if (k && k.account === account && typeof k.key === "string") out.push(k);
+    }
+  } catch {
+    return out;
+  }
+  return out.sort((a, b) => b.savedAt.localeCompare(a.savedAt));
 }
