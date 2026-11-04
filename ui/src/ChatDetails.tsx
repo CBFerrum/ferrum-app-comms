@@ -349,15 +349,18 @@ function Members({ c }: { c: Channel }) {
           const you = m.email.toLowerCase() === me;
           return (
             <li key={m.email} className="flex items-center gap-2 rounded-md px-1 py-1 pointer-coarse:min-h-11">
-              <span className="grid size-8 shrink-0 place-items-center rounded-full bg-primary/10 text-xs font-semibold text-primary" aria-hidden="true">
+              <span className="relative grid size-8 shrink-0 place-items-center rounded-full bg-primary/10 text-xs font-semibold text-primary" aria-hidden="true">
                 {initials(m.full_name || m.email)}
+                {m.active && <span className="absolute -end-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-background bg-emerald-500" />}
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate font-medium">
                   {m.full_name || m.email}
                   {you && <span className="font-normal text-muted-foreground"> (you)</span>}
                 </span>
-                {m.full_name && <span className="block truncate text-xs text-muted-foreground">{m.email}</span>}
+                {(m.full_name || m.active) && (
+                  <span className="block truncate text-xs text-muted-foreground">{[m.active && "Active now", m.full_name && m.email].filter(Boolean).join(" · ")}</span>
+                )}
               </span>
               {m.role === "Owner" && <Badge variant="secondary">Owner</Badge>}
               {owner && (
