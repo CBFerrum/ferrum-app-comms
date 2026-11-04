@@ -42,6 +42,87 @@ fn refused<T: std::fmt::Debug>(r: Result<T, Error>, kind: &str) {
     assert!(ok, "expected {kind}, got {r:?}");
 }
 
+// ───────────────────────────── LiveKit Egress's API, as a stand-in ─────────────────────────────
+
+/// What LiveKit's server answers to Comms' recording calls (Twirp, JSON), with what it was sent:
+/// path, authorization and body. Once StopEgress was called it lists the file; `refuse` answers 503.
+struct Egress {
+    url: String,
+    calls: Arc<Mutex<Vec<(String, String, Value)>>>,
+    refuse: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Egress {
+    async fn start() -> Egress {
+        use std::sync::atomic::Ordering;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let calls: Arc<Mutex<Vec<(String, String, Value)>>> = Arc::default();
+        let stopped: Arc<std::sync::atomic::AtomicBool> = Arc::default();
+        let refuse: Arc<std::sync::atomic::AtomicBool> = Arc::default();
+        let (c, s, r) = (calls.clone(), stopped.clone(), refuse.clone());
+        tokio::spawn(async move {
+            loop {
+                let Ok((sock, _)) = listener.accept().await else { return };
+                let (c, s, r) = (c.clone(), s.clone(), r.clone());
+                tokio::spawn(async move {
+                    let mut reader = BufReader::new(sock);
+                    let mut line = String::new();
+                    reader.read_line(&mut line).await.unwrap();
+                    let path = line.split(' ').nth(1).unwrap_or_default().to_string();
+                    let (mut auth, mut length) = (String::new(), 0usize);
+                    loop {
+                        let mut h = String::new();
+                        reader.read_line(&mut h).await.unwrap();
+                        let h = h.trim_end();
+                        if h.is_empty() {
+                            break;
+                        }
+                        let (name, value) = h.split_once(':').unwrap_or((h, ""));
+                        match name.to_ascii_lowercase().as_str() {
+                            "authorization" => auth = value.trim().to_string(),
+                            "content-length" => length = value.trim().parse().unwrap_or(0),
+                            _ => {}
+                        }
+                    }
+                    let mut body = vec![0u8; length];
+                    tokio::io::AsyncReadExt::read_exact(&mut reader, &mut body).await.unwrap();
+                    let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                    c.lock().unwrap().push((path.clone(), auth, body.clone()));
+                    let room = body["room_name"].as_str().unwrap_or_default().to_string();
+                    let (status, answer) = if r.load(Ordering::SeqCst) {
+                        (503, json!({"code": "unavailable", "msg": "no egress available"}))
+                    } else {
+                        match path.as_str() {
+                            // The enum's first value, EGRESS_STARTING, is left out, as protojson does.
+                            "/twirp/livekit.Egress/StartRoomCompositeEgress" => (200, json!({"egress_id": "EG_one", "room_name": room})),
+                            "/twirp/livekit.Egress/StopEgress" => {
+                                s.store(true, Ordering::SeqCst);
+                                (200, json!({"egress_id": body["egress_id"], "status": "EGRESS_ENDING"}))
+                            }
+                            "/twirp/livekit.Egress/ListEgress" if s.load(Ordering::SeqCst) => (
+                                200,
+                                json!({"items": [{"egress_id": "EG_one", "room_name": room, "status": "EGRESS_COMPLETE",
+                                                  "file_results": [{"filename": "one.mp4", "location": "s3://meetings/one.mp4", "duration": "61000000000"}]}]}),
+                            ),
+                            "/twirp/livekit.Egress/ListEgress" => {
+                                (200, json!({"items": [{"egress_id": "EG_one", "room_name": room, "status": "EGRESS_ACTIVE"}]}))
+                            }
+                            _ => (404, json!({"code": "bad_route", "msg": "no such method"})),
+                        }
+                    };
+                    let text = answer.to_string();
+                    let mut sock = reader.into_inner();
+                    let head = format!("HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", text.len());
+                    sock.write_all(head.as_bytes()).await.unwrap();
+                    sock.write_all(text.as_bytes()).await.unwrap();
+                });
+            }
+        });
+        Egress { url, calls, refuse }
+    }
+}
+
 // ───────────────────────────── an SMTP server that records what it receives ─────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -1095,7 +1176,7 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
         let (t, who, path) = (&t, who.clone(), format!("/meet/{kind}/{id}/token"));
         async move { t.call(Some(&who), "POST", &path, &[], Value::Null).await }
     };
-    assert_eq!(t.ok(carol, "GET", "/meet", &[], Value::Null).await, json!({"available": false}));
+    assert_eq!(t.ok(carol, "GET", "/meet", &[], Value::Null).await, json!({"available": false, "recordings": false}));
     refused(join(alice, "channel", deals_id).await, "invalid");
     // SAFETY: this test is the only one in its process.
     unsafe {
@@ -1103,7 +1184,7 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
         std::env::set_var("FERRUM_MEET_KEY", "APIacme");
         std::env::set_var("FERRUM_MEET_SECRET", "a-secret-only-livekit-and-ferrum-know");
     }
-    assert_eq!(t.ok(carol, "GET", "/meet", &[], Value::Null).await, json!({"available": true}));
+    assert_eq!(t.ok(carol, "GET", "/meet", &[], Value::Null).await, json!({"available": true, "recordings": false}));
     let pass = join(bob, "channel", deals_id).await.unwrap();
     assert_eq!((pass["url"].clone(), pass["title"].clone()), (json!("wss://meet.acme.test"), json!("#deals")));
     let claims = |pass: &Value| -> Value {
@@ -1127,6 +1208,66 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     refused(join(carol, "room", Uuid::new_v4()).await, "not found");
     refused(join(carol, "space", uid(&room)).await, "not found");
     refused(t.call(Some(dave), "POST", "/meet/rooms", &[], json!({})).await, "forbidden");
+
+    // Captions are each person's own, kept as the meeting's transcript for whoever may join it.
+    let said = format!("/meet/channel/{deals_id}/transcript");
+    t.ok(bob, "POST", &said, &[], json!({"segment": "s1", "text": "  Shall we start?  "})).await;
+    t.ok(alice, "POST", &said, &[], json!({"segment": "s1", "text": "Yes"})).await;
+    t.ok(bob, "POST", &said, &[], json!({"segment": "s1", "text": "Shall we start now?"})).await;
+    refused(t.call(Some(carol), "POST", &said, &[], json!({"segment": "s2", "text": "Hello"})).await, "not found");
+    refused(t.call(Some(bob), "POST", &said, &[], json!({"segment": "../s", "text": "Hello"})).await, "invalid");
+    refused(t.call(Some(bob), "POST", &said, &[], json!({"segment": "s3", "text": "   "})).await, "invalid");
+    let heard = t.ok(alice, "GET", &said, &[], Value::Null).await["segments"].clone();
+    let mut lines: Vec<(String, String)> =
+        heard.as_array().unwrap().iter().map(|s| (s["name"].as_str().unwrap().into(), s["text"].as_str().unwrap().into())).collect();
+    lines.sort();
+    assert_eq!(
+        lines,
+        [("Alice Rao".to_string(), "Yes".to_string()), ("Bob Shah".into(), "Shall we start now?".into())],
+        "each person's own segment, the last words standing"
+    );
+    refused(t.call(Some(carol), "GET", &said, &[], Value::Null).await, "not found");
+
+    // Recordings through LiveKit Egress, where the operator runs it.
+    let room_id = uid(&room);
+    let recs = format!("/meet/room/{room_id}/recordings");
+    refused(t.call(Some(alice), "POST", &recs, &[], Value::Null).await, "invalid");
+    let livekit = Egress::start().await;
+    // SAFETY: this test is the only one in its process.
+    unsafe {
+        std::env::set_var("FERRUM_MEET_API_URL", &livekit.url);
+        std::env::set_var("FERRUM_MEET_RECORDINGS", "true");
+    }
+    assert_eq!(t.ok(carol, "GET", "/meet", &[], Value::Null).await, json!({"available": true, "recordings": true}));
+    livekit.refuse.store(true, std::sync::atomic::Ordering::SeqCst);
+    refused(
+        t.call(Some(carol), "POST", &recs, &[], Value::Null).await.map_err(|e| match e {
+            Error::Unavailable(m) => Error::Invalid(m),
+            other => other,
+        }),
+        "invalid",
+    );
+    livekit.refuse.store(false, std::sync::atomic::Ordering::SeqCst);
+    let rec = t.ok(carol, "POST", &recs, &[], Value::Null).await;
+    assert_eq!((rec["status"].as_str(), rec["ended_at"].is_null()), (Some("EGRESS_STARTING"), true), "{rec}");
+    refused(t.call(Some(alice), "POST", &recs, &[], Value::Null).await, "conflict");
+    let (path, auth, body) = livekit.calls.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(path, "/twirp/livekit.Egress/StartRoomCompositeEgress");
+    assert_eq!(body["room_name"], room_of("room", room_id));
+    assert!(body["file_outputs"][0]["filepath"].as_str().unwrap().starts_with(&format!("ferrum/{}/", t.tenant.simple())), "{body}");
+    let grant = claims(&json!({"token": auth.trim_start_matches("Bearer ")}));
+    assert_eq!((grant["iss"].clone(), grant["video"].clone()), (json!("APIacme"), json!({"roomRecord": true})));
+    let listed = t.ok(alice, "GET", &recs, &[], Value::Null).await["recordings"].clone();
+    assert_eq!(listed[0]["status"], "EGRESS_ACTIVE", "asked of LiveKit while it runs");
+    let stopped = t.ok(alice, "POST", &format!("{recs}/{}/stop", uid(&rec)), &[], Value::Null).await;
+    assert_eq!((stopped["status"].as_str(), stopped["ended_at"].is_null()), (Some("EGRESS_ENDING"), true), "{stopped}");
+    let listed = t.ok(carol, "GET", &recs, &[], Value::Null).await["recordings"].clone();
+    assert_eq!((listed[0]["status"].as_str(), listed[0]["location"].as_str()), (Some("EGRESS_COMPLETE"), Some("s3://meetings/one.mp4")));
+    assert!(!listed[0]["ended_at"].is_null());
+    let calls = livekit.calls.lock().unwrap().len();
+    t.ok(carol, "GET", &recs, &[], Value::Null).await;
+    assert_eq!(livekit.calls.lock().unwrap().len(), calls, "a finished recording is not asked about again");
+    refused(t.call(Some(alice), "POST", &format!("/meet/room/{}/recordings", Uuid::new_v4()), &[], Value::Null).await, "not found");
 
     // Guests. An outside guest of an event with a meeting here gets their own link in the invitation.
     let soon_iso = |d: i64| (chrono::Utc::now() + chrono::Duration::days(d)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);

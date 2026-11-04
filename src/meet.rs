@@ -11,6 +11,15 @@
 //!
 //! The operator turns meetings on with `FERRUM_MEET_URL` (LiveKit as browsers reach it, `wss://`),
 //! `FERRUM_MEET_KEY` and `FERRUM_MEET_SECRET` (an API key and its secret, as LiveKit was given).
+//!
+//! Captions are each person's own: their browser's speech recognition captions their voice into
+//! the call (LiveKit's `lk.transcription` text stream, the one LiveKit's own transcription agents
+//! use, so an operator's agent shows the same way), and what they captioned is kept as the
+//! meeting's transcript for whoever may join it. Recording is LiveKit Egress, which the operator
+//! runs beside LiveKit with its own storage (`FERRUM_MEET_RECORDINGS=true`; `FERRUM_MEET_API_URL`
+//! when the server reaches LiveKit at another address than browsers): anyone in the meeting may
+//! start or stop it, everyone in the call sees that it is recording, and Comms keeps where each
+//! recording went.
 
 use crate::util::{self, created, ok, s};
 use crate::{calendar, chat, recur};
@@ -20,6 +29,8 @@ use ferrum_kernel::{Ctx, Error, Kernel, Result, SiteRequest, SiteResponse, Tx};
 use hmac::{Hmac, Mac};
 use serde_json::{Map, Value, json};
 use sha2::Sha256;
+use sqlx::AssertSqlSafe;
+use std::time::Duration;
 use uuid::Uuid;
 
 /// How long a token admits its holder. LiveKit checks it when joining and reconnecting, so it
@@ -43,10 +54,28 @@ fn server() -> Option<Server> {
     Some(Server { url, key: var("FERRUM_MEET_KEY")?, secret: var("FERRUM_MEET_SECRET")? })
 }
 
+/// Whether the operator runs LiveKit Egress beside LiveKit, for recordings.
+fn recordings_on() -> bool {
+    std::env::var("FERRUM_MEET_RECORDINGS").is_ok_and(|v| v.trim() == "true")
+}
+
+/// LiveKit's server API: `FERRUM_MEET_API_URL`, or the browsers' address over http(s).
+fn api_url(server: &Server) -> String {
+    match std::env::var("FERRUM_MEET_API_URL").ok().map(|v| v.trim().trim_end_matches('/').to_string()).filter(|v| !v.is_empty()) {
+        Some(url) => url,
+        None => server.url.replacen("wss://", "https://", 1).replacen("ws://", "http://", 1),
+    }
+}
+
 /// `/api/app/comms/meet/...`
 pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> Result<SiteResponse> {
     match (req.method.as_str(), path) {
-        ("GET", []) => Ok(ok(json!({"available": server().is_some()}))),
+        ("GET", []) => Ok(ok(json!({"available": server().is_some(), "recordings": server().is_some() && recordings_on()}))),
+        ("GET", [kind, id, "transcript"]) => Ok(ok(transcript(k, ctx, kind, uuid(id)?).await?)),
+        ("POST", [kind, id, "transcript"]) => Ok(ok(said(k, ctx, kind, uuid(id)?, util::body_json(req)?).await?)),
+        ("GET", [kind, id, "recordings"]) => Ok(ok(recordings(k, ctx, kind, uuid(id)?).await?)),
+        ("POST", [kind, id, "recordings"]) => Ok(created(start_recording(k, ctx, kind, uuid(id)?).await?)),
+        ("POST", [kind, id, "recordings", rec, "stop"]) => Ok(ok(stop_recording(k, ctx, kind, uuid(id)?, uuid(rec)?).await?)),
         ("POST", ["rooms"]) => Ok(created(new_room(k, ctx, util::body_json(req)?).await?)),
         ("POST", ["room", id, "guest-link"]) => Ok(ok(guest_link(k, ctx, uuid(id)?, true).await?)),
         ("DELETE", ["room", id, "guest-link"]) => Ok(ok(guest_link(k, ctx, uuid(id)?, false).await?)),
@@ -82,6 +111,21 @@ async fn new_room(k: &Kernel, ctx: &Ctx, body: Map<String, Value>) -> Result<Val
 /// `POST /meet/{kind}/{id}/token`: `{url, token, title}` for a meeting the caller may join; any
 /// other is "not found".
 async fn join(k: &Kernel, ctx: &Ctx, server: &Server, kind: &str, id: Uuid) -> Result<Value> {
+    let (title, guest_path) = admit(k, ctx, kind, id).await?;
+    let name = if ctx.full_name.trim().is_empty() { ctx.email.clone() } else { ctx.full_name.clone() };
+    // Each joining is its own participant, so a person can be in from two devices.
+    let identity = format!("{}.{}", ctx.user.simple(), hex::encode(rand::random::<[u8; 4]>()));
+    let token = token(server, &identity, &name, &room_name(ctx.tenant, kind, id), chrono::Utc::now().timestamp());
+    Ok(json!({"url": server.url, "token": token, "title": title, "guest_path": guest_path}))
+}
+
+/// The LiveKit room of a meeting.
+fn room_name(tenant: Uuid, kind: &str, id: Uuid) -> String {
+    format!("{}-{kind}-{}", tenant.simple(), id.simple())
+}
+
+/// A meeting's title when this person may join it, and a room's guest link.
+async fn admit(k: &Kernel, ctx: &Ctx, kind: &str, id: Uuid) -> Result<(String, Option<String>)> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let mut guest_path = None;
     let title = match kind {
@@ -103,12 +147,257 @@ async fn join(k: &Kernel, ctx: &Ctx, server: &Server, kind: &str, id: Uuid) -> R
         _ => return Err(Error::NotFound("Meeting".into())),
     };
     tx.commit().await?;
+    Ok((title, guest_path))
+}
+
+// ───────────────────────────── transcripts ─────────────────────────────
+
+/// `POST /meet/{kind}/{id}/transcript {segment, text}`: what this person said, as their own browser
+/// heard it. A segment is theirs: saying it again replaces its words, and nobody else's.
+async fn said(k: &Kernel, ctx: &Ctx, kind: &str, id: Uuid, body: Map<String, Value>) -> Result<Value> {
+    admit(k, ctx, kind, id).await?;
+    let segment = body.get("segment").and_then(Value::as_str).unwrap_or_default();
+    if segment.is_empty() || segment.len() > 100 || !segment.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)) {
+        return Err(Error::field("segment", "letters, digits, dots, dashes and underscores, up to 100"));
+    }
+    let text = body.get("text").and_then(Value::as_str).map(str::trim).unwrap_or_default();
+    if text.is_empty() || text.chars().count() > 2000 {
+        return Err(Error::field("text", "what was said, up to 2000 characters"));
+    }
     let name = if ctx.full_name.trim().is_empty() { ctx.email.clone() } else { ctx.full_name.clone() };
-    // Each joining is its own participant, so a person can be in from two devices.
-    let identity = format!("{}.{}", ctx.user.simple(), hex::encode(rand::random::<[u8; 4]>()));
-    let room = format!("{}-{kind}-{}", ctx.tenant.simple(), id.simple());
-    let token = token(server, &identity, &name, &room, chrono::Utc::now().timestamp());
-    Ok(json!({"url": server.url, "token": token, "title": title, "guest_path": guest_path}))
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    sqlx::query(
+        "insert into comms_transcript (tenant_id, room, speaker, segment, speaker_name, text) values ($1, $2, $3, $4, $5, $6) \
+         on conflict (tenant_id, room, speaker, segment) do update set text = excluded.text",
+    )
+    .bind(ctx.tenant)
+    .bind(room_name(ctx.tenant, kind, id))
+    .bind(ctx.user)
+    .bind(segment)
+    .bind(&name)
+    .bind(text)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(json!({"saved": true}))
+}
+
+/// `GET /meet/{kind}/{id}/transcript`: what people captioned, in the order they said it.
+async fn transcript(k: &Kernel, ctx: &Ctx, kind: &str, id: Uuid) -> Result<Value> {
+    admit(k, ctx, kind, id).await?;
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let segments: Vec<Value> = sqlx::query_scalar(
+        "select jsonb_build_object('speaker', speaker, 'name', speaker_name, 'text', text, 'said_at', said_at) from comms_transcript \
+         where tenant_id = $1 and room = $2 order by said_at, segment limit 10000",
+    )
+    .bind(ctx.tenant)
+    .bind(room_name(ctx.tenant, kind, id))
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(json!({"segments": segments}))
+}
+
+// ───────────────────────────── recordings ─────────────────────────────
+
+/// A short-lived token for LiveKit's server API, allowed to record rooms.
+fn api_token(server: &Server, now: i64) -> String {
+    let claims = json!({"iss": server.key, "sub": "ferrum-comms", "nbf": now - 10, "exp": now + 600, "video": {"roomRecord": true}});
+    let unsigned = format!("{}.{}", URL_SAFE_NO_PAD.encode(r#"{"alg":"HS256","typ":"JWT"}"#), URL_SAFE_NO_PAD.encode(claims.to_string()));
+    let mut mac = Hmac::<Sha256>::new_from_slice(server.secret.as_bytes()).expect("HMAC accepts any key length");
+    mac.update(unsigned.as_bytes());
+    format!("{unsigned}.{}", URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
+}
+
+/// One call to LiveKit Egress's API (Twirp, JSON).
+async fn egress(k: &Kernel, server: &Server, method: &str, body: Value) -> Result<Value> {
+    let url = format!("{}/twirp/livekit.Egress/{method}", api_url(server));
+    // The operator's own server, usually beside Ferrum: private addresses allowed.
+    let (client, parsed) = k.vetted_client(&url, true, Duration::from_secs(20), "Ferrum Comms").await?;
+    let unavailable = |e: String| Error::Unavailable(format!("the meeting server's recordings: {e}"));
+    let res = client
+        .post(parsed)
+        .header("authorization", format!("Bearer {}", api_token(server, chrono::Utc::now().timestamp())))
+        .header("content-type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .map_err(|e| unavailable(e.to_string()))?;
+    let status = res.status();
+    let bytes = res.bytes().await.map_err(|e| unavailable(e.to_string()))?;
+    let answer: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    if !status.is_success() {
+        return Err(unavailable(answer.get("msg").and_then(Value::as_str).map_or_else(|| format!("status {status}"), str::to_string)));
+    }
+    Ok(answer)
+}
+
+/// A field of LiveKit's answer, by its proto name or its JSON name.
+fn field<'a>(v: &'a Value, proto: &str, json: &str) -> Option<&'a Value> {
+    v.get(proto).or_else(|| v.get(json))
+}
+
+/// An egress that will change no more.
+fn finished(status: &str) -> bool {
+    matches!(status, "EGRESS_COMPLETE" | "EGRESS_FAILED" | "EGRESS_ABORTED" | "EGRESS_LIMIT_REACHED")
+}
+
+/// What an egress says of itself: its status, where its file went, and what went wrong.
+fn egress_state(info: &Value) -> (String, Option<String>, Option<String>) {
+    // An unset enum is its first value.
+    let status = info.get("status").and_then(Value::as_str).unwrap_or("EGRESS_STARTING").to_string();
+    let files = field(info, "file_results", "fileResults").and_then(Value::as_array);
+    let location = files.and_then(|f| f.first()).and_then(|f| f.get("location").or_else(|| f.get("filename"))).and_then(Value::as_str).map(str::to_string);
+    let error = info.get("error").and_then(Value::as_str).filter(|e| !e.is_empty()).map(str::to_string);
+    (status, location, error)
+}
+
+const RECORDING: &str = "jsonb_build_object('id', id, 'status', status, 'started_by', started_by, 'started_at', started_at, \
+    'stopped_by', stopped_by, 'ended_at', ended_at, 'location', location, 'error', error)";
+
+/// `GET /meet/{kind}/{id}/recordings`: the meeting's recordings, newest first; those still going
+/// are asked about first.
+async fn recordings(k: &Kernel, ctx: &Ctx, kind: &str, id: Uuid) -> Result<Value> {
+    admit(k, ctx, kind, id).await?;
+    let room = room_name(ctx.tenant, kind, id);
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let going: Vec<String> =
+        sqlx::query_scalar("select egress_id from comms_recording where tenant_id = $1 and room = $2 and ended_at is null and egress_id is not null")
+            .bind(ctx.tenant)
+            .bind(&room)
+            .fetch_all(&mut *tx)
+            .await?;
+    tx.commit().await?;
+    if let (false, Some(server)) = (going.is_empty(), server()) {
+        let listed = egress(k, &server, "ListEgress", json!({"room_name": room})).await?;
+        let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+        for info in listed.get("items").and_then(Value::as_array).into_iter().flatten() {
+            let Some(egress_id) = field(info, "egress_id", "egressId").and_then(Value::as_str).filter(|e| going.iter().any(|g| g == e)) else { continue };
+            let (status, location, error) = egress_state(info);
+            sqlx::query(
+                "update comms_recording set status = $4, location = coalesce($5, location), error = $6, ended_at = case when $7 then coalesce(ended_at, now()) end \
+                 where tenant_id = $1 and room = $2 and egress_id = $3",
+            )
+            .bind(ctx.tenant)
+            .bind(&room)
+            .bind(egress_id)
+            .bind(&status)
+            .bind(location)
+            .bind(error)
+            .bind(finished(&status))
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+    }
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let rows: Vec<Value> = sqlx::query_scalar(AssertSqlSafe(format!(
+        "select {RECORDING} from comms_recording where tenant_id = $1 and room = $2 order by started_at desc limit 100"
+    )))
+    .bind(ctx.tenant)
+    .bind(&room)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(json!({"recordings": rows}))
+}
+
+/// `POST /meet/{kind}/{id}/recordings`: starts recording the call, one recording at a time.
+async fn start_recording(k: &Kernel, ctx: &Ctx, kind: &str, id: Uuid) -> Result<Value> {
+    let server = server().filter(|_| recordings_on()).ok_or_else(|| Error::invalid("recordings are not set up on this server"))?;
+    admit(k, ctx, kind, id).await?;
+    let room = room_name(ctx.tenant, kind, id);
+    let rec = Uuid::new_v4();
+    // The partial unique index keeps it to one at a time, even when two people start at once.
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    sqlx::query("insert into comms_recording (tenant_id, id, room, started_by, status) values ($1, $2, $3, $4, 'EGRESS_STARTING')")
+        .bind(ctx.tenant)
+        .bind(rec)
+        .bind(&room)
+        .bind(ctx.user)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| match Error::from(e) {
+            Error::Conflict(_) => Error::Conflict("this meeting is being recorded already".into()),
+            other => other,
+        })?;
+    tx.commit().await?;
+    let filepath = format!("ferrum/{}/{room}/{}.mp4", ctx.tenant.simple(), rec.simple());
+    let started = egress(
+        k,
+        &server,
+        "StartRoomCompositeEgress",
+        json!({"room_name": room, "layout": "speaker", "file_outputs": [{"file_type": "MP4", "filepath": filepath}]}),
+    )
+    .await;
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let info = match started {
+        Ok(info) => info,
+        Err(e) => {
+            sqlx::query("delete from comms_recording where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(rec).execute(&mut *tx).await?;
+            tx.commit().await?;
+            return Err(e);
+        }
+    };
+    let egress_id =
+        field(&info, "egress_id", "egressId").and_then(Value::as_str).ok_or_else(|| Error::Unavailable("the meeting server started no recording".into()))?;
+    let row: Value = sqlx::query_scalar(AssertSqlSafe(format!(
+        "update comms_recording set egress_id = $3, status = $4 where tenant_id = $1 and id = $2 returning {RECORDING}"
+    )))
+    .bind(ctx.tenant)
+    .bind(rec)
+    .bind(egress_id)
+    .bind(egress_state(&info).0)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(row)
+}
+
+/// `POST /meet/{kind}/{id}/recordings/{rec}/stop`: stops a recording of the call. Its file is
+/// finished and stored after; the recordings list says where once it is.
+async fn stop_recording(k: &Kernel, ctx: &Ctx, kind: &str, id: Uuid, rec: Uuid) -> Result<Value> {
+    let server = server().ok_or_else(|| Error::invalid("video meetings are not set up on this server"))?;
+    admit(k, ctx, kind, id).await?;
+    let room = room_name(ctx.tenant, kind, id);
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let found: Option<(Option<String>, bool)> =
+        sqlx::query_as("select egress_id, ended_at is not null from comms_recording where tenant_id = $1 and id = $2 and room = $3 for update")
+            .bind(ctx.tenant)
+            .bind(rec)
+            .bind(&room)
+            .fetch_optional(&mut *tx)
+            .await?;
+    tx.commit().await?;
+    let (egress_id, ended) = found.ok_or_else(|| Error::NotFound("recording".into()))?;
+    let egress_id = egress_id.ok_or_else(|| Error::invalid("this recording has not started yet"))?;
+    if !ended {
+        let info = egress(k, &server, "StopEgress", json!({"egress_id": egress_id})).await?;
+        let (status, location, error) = egress_state(&info);
+        let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+        sqlx::query(
+            "update comms_recording set stopped_by = $3, status = $4, location = coalesce($5, location), error = $6, \
+             ended_at = case when $7 then coalesce(ended_at, now()) end where tenant_id = $1 and id = $2",
+        )
+        .bind(ctx.tenant)
+        .bind(rec)
+        .bind(ctx.user)
+        .bind(&status)
+        .bind(location)
+        .bind(error)
+        .bind(finished(&status))
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+    }
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let row: Value = sqlx::query_scalar(AssertSqlSafe(format!("select {RECORDING} from comms_recording where tenant_id = $1 and id = $2")))
+        .bind(ctx.tenant)
+        .bind(rec)
+        .fetch_one(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(row)
 }
 
 // ───────────────────────────── guests ─────────────────────────────
@@ -218,8 +507,7 @@ pub async fn guest(k: &Kernel, req: &SiteRequest) -> Result<SiteResponse> {
         _ => return Err(gone()),
     };
     let identity = format!("guest.{}", hex::encode(rand::random::<[u8; 6]>()));
-    let room_name = format!("{}-{kind}-{}", tenant.simple(), id.simple());
-    let pass = token(&server, &identity, &format!("{name} (guest)"), &room_name, chrono::Utc::now().timestamp());
+    let pass = token(&server, &identity, &format!("{name} (guest)"), &room_name(tenant, kind, id), chrono::Utc::now().timestamp());
     Ok(ok(json!({"url": server.url, "token": pass, "title": title, "name": name})))
 }
 

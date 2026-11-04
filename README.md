@@ -71,7 +71,7 @@ CalDAV and CardDAV for Apple Calendar, Thunderbird, DAVx⁵ and Outlook.
 <td width="50%" valign="top">
 
 ### 🎥 Video meetings
-A call in any channel or event on your own LiveKit server; guests join by link.
+A call in any channel or event on your own LiveKit server; guests join by link. Captions people give their own voices, kept as the meeting's transcript, and recordings through LiveKit Egress.
 
 </td>
 <td width="50%" valign="top">
@@ -298,6 +298,8 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.9.0** | Captions, transcripts and recordings in meetings (FERRUM-COMMS-002). Each person may caption their own voice with their browser's speech recognition: the captions show in the call, as LiveKit's transcription stream, and are kept as the meeting's transcript for whoever may join it. Where the operator runs LiveKit Egress, anyone in a meeting may record it; everyone in the call sees that it is recording, and the meeting lists where each recording went. |
+| **0.8.1** | Presence in Chat: a channel's members and a direct conversation show who is about now, never when someone was last seen. |
 | **0.8.0** | The interfaces of Chat, Mail, Calendar and Meet worked through screen by screen: direct messages and thread replies notify, unread counts and markers are right, channel details and members, mentions that complete, conversations in Mail with the keyboard and drafts that are kept, mail domain health, guests answering from their invitation, find a time, and meetings that never pretend a call is possible. |
 | **0.7.4** | The bar's search finds chat messages (`shell.search`): those in public channels and in the person's own, each opening its conversation. `GET … |
 | **0.7.3** | Pop out in a browser that says it floats videos but cannot float a call's (a camera stream): the person is told so in plain words and the button … |

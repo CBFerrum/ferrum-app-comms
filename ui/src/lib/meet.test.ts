@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mediaProblem, meetLink, meetPath, notSetUp, openCall, opensBeside } from "./meet";
+import { mediaProblem, meetLink, meetPath, notSetUp, openCall, opensBeside, recordingWords, segmentId } from "./meet";
 
 const ORIGIN = "https://erp.example.com";
 const ID = "74486aa5-c53f-4a79-9861-c44e700c1197";
@@ -49,5 +49,18 @@ describe("calls on phones", () => {
   it("tells a meeting server that is not there from one that failed", () => {
     expect(notSetUp("video meetings are not set up on this server")).toBe(true);
     expect(notSetUp("could not establish signal connection")).toBe(false);
+  });
+});
+
+describe("what a call keeps", () => {
+  it("names each caption segment by when it was heard, and its place", () => {
+    expect(segmentId(1_700_000_000_000, 3)).toBe("loyw3v28-3");
+    expect(segmentId(0, 0)).toMatch(/^[a-z0-9._-]+$/);
+  });
+
+  it("says where a recording stands", () => {
+    expect(recordingWords({ status: "EGRESS_ACTIVE", ended_at: null, location: null, error: null })).toBe("Recording");
+    expect(recordingWords({ status: "EGRESS_COMPLETE", ended_at: "x", location: "s3://m/1.mp4", error: null })).toBe("Saved at s3://m/1.mp4");
+    expect(recordingWords({ status: "EGRESS_FAILED", ended_at: "x", location: null, error: "no space" })).toBe("Failed: no space");
   });
 });
