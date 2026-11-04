@@ -780,8 +780,9 @@ async fn scenario() {
     let deals_id = uid(&deals);
     assert_eq!(deals["role"], json!("Owner"));
     // Who is about: a session of theirs that made a request in the last ten minutes, and only that.
-    // The admin signed in above; Bob signs in now; Alice's requests here carry no session.
-    k.login("acme", "bob@acme.test", PASSWORD).await.expect("Bob signs in");
+    // Bob signs in in a browser now (a session of his); Alice's requests here carry none.
+    let bob_signed_in = k.login("acme", "bob@acme.test", PASSWORD).await.expect("Bob signs in");
+    k.open_session(&bob_signed_in, Duration::from_secs(3600), "it", "127.0.0.1", None).await.expect("Bob's browser");
     let about = |v: &Value| -> Vec<(String, bool)> {
         v["members"].as_array().unwrap().iter().map(|m| (m["email"].as_str().unwrap().to_string(), m["active"] == json!(true))).collect()
     };
