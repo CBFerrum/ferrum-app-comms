@@ -79,8 +79,14 @@ interface Page {
   target?: Message;
 }
 
-function ChannelIcon({ c }: { c: Pick<ChannelSummary, "type"> }) {
-  if (c.type === "Direct") return <MessageSquare className="size-4 shrink-0" aria-hidden="true" />;
+function ChannelIcon({ c }: { c: Pick<ChannelSummary, "type" | "active"> }) {
+  if (c.type === "Direct")
+    return (
+      <span className="relative shrink-0">
+        <MessageSquare className="size-4" aria-hidden="true" />
+        {c.active && <span className="absolute -end-0.5 -bottom-0.5 size-2 rounded-full border border-background bg-emerald-500" title="Active now" />}
+      </span>
+    );
   if (c.type === "Private") return <Lock className="size-4 shrink-0" aria-hidden="true" />;
   return <Hash className="size-4 shrink-0" aria-hidden="true" />;
 }

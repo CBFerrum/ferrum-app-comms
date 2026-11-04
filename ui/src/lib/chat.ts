@@ -29,6 +29,8 @@ export interface ChannelSummary {
   /** How many of the unread messages mention the person. */
   unread_mentions?: number;
   last_message?: { id: string; sender: string; body: string; posted_at: string } | null;
+  /** A direct conversation's other person is about (active in the last ten minutes). */
+  active?: boolean | null;
 }
 
 export interface Member {
@@ -36,6 +38,8 @@ export interface Member {
   full_name?: string | null;
   role: "Owner" | "Member" | string;
   last_read_at?: string | null;
+  /** About: active in the last ten minutes. Only that is known, never when they were last seen. */
+  active?: boolean;
 }
 
 export interface Channel extends Omit<ChannelSummary, "unread" | "unread_mentions" | "last_message"> {

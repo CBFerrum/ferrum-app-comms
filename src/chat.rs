@@ -260,7 +260,8 @@ async fn channel_json(tx: &mut Tx, ctx: &Ctx, channel: Uuid) -> Result<Value> {
          'title', case when c.channel_type = 'Direct' then (select coalesce(nullif(u.full_name, ''), o.member::text) from {MEMBERS} o \
             left join app_user u on u.tenant_id = o.tenant_id and lower(u.email::text) = o.member \
             where o.tenant_id = c.tenant_id and o.parent_id = c.id and o.member <> $3 limit 1) else c.channel_name end, \
-         'members', (select coalesce(jsonb_agg(jsonb_build_object('email', m.member, 'full_name', u.full_name, 'role', m.role, 'last_read_at', {mread}) order by m.idx), '[]') \
+         'members', (select coalesce(jsonb_agg(jsonb_build_object('email', m.member, 'full_name', u.full_name, 'role', m.role, 'last_read_at', {mread}, \
+            'active', {ACTIVE}) order by m.idx), '[]') \
             from {MEMBERS} m left join app_user u on u.tenant_id = m.tenant_id and lower(u.email::text) = m.member \
             where m.tenant_id = c.tenant_id and m.parent_id = c.id)) \
          from e_chat_channel c left join {MEMBERS} me on me.tenant_id = c.tenant_id and me.parent_id = c.id and me.member = $3 \
@@ -277,6 +278,11 @@ async fn channel_json(tx: &mut Tx, ctx: &Ctx, channel: Uuid) -> Result<Value> {
         .await?
         .ok_or_else(|| Error::NotFound("Chat Channel".into()))
 }
+
+/// Whether the person `u` is about: a live session of theirs that made a request in the last ten
+/// minutes (sessions note it at most every five). Only that is shown, never when they were last seen.
+const ACTIVE: &str = "exists (select 1 from user_session s where s.tenant_id = u.tenant_id and s.user_id = u.id and s.revoked_at is null \
+    and s.expires_at > now() and s.last_seen_at > now() - interval '10 minutes')";
 
 /// What counts as unread for the member `$2` of channel `c` whose member row is `me`: messages
 /// from others after the read marker, and replies from others in threads they started or
@@ -296,6 +302,8 @@ async fn list_channels(k: &Kernel, ctx: &Ctx, include_public: bool) -> Result<Va
          'title', case when c.channel_type = 'Direct' then (select coalesce(nullif(u.full_name, ''), o.member::text) from {MEMBERS} o \
             left join app_user u on u.tenant_id = o.tenant_id and lower(u.email::text) = o.member \
             where o.tenant_id = c.tenant_id and o.parent_id = c.id and o.member <> $2 limit 1) else c.channel_name end, \
+         'active', case when c.channel_type = 'Direct' then (select {ACTIVE} from {MEMBERS} o join app_user u on u.tenant_id = o.tenant_id \
+            and lower(u.email::text) = o.member where o.tenant_id = c.tenant_id and o.parent_id = c.id and o.member <> $2 limit 1) end, \
          'unread', case when me.id is null then 0 else (select count(*) {UNREAD}) end, \
          'unread_mentions', case when me.id is null then 0 else (select count(*) {UNREAD} and x.mentions @> to_jsonb($2::text)) end, \
          'last_message', (select jsonb_build_object('id', x.id, 'sender', x.sender, 'body', left(x.body, 200), 'posted_at', {posted}) \
