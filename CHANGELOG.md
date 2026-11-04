@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.0
+
+Captions, transcripts and recordings in meetings (FERRUM-COMMS-002).
+
+- **Captions** are each person's own. *Caption my voice* has their browser's speech recognition
+  (Chrome, Edge, Safari) caption what they say. It goes to everyone in the call on LiveKit's
+  `lk.transcription` text stream, the one LiveKit's transcription agents use, so an operator's agent
+  shows the same way. *Captions* shows the latest lines. The button says that the browser may send
+  the voice to its maker to recognise it.
+- **The transcript** is what people captioned: each segment kept once per person, the last words
+  standing, for whoever may join the meeting (`GET`/`POST /api/app/comms/meet/{kind}/{id}/transcript`).
+  Guests' captions show in the call but are not kept.
+- **Recordings** go through LiveKit Egress, where the operator runs it with its storage
+  (`FERRUM_MEET_RECORDINGS=true`, and `FERRUM_MEET_API_URL` when the server reaches LiveKit at another
+  address than browsers). Anyone in the meeting may start or stop one, one at a time. The person
+  confirms first, and everyone in the call sees *Recording*. The meeting's recordings say where each
+  file went once Egress has stored it (`/api/app/comms/meet/{kind}/{id}/recordings`). With recordings
+  on, the server calls LiveKit's API.
+
 ## 0.8.1
 
 Presence in Chat (part of FERRUM-COMMS-002).
