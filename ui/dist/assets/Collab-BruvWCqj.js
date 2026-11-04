@@ -1,1 +1,0 @@
-import{m as o}from"./index-DQvdlsjA.js";import{u as r}from"./toggle-group-BG2-1Q0p.js";const u=()=>r({queryKey:["people"],queryFn:({signal:e})=>o.get("/api/users",void 0,e),staleTime:5*6e4});export{u};

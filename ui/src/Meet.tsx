@@ -33,7 +33,8 @@ import { Label } from "@ferrum/kit/primitives";
 import { Skeleton } from "@ferrum/kit/primitives";
 import { ApiError, api, errorMessage, shell } from "@ferrum/client";
 import { CHAT } from "./lib/chat";
-import { MEET, mediaProblem, meetLink, notSetUp, useMeetAvailable, type MeetKind, type MeetPass } from "./lib/meet";
+import { MEET, mediaProblem, meetLink, notSetUp, useMeetAvailable, useMeetRecordings, type MeetKind, type MeetPass } from "./lib/meet";
+import { CallTools } from "./CallTools";
 import { useMe } from "@ferrum/records";
 import { Alert, EmptyState, ErrorState, toast } from "@ferrum/kit";
 import { goBack } from "@ferrum/kit";
@@ -110,7 +111,15 @@ export function MeetPage() {
         {!pass.data ? (
           <Skeleton className="m-6 h-64" />
         ) : (
-          <Stage pass={pass.data} name={me?.user.full_name || me?.user.email || ""} onRejoin={() => pass.refetch()} onBack={leave} channel={meetKind === "channel" ? id : undefined} tools={tools} />
+          <Stage
+            pass={pass.data}
+            name={me?.user.full_name || me?.user.email || ""}
+            onRejoin={() => pass.refetch()}
+            onBack={leave}
+            channel={meetKind === "channel" ? id : undefined}
+            tools={tools}
+            meeting={{ kind: meetKind, id }}
+          />
         )}
       </div>
     </div>
@@ -156,6 +165,7 @@ function Stage({
   onBack,
   channel,
   tools,
+  meeting,
 }: {
   pass: MeetPass;
   name: string;
@@ -163,8 +173,11 @@ function Stage({
   onBack?: () => void;
   channel?: string;
   tools?: HTMLElement | null;
+  /** A meeting of the workspace's (not a guest's): its captions' transcript and recordings. */
+  meeting?: { kind: MeetKind; id: string };
 }) {
   const [choices, setChoices] = useState<LocalUserChoices | null>(null);
+  const recordings = useMeetRecordings(!!meeting).data ?? false;
   const [left, setLeft] = useState<DisconnectReason | undefined | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const unable = mediaProblem();
@@ -256,6 +269,7 @@ function Stage({
       >
         <Connected onConnected={() => setProblem(null)} />
         <VideoConference />
+        {meeting && <CallTools kind={meeting.kind} id={meeting.id} recordings={recordings} />}
         {channel && <Announce channel={channel} />}
         {tools && <PopOut slot={tools} />}
       </LiveKitRoom>

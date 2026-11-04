@@ -29,6 +29,17 @@ export function useMeetAvailable(enabled = true) {
   });
 }
 
+/** Whether the operator runs recordings too (LiveKit Egress beside LiveKit). */
+export function useMeetRecordings(enabled = true) {
+  return useQuery({
+    queryKey: ["meet", "setup"],
+    queryFn: ({ signal }) => api.get<{ available: boolean; recordings?: boolean }>(MEET, undefined, signal).then((r) => !!r.recordings),
+    enabled,
+    retry: false,
+    staleTime: 10 * 60_000,
+  });
+}
+
 /** A meeting's address, to share or to keep in a calendar event (Comms' own page). */
 export const meetLink = (kind: MeetKind, id: string, origin = location.origin) => `${origin}/meet/${kind}/${id}`;
 
@@ -80,3 +91,35 @@ export function mediaProblem(env: { secure: boolean; devices: boolean } = { secu
 
 /** Whether a failure was the server saying video meetings are not set up (as opposed to this one failing). */
 export const notSetUp = (message: string) => /not set up/i.test(message);
+
+/** A recording of a meeting, as Comms keeps it (LiveKit Egress's status). */
+export interface Recording {
+  id: string;
+  status: string;
+  started_at: string;
+  ended_at: string | null;
+  location: string | null;
+  error: string | null;
+}
+
+/** A segment's id: this browser's, unique in the meeting for this person. */
+export const segmentId = (at: number, n: number) => `${at.toString(36)}-${n}`;
+
+/** What a recording's status says, in words. */
+export function recordingWords(r: Pick<Recording, "status" | "ended_at" | "location" | "error">): string {
+  if (r.error) return `Failed: ${r.error}`;
+  switch (r.status) {
+    case "EGRESS_STARTING":
+      return "Starting";
+    case "EGRESS_ACTIVE":
+      return "Recording";
+    case "EGRESS_ENDING":
+      return "Finishing the file";
+    case "EGRESS_COMPLETE":
+      return r.location ? `Saved at ${r.location}` : "Saved";
+    case "EGRESS_LIMIT_REACHED":
+      return "Stopped at the server's limit";
+    default:
+      return r.ended_at ? "Ended" : r.status;
+  }
+}
