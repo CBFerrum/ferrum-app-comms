@@ -779,6 +779,19 @@ async fn scenario() {
         t.ok(alice, "POST", "/chat/channels", &[], json!({"name": "deals", "type": "Private", "topic": "Big ones", "members": ["bob@acme.test"]})).await;
     let deals_id = uid(&deals);
     assert_eq!(deals["role"], json!("Owner"));
+    // Who is about: a session of theirs that made a request in the last ten minutes, and only that.
+    // The admin signed in above; Bob signs in now; Alice's requests here carry no session.
+    k.login("acme", "bob@acme.test", PASSWORD).await.expect("Bob signs in");
+    let about = |v: &Value| -> Vec<(String, bool)> {
+        v["members"].as_array().unwrap().iter().map(|m| (m["email"].as_str().unwrap().to_string(), m["active"] == json!(true))).collect()
+    };
+    let view = t.ok(alice, "GET", &format!("/chat/channels/{deals_id}"), &[], Value::Null).await;
+    assert_eq!(about(&view), vec![("alice@acme.test".to_string(), false), ("bob@acme.test".to_string(), true)]);
+    assert!(view["members"][1].get("last_seen_at").is_none(), "never when");
+    t.exec("update user_session set last_seen_at = now() - interval '30 minutes' where tenant_id = $1 and $2::uuid is null", None).await;
+    let view = t.ok(alice, "GET", &format!("/chat/channels/{deals_id}"), &[], Value::Null).await;
+    assert_eq!(about(&view), vec![("alice@acme.test".to_string(), false), ("bob@acme.test".to_string(), false)], "away after ten minutes");
+    t.exec("update user_session set last_seen_at = now() where tenant_id = $1 and $2::uuid is null", None).await;
     refused(t.call(Some(bob), "POST", "/chat/channels", &[], json!({"name": "deals"})).await, "conflict");
     refused(t.call(Some(alice), "POST", "/chat/channels", &[], json!({"name": "ghosts", "type": "Private", "members": ["nobody@acme.test"]})).await, "invalid");
     let general = uid(&t.ok(carol, "POST", "/chat/channels", &[], json!({"name": "general"})).await);
