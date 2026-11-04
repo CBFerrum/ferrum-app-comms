@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.1
+
+Presence in Chat (part of FERRUM-COMMS-002).
+
+- A channel's members, and the other person of a direct conversation, show whether they are about:
+  a session of theirs made a request in the last ten minutes (sessions note it at most every five).
+  Only that is shown, never when someone was last seen. A green dot on their initials and "Active
+  now" in Members, and on the direct conversation in the sidebar.
+
 ## 0.8.0
 
 The interfaces of Chat, Mail, Calendar and Meet, worked through screen by screen.
