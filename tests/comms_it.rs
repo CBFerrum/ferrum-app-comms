@@ -349,8 +349,17 @@ impl T {
         }
     }
 
+    /// The site's answer as the server sends it: a stored file it names (`SiteResponse::file`)
+    /// becomes its body, as the server streams it from storage.
     async fn raw(&self, req: SiteRequest) -> Result<SiteResponse, Error> {
-        self.k.hooks.site("comms").expect("comms site").handle(&self.k, req).await
+        let tenant = req.tenant;
+        let mut r = self.k.hooks.site("comms").expect("comms site").handle(&self.k, req).await?;
+        if let Some(i) = r.headers.iter().position(|(k, _)| k == ferrum_kernel::hooks::STREAM_FILE_HEADER) {
+            let id: uuid::Uuid = r.headers.remove(i).1.parse().expect("a file id");
+            assert!(r.body.is_empty(), "a named file is streamed, never read whole by the app");
+            r.body = self.k.read_file(&Ctx::system(tenant, self.k.registry.schema(tenant).await?), id).await?.2;
+        }
+        Ok(r)
     }
 
     /// A JSON call to `/api/app/comms{path}` as `ctx` (or the public site without one).

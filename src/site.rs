@@ -117,8 +117,11 @@ async fn download(k: &Kernel, ctx: &Ctx, file: Uuid) -> Result<SiteResponse> {
     if !allowed {
         return Err(Error::NotFound("attachment".into()));
     }
-    let (name, ctype, data) = k.read_file(&util::sys(ctx), file).await?;
-    Ok(attachment(&name, &ctype, data))
+    let f = k.file_info(&util::sys(ctx), file).await?;
+    let mut r = attachment(&f.name, &f.content_type, Vec::new());
+    // The server streams the stored file as the body, whatever its size.
+    r = SiteResponse::file(r.status, &r.content_type, r.headers, file);
+    Ok(r)
 }
 
 /// A file as a download: never shown in the page, and never as a type a browser could run.
