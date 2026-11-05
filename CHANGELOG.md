@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.0
+
+Attachments stream: an attachment is sent by the server straight from storage, whatever its size, instead of being read whole into memory first (Ferrum's SiteResponse::file, FERRUM-OPS-006).
+
 ## 0.9.3
 
 Rebuilt with Ferrum-Frontend 00dea07: in a workflow state that names what may change, the other fields show read-only, and the fields the state needs show required.
