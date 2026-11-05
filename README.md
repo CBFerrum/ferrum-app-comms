@@ -298,6 +298,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.9.2** | Rebuilt with Ferrum-Frontend daeadda: actions say what they did. |
 | **0.9.1** | Rebuilt with Ferrum-Frontend 80ff179: labels name their fields, and linked titles show their titles. |
 | **0.9.0** | Captions, transcripts and recordings in meetings (FERRUM-COMMS-002). Each person may caption their own voice with their browser's speech recognition: the captions show in the call, as LiveKit's transcription stream, and are kept as the meeting's transcript for whoever may join it. Where the operator runs LiveKit Egress, anyone in a meeting may record it; everyone in the call sees that it is recording, and the meeting lists where each recording went. |
 | **0.8.1** | Presence in Chat: a channel's members and a direct conversation show who is about now, never when someone was last seen. |
