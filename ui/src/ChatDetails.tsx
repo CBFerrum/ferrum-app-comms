@@ -9,7 +9,7 @@ import { useContext, useId, useState } from "react";
 import { useNavigate } from "react-router";
 import { Badge, Button, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, Input, Label, Skeleton, Textarea } from "@ferrum/kit/primitives";
 import { cn, confirmDialog, ErrorState, TabPanel, Tabs, toast } from "@ferrum/kit";
-import { api, errorMessage } from "@ferrum/client";
+import { api, errorMessage, t as tr } from "@ferrum/client";
 import { useMe, usePeople } from "@ferrum/records";
 import { CHAT, LOUDNESS, SIDE_PANEL, accessText, addable, initials, keys, loudness, memberRows, type Channel, type Loud, type Member } from "./lib/chat";
 import { Base } from "./chatBase";
@@ -30,13 +30,13 @@ export function ChannelDetails({ id, tab, onTab, onClose }: { id: string; tab: D
   const tabs = direct ? TABS.filter((t) => t.id === "personal") : TABS;
   const shown = direct ? "personal" : tab;
   return (
-    <aside className={SIDE_PANEL} aria-label="Channel details" onKeyDown={(e) => e.key === "Escape" && onClose()}>
+    <aside className={SIDE_PANEL} aria-label={tr("Channel details")} onKeyDown={(e) => e.key === "Escape" && onClose()}>
       <header className="flex items-center gap-2 border-b px-3 py-2">
         <div className="min-w-0 flex-1">
           <h3 className="font-semibold">{direct ? "Conversation" : "Channel"} details</h3>
           {c && <p className="truncate text-xs text-muted-foreground">{c.title || c.name}</p>}
         </div>
-        <Button variant="ghost" size="icon-sm" aria-label="Close details" onClick={onClose}>
+        <Button variant="ghost" size="icon-sm" aria-label={tr("Close details")} onClick={onClose}>
           <X />
         </Button>
       </header>
@@ -124,7 +124,7 @@ function General({ c }: { c: Channel }) {
   return (
     <div className="grid gap-4 text-sm">
       <div className="grid gap-1.5">
-        <Label htmlFor={`${ids}-name`}>Name</Label>
+        <Label htmlFor={`${ids}-name`}>{tr("Name")}</Label>
         {owner ? (
           <Input
             id={`${ids}-name`}
@@ -141,7 +141,7 @@ function General({ c }: { c: Channel }) {
         {problemFor("name")}
       </div>
       <div className="grid gap-1.5">
-        <Label htmlFor={`${ids}-topic`}>Topic</Label>
+        <Label htmlFor={`${ids}-topic`}>{tr("Topic")}</Label>
         {owner ? (
           <Textarea
             id={`${ids}-topic`}
@@ -149,7 +149,7 @@ function General({ c }: { c: Channel }) {
             maxLength={500}
             value={topic}
             disabled={busy}
-            placeholder="What is this channel for?"
+            placeholder={tr("What is this channel for?")}
             onChange={(e) => setTopic(e.target.value)}
             onBlur={() => topic.trim() !== (c.topic ?? "") && void save("topic", { topic: topic.trim() || null })}
           />
@@ -159,11 +159,11 @@ function General({ c }: { c: Channel }) {
         {problemFor("topic")}
       </div>
       <div className="grid gap-1.5">
-        <Label htmlFor={`${ids}-type`}>Who can find it</Label>
+        <Label htmlFor={`${ids}-type`}>{tr("Who can find it")}</Label>
         {owner ? (
           <select id={`${ids}-type`} className="h-9 rounded-md border bg-background px-2 text-sm" value={c.type} disabled={busy} onChange={(e) => void type(e.target.value as "Public" | "Private")}>
-            <option value="Public">Anyone in the workspace</option>
-            <option value="Private">Only its members</option>
+            <option value="Public">{tr("Anyone in the workspace")}</option>
+            <option value="Private">{tr("Only its members")}</option>
           </select>
         ) : (
           <p>{c.type === "Private" ? "Only its members" : "Anyone in the workspace"}</p>
@@ -171,7 +171,7 @@ function General({ c }: { c: Channel }) {
         {problemFor("type")}
       </div>
       <div className="grid gap-1.5">
-        <Label htmlFor={`${ids}-post`}>Who can post</Label>
+        <Label htmlFor={`${ids}-post`}>{tr("Who can post")}</Label>
         {owner ? (
           <select
             id={`${ids}-post`}
@@ -180,8 +180,8 @@ function General({ c }: { c: Channel }) {
             disabled={busy}
             onChange={(e) => void save("post_policy", { post_policy: e.target.value }, "Updated")}
           >
-            <option value="Members">Every member</option>
-            <option value="Owners">Only owners start posts (members reply in threads)</option>
+            <option value="Members">{tr("Every member")}</option>
+            <option value="Owners">{tr("Only owners start posts (members reply in threads)")}</option>
           </select>
         ) : (
           <p>{c.post_policy === "Owners" ? "Only owners start posts; members reply in threads" : "Every member"}</p>
@@ -197,7 +197,7 @@ function General({ c }: { c: Channel }) {
           {problemFor("archived")}
         </div>
       )}
-      {!owner && c.role && <p className="text-xs text-muted-foreground">Only the channel's owners can change these.</p>}
+      {!owner && c.role && <p className="text-xs text-muted-foreground">{tr("Only the channel's owners can change these.")}</p>}
     </div>
   );
 }
@@ -218,7 +218,7 @@ function Personal({ c }: { c: Channel }) {
     try {
       await api.put(`${CHAT}/channels/${c.id}/notify`, { level: to });
       void qc.invalidateQueries({ queryKey: keys.channels });
-      if (to === "Nothing") toast("Muted: no notifications from this conversation");
+      if (to === "Nothing") toast(tr("Muted: no notifications from this conversation"));
     } catch (e) {
       if (before) qc.setQueryData(keys.channel(c.id), before);
       toast(errorMessage(e), "error");
@@ -242,11 +242,11 @@ function Personal({ c }: { c: Channel }) {
     }
   };
 
-  if (!member) return <p className="text-sm text-muted-foreground">Join the channel to choose how it tells you of new messages.</p>;
+  if (!member) return <p className="text-sm text-muted-foreground">{tr("Join the channel to choose how it tells you of new messages.")}</p>;
   return (
     <div className="grid gap-4 text-sm">
       <fieldset className="grid gap-2">
-        <legend className="mb-1 font-medium">Tell me about</legend>
+        <legend className="mb-1 font-medium">{tr("Tell me about")}</legend>
         {LOUDNESS.map((o) => (
           <label key={o.value} htmlFor={`${ids}-${o.value}`} className={cn("flex cursor-pointer items-start gap-2 rounded-md border p-2 pointer-coarse:min-h-11", level === o.value && "border-primary bg-primary/5")}>
             <input id={`${ids}-${o.value}`} className="mt-0.5" type="radio" name={`${ids}-loud`} checked={level === o.value} onChange={() => void set(o.value)} />
@@ -258,14 +258,14 @@ function Personal({ c }: { c: Channel }) {
         ))}
         {c.notify_level && c.notify_level !== usual && (
           <Button variant="link" size="xs" className="justify-self-start p-0" onClick={() => void set(null)}>
-            Back to the usual for {direct ? "a direct message" : "a channel"}
+            {tr("Back to the usual for")} {direct ? "a direct message" : "a channel"}
           </Button>
         )}
       </fieldset>
       {!direct && (
         <div className="border-t pt-3">
           <Button variant="outline" onClick={() => void leave()}>
-            Leave this channel
+            {tr("Leave this channel")}
           </Button>
         </div>
       )}
@@ -312,18 +312,18 @@ function Members({ c }: { c: Channel }) {
 
   return (
     <div className="grid gap-3 text-sm">
-      {!c.role && <p className="rounded-md bg-muted px-3 py-2 text-muted-foreground">You are reading a public channel. Join it to post.</p>}
+      {!c.role && <p className="rounded-md bg-muted px-3 py-2 text-muted-foreground">{tr("You are reading a public channel. Join it to post.")}</p>}
       {c.type === "Private" && (
         <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Lock className="size-3.5" aria-hidden="true" /> Private: only these people can read it.
+          <Lock className="size-3.5" aria-hidden="true" /> {tr("Private: only these people can read it.")}
         </p>
       )}
       {owner && (
         <div className="relative grid gap-1.5">
-          <Label htmlFor={`${ids}-add`}>Add people</Label>
-          <Input id={`${ids}-add`} value={adding} onChange={(e) => setAdding(e.target.value)} placeholder="Name or email" autoComplete="off" />
+          <Label htmlFor={`${ids}-add`}>{tr("Add people")}</Label>
+          <Input id={`${ids}-add`} value={adding} onChange={(e) => setAdding(e.target.value)} placeholder={tr("Name or email")} autoComplete="off" />
           {adding.trim() && (
-            <ul className="rounded-md border bg-popover p-1" aria-label="People to add">
+            <ul className="rounded-md border bg-popover p-1" aria-label={tr("People to add")}>
               {offered.map((p) => (
                 <li key={p.id}>
                   <button type="button" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-start hover:bg-accent pointer-coarse:min-h-11" onClick={() => add(p.email)}>
@@ -333,7 +333,7 @@ function Members({ c }: { c: Channel }) {
                   </button>
                 </li>
               ))}
-              {!offered.length && <li className="px-2 py-1.5 text-muted-foreground">Nobody to add matches “{adding.trim()}”.</li>}
+              {!offered.length && <li className="px-2 py-1.5 text-muted-foreground">{tr("Nobody to add matches “")}{adding.trim()}”.</li>}
             </ul>
           )}
         </div>
@@ -342,9 +342,9 @@ function Members({ c }: { c: Channel }) {
         <Label htmlFor={`${ids}-find`}>
           {c.members.length} {c.members.length === 1 ? "member" : "members"}
         </Label>
-        <Input id={`${ids}-find`} type="search" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Find a member" />
+        <Input id={`${ids}-find`} type="search" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder={tr("Find a member")} />
       </div>
-      <ul className="grid gap-1" aria-label="Members">
+      <ul className="grid gap-1" aria-label={tr("Members")}>
         {rows.map((m) => {
           const you = m.email.toLowerCase() === me;
           return (
@@ -356,13 +356,13 @@ function Members({ c }: { c: Channel }) {
               <span className="min-w-0 flex-1">
                 <span className="block truncate font-medium">
                   {m.full_name || m.email}
-                  {you && <span className="font-normal text-muted-foreground"> (you)</span>}
+                  {you && <span className="font-normal text-muted-foreground"> {tr("(you)")}</span>}
                 </span>
                 {(m.full_name || m.active) && (
                   <span className="block truncate text-xs text-muted-foreground">{[m.active && "Active now", m.full_name && m.email].filter(Boolean).join(" · ")}</span>
                 )}
               </span>
-              {m.role === "Owner" && <Badge variant="secondary">Owner</Badge>}
+              {m.role === "Owner" && <Badge variant="secondary">{tr("Owner")}</Badge>}
               {owner && (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -376,12 +376,12 @@ function Members({ c }: { c: Channel }) {
                         {owners < 2 ? "The only owner" : "Remove as owner"}
                       </DropdownMenuItem>
                     ) : (
-                      <DropdownMenuItem onSelect={() => role(m, "Owner")}>Make an owner</DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => role(m, "Owner")}>{tr("Make an owner")}</DropdownMenuItem>
                     )}
                     {!you && (
                       <>
                         <DropdownMenuSeparator />
-                        <DropdownMenuItem onSelect={() => void remove(m)}>Remove from channel</DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => void remove(m)}>{tr("Remove from channel")}</DropdownMenuItem>
                       </>
                     )}
                   </DropdownMenuContent>
@@ -390,7 +390,7 @@ function Members({ c }: { c: Channel }) {
             </li>
           );
         })}
-        {!rows.length && <li className="py-2 text-muted-foreground">Nobody here matches “{filter.trim()}”.</li>}
+        {!rows.length && <li className="py-2 text-muted-foreground">{tr("Nobody here matches “")}{filter.trim()}”.</li>}
       </ul>
     </div>
   );

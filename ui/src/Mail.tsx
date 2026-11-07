@@ -10,7 +10,7 @@ import { Keyboard, Mail, Paperclip, Pencil, Search, Settings, Star, Users } from
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { Badge, Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Input, Skeleton } from "@ferrum/kit/primitives";
-import { api, errorMessage, relativeTime } from "@ferrum/client";
+import { api, errorMessage, relativeTime, t as tr } from "@ferrum/client";
 import { cn, confirmDialog, ErrorState, toast, useDebounced } from "@ferrum/kit";
 import { Compose } from "./MailCompose";
 import { asDraft, Conversation } from "./MailReader";
@@ -145,12 +145,12 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
   if (boxes.error) return <ErrorState error={boxes.error} onRetry={() => void boxes.refetch()} />;
   return (
     <div data-fullbleed className="grid h-[calc(100dvh-var(--ferrum-bar-height,48px))] min-h-0 md:grid-cols-[200px_340px_minmax(0,1fr)]">
-      <aside className="hidden min-h-0 flex-col gap-2 border-e p-2 md:flex" aria-label="Folders">
-        <Button onClick={() => setDraft({ kind: "new" })} title="Write a message (c)">
-          <Pencil aria-hidden="true" /> Write
+      <aside className="hidden min-h-0 flex-col gap-2 border-e p-2 md:flex" aria-label={tr("Folders")}>
+        <Button onClick={() => setDraft({ kind: "new" })} title={tr("Write a message (c)")}>
+          <Pencil aria-hidden="true" /> {tr("Write")}
         </Button>
         {accounts.length > 1 && (
-          <ul className="grid gap-0.5 border-b pb-2" aria-label="Mailboxes">
+          <ul className="grid gap-0.5 border-b pb-2" aria-label={tr("Mailboxes")}>
             {accounts.map(([id, a]) => (
               <li key={id}>
                 <button
@@ -166,7 +166,7 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
             ))}
           </ul>
         )}
-        <nav className="min-h-0 flex-1 overflow-y-auto" aria-label="Folders of the mailbox">
+        <nav className="min-h-0 flex-1 overflow-y-auto" aria-label={tr("Folders of the mailbox")}>
           {boxes.isLoading && <Skeleton className="h-40" />}
           <ul className="grid gap-0.5">
             {boxes.data?.map((b) => (
@@ -192,13 +192,13 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
           </ul>
         </nav>
         <Button variant="ghost" size="sm" className="justify-start" onClick={() => setKeys(true)}>
-          <Keyboard aria-hidden="true" /> Keyboard shortcuts
+          <Keyboard aria-hidden="true" /> {tr("Keyboard shortcuts")}
         </Button>
         <Button variant="ghost" size="sm" className="justify-start" onClick={() => setSettings(true)}>
-          <Settings aria-hidden="true" /> Mail settings
+          <Settings aria-hidden="true" /> {tr("Mail settings")}
         </Button>
       </aside>
-      <section className={cn("min-h-0 border-e", email && "hidden md:block")} aria-label="Messages">
+      <section className={cn("min-h-0 border-e", email && "hidden md:block")} aria-label={tr("Messages")}>
         {current && (
           <MessageList
             key={account + current}
@@ -223,7 +223,7 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
         {email && current ? (
           <Conversation key={account + email} account={account} id={email} me={me} boxes={boxes.data ?? []} folder={current} onBack={() => open(current)} onDraft={setDraft} />
         ) : (
-          <p className="text-sm text-muted-foreground">Pick a message to read it.</p>
+          <p className="text-sm text-muted-foreground">{tr("Pick a message to read it.")}</p>
         )}
       </section>
       {draft && (
@@ -250,8 +250,8 @@ function Shortcuts({ onClose }: { onClose: () => void }) {
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-h-[92dvh] overflow-y-auto sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Keyboard shortcuts</DialogTitle>
-          <DialogDescription>They work in the list and in an open conversation, not while you are typing.</DialogDescription>
+          <DialogTitle>{tr("Keyboard shortcuts")}</DialogTitle>
+          <DialogDescription>{tr("They work in the list and in an open conversation, not while you are typing.")}</DialogDescription>
         </DialogHeader>
         <dl className="grid grid-cols-[1fr_auto] items-center gap-x-4 gap-y-2 text-sm">
           {SHORTCUTS.map((s) => (
@@ -368,7 +368,7 @@ function MessageList(p: {
             if (!ok) return;
             try {
               await jmap([["Email/set", { accountId: p.account, destroy: row.folderIds }, "0"]]);
-              toast("Deleted");
+              toast(tr("Deleted"));
             } catch (e) {
               toast(errorMessage(e), "error");
             }
@@ -401,7 +401,7 @@ function MessageList(p: {
     <div className="flex h-full min-h-0 flex-col">
       {p.accounts.length > 1 && (
         <div className="border-b p-2 md:hidden">
-          <select className="h-9 w-full rounded-md border bg-background px-2 text-sm" aria-label="Mailbox" value={p.account} onChange={(e) => p.onAccount(e.target.value)}>
+          <select className="h-9 w-full rounded-md border bg-background px-2 text-sm" aria-label={tr("Mailbox")} value={p.account} onChange={(e) => p.onAccount(e.target.value)}>
             {p.accounts.map(([id, a]) => (
               <option key={id} value={id}>
                 {a.isPersonal ? a.name : `${a.name} (shared)`}
@@ -411,7 +411,7 @@ function MessageList(p: {
         </div>
       )}
       <div className="flex items-center gap-2 border-b p-2">
-        <select className="h-9 rounded-md border bg-background px-2 text-sm md:hidden" aria-label="Folder" value={p.mailboxId} onChange={(e) => p.onFolder(e.target.value)}>
+        <select className="h-9 rounded-md border bg-background px-2 text-sm md:hidden" aria-label={tr("Folder")} value={p.mailboxId} onChange={(e) => p.onFolder(e.target.value)}>
           {p.boxes.map((b) => (
             <option key={b.id} value={b.id}>
               {b.name}
@@ -421,19 +421,19 @@ function MessageList(p: {
         </select>
         <div className="relative min-w-0 flex-1">
           <Search className="pointer-events-none absolute top-2.5 start-2 size-4 text-muted-foreground" aria-hidden="true" />
-          <Input ref={searchBox} className="ps-8" type="search" placeholder={`Search ${p.mailbox?.name ?? "mail"}`} aria-label="Search mail" value={typed} onChange={(e) => setTyped(e.target.value)} />
+          <Input ref={searchBox} className="ps-8" type="search" placeholder={`Search ${p.mailbox?.name ?? "mail"}`} aria-label={tr("Search mail")} value={typed} onChange={(e) => setTyped(e.target.value)} />
         </div>
-        <Button size="icon-sm" variant="outline" className="md:hidden" aria-label="Write" onClick={p.onWrite}>
+        <Button size="icon-sm" variant="outline" className="md:hidden" aria-label={tr("Write")} onClick={p.onWrite}>
           <Pencil />
         </Button>
-        <Button size="icon-sm" variant="ghost" className="md:hidden" aria-label="Mail settings" onClick={p.onSettings}>
+        <Button size="icon-sm" variant="ghost" className="md:hidden" aria-label={tr("Mail settings")} onClick={p.onSettings}>
           <Settings />
         </Button>
       </div>
       {lost.map((k) => (
         <div key={k.key} role="status" className="grid gap-1 border-b bg-warning-soft px-3 py-2 text-sm">
           <span>
-            You have a message you did not send, from {relativeTime(k.savedAt)}: <strong className="font-medium">{k.subject || k.body.trim().slice(0, 40) || "(no subject)"}</strong>
+            {tr("You have a message you did not send, from")} {relativeTime(k.savedAt)}: <strong className="font-medium">{k.subject || k.body.trim().slice(0, 40) || "(no subject)"}</strong>
           </span>
           <span className="flex gap-2">
             <Button
@@ -446,7 +446,7 @@ function MessageList(p: {
                 })
               }
             >
-              Continue writing
+              {tr("Continue writing")}
             </Button>
             <Button
               size="xs"
@@ -456,7 +456,7 @@ function MessageList(p: {
                 setGone((g) => [...g, k.key]);
               }}
             >
-              Discard
+              {tr("Discard")}
             </Button>
           </span>
         </div>
@@ -465,7 +465,7 @@ function MessageList(p: {
         {list.isLoading && <Skeleton className="m-2 h-32" />}
         {!!list.error && (
           <li>
-            <ErrorState error={list.error} onRetry={() => void list.refetch()} title="This folder could not be listed" />
+            <ErrorState error={list.error} onRetry={() => void list.refetch()} title={tr("This folder could not be listed")} />
           </li>
         )}
         {!list.isLoading && !list.error && !rows.length && (
@@ -492,7 +492,7 @@ function MessageList(p: {
                 )}
               >
                 <span className="flex items-center gap-2">
-                  {m.unread && <span className="size-2 shrink-0 rounded-full bg-primary" role="img" aria-label="Unread" />}
+                  {m.unread && <span className="size-2 shrink-0 rounded-full bg-primary" role="img" aria-label={tr("Unread")} />}
                   <span className={cn("min-w-0 flex-1 truncate", m.unread && "font-semibold")}>
                     {sender}
                     {m.count > 1 && (
@@ -501,8 +501,8 @@ function MessageList(p: {
                       </span>
                     )}
                   </span>
-                  {starred && <Star className="size-3.5 shrink-0 fill-warning text-warning" aria-label="Starred" />}
-                  {m.hasAttachment && <Paperclip className="size-3.5 shrink-0 text-muted-foreground" aria-label="Has attachments" />}
+                  {starred && <Star className="size-3.5 shrink-0 fill-warning text-warning" aria-label={tr("Starred")} />}
+                  {m.hasAttachment && <Paperclip className="size-3.5 shrink-0 text-muted-foreground" aria-label={tr("Has attachments")} />}
                   <time className="shrink-0 text-xs text-muted-foreground" dateTime={m.receivedAt}>
                     {relativeTime(m.receivedAt)}
                   </time>

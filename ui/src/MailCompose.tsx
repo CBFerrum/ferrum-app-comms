@@ -9,7 +9,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEven
 import { Badge, Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Input, Label, Textarea } from "@ferrum/kit/primitives";
 import { Alert, cn, toast, useCanIntent } from "@ferrum/kit";
 import { errorMessage, fetchBlob, newKey, request, shell } from "@ferrum/client";
-import { formatDateTime } from "@ferrum/client";
+import { formatDateTime, t } from "@ferrum/client";
 import { usePeople } from "@ferrum/records";
 import {
   MAIL,
@@ -229,7 +229,7 @@ export function Compose({
     clearTimeout(timer.current);
     if (!hasContent(latest.current.fields) || !changed()) return onClose();
     if (await save()) {
-      toast("Draft saved");
+      toast(t("Draft saved"));
       onClose();
     }
   };
@@ -294,7 +294,7 @@ export function Compose({
       }
       if (draftId.current) await jmap([["Email/set", { accountId: account, destroy: [draftId.current] }, "0"]]).catch(() => undefined);
       dropDraft(account, key);
-      toast("Sent");
+      toast(t("Sent"));
       void refresh();
       onSent?.();
       onClose();
@@ -349,7 +349,7 @@ export function Compose({
               action={
                 <span className="flex shrink-0 gap-1">
                   <Button type="button" size="xs" onClick={() => void send(undefined, true)}>
-                    Send anyway
+                    {t("Send anyway")}
                   </Button>
                   <Button
                     type="button"
@@ -360,12 +360,12 @@ export function Compose({
                       document.getElementById("mail-subject")?.focus();
                     }}
                   >
-                    Add a subject
+                    {t("Add a subject")}
                   </Button>
                 </span>
               }
             >
-              <span>This message has no subject.</span>
+              <span>{t("This message has no subject.")}</span>
             </Alert>
           )}
           {asking === "discard" && (
@@ -374,15 +374,15 @@ export function Compose({
               action={
                 <span className="flex shrink-0 gap-1">
                   <Button type="button" size="xs" variant="destructive" onClick={() => void discard(true)}>
-                    Delete the draft
+                    {t("Delete the draft")}
                   </Button>
                   <Button type="button" size="xs" variant="ghost" onClick={() => setAsking(null)}>
-                    Keep writing
+                    {t("Keep writing")}
                   </Button>
                 </span>
               }
             >
-              <span>Delete this draft? What you wrote cannot be brought back.</span>
+              <span>{t("Delete this draft? What you wrote cannot be brought back.")}</span>
             </Alert>
           )}
           {status.state === "failed" && (
@@ -391,22 +391,22 @@ export function Compose({
               action={
                 <span className="flex shrink-0 gap-1">
                   <Button type="button" size="xs" variant="outline" onClick={() => void save()}>
-                    Try again
+                    {t("Try again")}
                   </Button>
                   <Button type="button" size="xs" variant="ghost" onClick={onClose}>
-                    Close anyway
+                    {t("Close anyway")}
                   </Button>
                 </span>
               }
             >
               <span>
-                The draft could not be saved: {status.message} It is kept in this browser, so you will be offered it next time you open Mail.
+                {t("The draft could not be saved: {message} It is kept in this browser, so you will be offered it next time you open Mail.", { message: status.message })}
               </span>
             </Alert>
           )}
           {(identities.data?.length ?? 0) > 1 && (
             <div className="grid gap-1.5">
-              <Label htmlFor="mail-from">From</Label>
+              <Label htmlFor="mail-from">{t("From")}</Label>
               <select id="mail-from" className="h-9 rounded-md border bg-background px-2 text-sm" value={identity?.id ?? ""} onChange={(e) => setFromId(e.target.value)}>
                 {identities.data?.map((i) => (
                   <option key={i.id} value={i.id}>
@@ -416,23 +416,23 @@ export function Compose({
               </select>
             </div>
           )}
-          <RecipientField id="mail-to" label="To" value={to} onChange={setTo} people={people} autoFocus={!to} bad={parsed.to.bad} />
+          <RecipientField id="mail-to" label={t("To")} value={to} onChange={setTo} people={people} autoFocus={!to} bad={parsed.to.bad} />
           {more ? (
             <>
-              <RecipientField id="mail-cc" label="Cc" value={cc} onChange={setCc} people={people} bad={parsed.cc.bad} />
-              <RecipientField id="mail-bcc" label="Bcc" value={bcc} onChange={setBcc} people={people} bad={parsed.bcc.bad} />
+              <RecipientField id="mail-cc" label={t("Cc")} value={cc} onChange={setCc} people={people} bad={parsed.cc.bad} />
+              <RecipientField id="mail-bcc" label={t("Bcc")} value={bcc} onChange={setBcc} people={people} bad={parsed.bcc.bad} />
             </>
           ) : (
             <Button type="button" variant="link" size="xs" className="justify-self-start p-0" onClick={() => setMore(true)}>
-              Cc and Bcc
+              {t("Cc and Bcc")}
             </Button>
           )}
           <div className="grid gap-1.5">
-            <Label htmlFor="mail-subject">Subject</Label>
+            <Label htmlFor="mail-subject">{t("Subject")}</Label>
             <Input id="mail-subject" value={subject} onChange={(e) => setSubject(e.target.value)} maxLength={900} />
           </div>
           <div className="grid gap-1.5">
-            <Label htmlFor="mail-body">Message</Label>
+            <Label htmlFor="mail-body">{t("Message")}</Label>
             <Textarea id="mail-body" autoFocus={!!to} rows={12} value={body} onChange={(e) => setBody(e.target.value)} />
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -442,7 +442,7 @@ export function Compose({
             <input ref={picker} type="file" multiple hidden onChange={(e) => void attach(e.target.files)} />
             {fromDrive && (
               <Button type="button" variant="outline" size="sm" disabled={uploading} onClick={() => void pickFromDrive()}>
-                <FolderOpen aria-hidden="true" /> From Drive
+                <FolderOpen aria-hidden="true" /> {t("From Drive")}
               </Button>
             )}
             {files.map((f) => (
@@ -460,10 +460,10 @@ export function Compose({
               {status_}
             </span>
             <Button type="button" variant="outline" onClick={() => void discard()} disabled={busy}>
-              Discard
+              {t("Discard")}
             </Button>
             <Button type="button" variant="outline" onClick={() => void close()} disabled={busy}>
-              Save and close
+              {t("Save and close")}
             </Button>
             <Button type="submit" disabled={busy || uploading}>
               <Send aria-hidden="true" /> {busy ? "Sending…" : "Send"}

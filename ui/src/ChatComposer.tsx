@@ -7,7 +7,7 @@ import { AtSign, Paperclip, X } from "lucide-react";
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { Button, Input, Textarea } from "@ferrum/kit/primitives";
 import { cn, toast } from "@ferrum/kit";
-import { errorMessage, newKey, uploadFile, type StoredFile, api } from "@ferrum/client";
+import { errorMessage, newKey, uploadFile, type StoredFile, api, t as tr } from "@ferrum/client";
 import { useMe } from "@ferrum/records";
 import { CHAT, MAX_FILES, bodyTooLong, completeMention, draftKey, fileSize, matchPeople, mentionAt, mentionsIn, readDraft, refreshMessages, writeDraft, type Person } from "./lib/chat";
 
@@ -164,7 +164,7 @@ export function Composer({
       }}
     >
       {files.length > 0 && (
-        <ul className="flex flex-wrap gap-1.5" aria-label="Files to send">
+        <ul className="flex flex-wrap gap-1.5" aria-label={tr("Files to send")}>
           {files.map((f) => (
             <li key={f.key} className={cn("flex max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-xs", f.error && "border-destructive text-destructive")}>
               <Paperclip className="size-3.5 shrink-0" aria-hidden="true" />
@@ -178,7 +178,7 @@ export function Composer({
         </ul>
       )}
       {open && (
-        <ul id={list} role="listbox" aria-label="People to mention" className="absolute end-0 bottom-full start-0 z-20 mb-1 max-h-56 overflow-y-auto rounded-md border bg-popover p-1 shadow-md">
+        <ul id={list} role="listbox" aria-label={tr("People to mention")} className="absolute end-0 bottom-full start-0 z-20 mb-1 max-h-56 overflow-y-auto rounded-md border bg-popover p-1 shadow-md">
           {choices.map((p, i) => (
             <li key={p.id} id={`${list}-${i}`} role="option" aria-selected={i === active}>
               <button
@@ -232,20 +232,20 @@ export function Composer({
             e.target.value = "";
           }}
         />
-        <Button type="button" variant="outline" size="icon" aria-label="Attach files" onClick={() => picker.current?.click()}>
+        <Button type="button" variant="outline" size="icon" aria-label={tr("Attach files")} onClick={() => picker.current?.click()}>
           <Paperclip />
         </Button>
-        <Button type="button" variant="outline" size="icon" aria-label="Mention someone" onClick={startMention}>
+        <Button type="button" variant="outline" size="icon" aria-label={tr("Mention someone")} onClick={startMention}>
           <AtSign />
         </Button>
         <Button type="submit" disabled={busy || uploading || (!body.trim() && !ready.length) || tooLong}>
           {busy ? "Sending…" : "Send"}
         </Button>
       </div>
-      {tooLong && <p className="text-xs text-destructive">Messages are at most 4 KB.</p>}
+      {tooLong && <p className="text-xs text-destructive">{tr("Messages are at most 4 KB.")}</p>}
       {failed && (
         <p role="alert" className="rounded-md border border-destructive/40 bg-destructive-soft px-2 py-1.5 text-xs text-destructive">
-          Not sent: {failed}. Your message is still here; press Send to try again.
+          {tr("Not sent: {failed}. Your message is still here; press Send to try again.", { failed })}
         </p>
       )}
       <p className="hidden text-xs text-muted-foreground sm:block">Enter sends, Shift+Enter starts a new line. Type @ to mention someone. **bold**, *italic*, `code` and links work.</p>
@@ -260,8 +260,8 @@ export function PeoplePicker({ people, onPick, onClose }: { people: Person[]; on
   return (
     <div className="rounded-md border bg-popover p-2 shadow-md">
       <div className="flex items-center gap-2">
-        <Input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a person" aria-label="Find a person" onKeyDown={(e) => e.key === "Escape" && onClose()} />
-        <Button type="button" variant="ghost" size="icon-sm" aria-label="Close" onClick={onClose}>
+        <Input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder={tr("Find a person")} aria-label={tr("Find a person")} onKeyDown={(e) => e.key === "Escape" && onClose()} />
+        <Button type="button" variant="ghost" size="icon-sm" aria-label={tr("Close")} onClick={onClose}>
           <X />
         </Button>
       </div>
@@ -273,7 +273,7 @@ export function PeoplePicker({ people, onPick, onClose }: { people: Person[]; on
             </button>
           </li>
         ))}
-        {!shown.length && <li className="px-2 py-1.5 text-sm text-muted-foreground">Nobody matches.</li>}
+        {!shown.length && <li className="px-2 py-1.5 text-sm text-muted-foreground">{tr("Nobody matches.")}</li>}
       </ul>
     </div>
   );

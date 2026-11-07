@@ -12,7 +12,7 @@ import { Button } from "@ferrum/kit/primitives";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@ferrum/kit/primitives";
 import { Skeleton } from "@ferrum/kit/primitives";
 import { Textarea } from "@ferrum/kit/primitives";
-import { api, docPath, errorMessage } from "@ferrum/client";
+import { api, docPath, errorMessage, t } from "@ferrum/client";
 import { meetLink, meetPath, openCall, useMeetAvailable } from "./lib/meet";
 import { answerWord, byDay, CALENDAR, isoDay, monthGrid, movable, moved, placeDay, safeColor, safeLink, sameTimeOn, tally, weekOf, type Guest, type Occurrence } from "./lib/calendar";
 import { useLiveEntity } from "@ferrum/kit";
@@ -106,7 +106,7 @@ export function CalendarPage() {
     const at = wantedAt ? new Date(wantedAt).getTime() : NaN;
     const o = list.find((x) => x.event === wanted && new Date(x.start).getTime() === at) ?? list.find((x) => x.event === wanted);
     if (o) setOpen(o);
-    else toast("That event is not in your calendar any more", "info");
+    else toast(t("That event is not in your calendar any more"), "info");
     setParams(
       (p) => {
         p.delete("event");
@@ -158,12 +158,12 @@ export function CalendarPage() {
           <ChevronLeft />
         </Button>
         <Button variant="outline" size="sm" onClick={() => setAnchor(new Date())}>
-          Today
+          {t("Today")}
         </Button>
         <Button variant="outline" size="icon-sm" aria-label={`Next ${unit}`} onClick={() => step(1)}>
           <ChevronRight />
         </Button>
-        <div className="flex rounded-md border p-0.5" role="group" aria-label="View">
+        <div className="flex rounded-md border p-0.5" role="group" aria-label={t("View")}>
           {(["month", "week"] as const).map((v) => (
             <Button key={v} size="sm" variant={view === v ? "secondary" : "ghost"} aria-pressed={view === v} className="h-7 capitalize" onClick={() => setView(v)}>
               {v}
@@ -172,7 +172,7 @@ export function CalendarPage() {
         </div>
         <Button asChild size="sm" className="ml-auto">
           <Link to={newEventLink(today)}>
-            <Plus /> New event
+            <Plus /> {t("New event")}
           </Link>
         </Button>
       </header>
@@ -232,7 +232,7 @@ export function CalendarPage() {
           {/* Agenda: phones. */}
           <div className="grid gap-3 md:hidden">
             {events.isLoading && <Skeleton className="h-32" />}
-            {!events.isLoading && !agenda.length && <p className="text-sm text-muted-foreground">Nothing this {unit}.</p>}
+            {!events.isLoading && !agenda.length && <p className="text-sm text-muted-foreground">{t("Nothing this {unit}.", { unit })}</p>}
             {agenda.map((d) => {
               const key = isoDay(d);
               return (
@@ -300,7 +300,7 @@ function WeekGrid({
         ))}
       </div>
       <div className={cn(cols, "border-b")}>
-        <div className="px-1 py-1.5 text-[10px] text-muted-foreground">All day</div>
+        <div className="px-1 py-1.5 text-[10px] text-muted-foreground">{t("All day")}</div>
         {week.map((d) =>
           loading ? (
             <div key={isoDay(d)} className="border-l p-1">
@@ -489,7 +489,7 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit }: { o: Occurrence; on
             {o.status && o.status !== "Confirmed" && <Badge variant="secondary">{o.status}</Badge>}
             {o.recurring && (
               <Badge variant="outline">
-                <Repeat /> Repeats
+                <Repeat /> {t("Repeats")}
               </Badge>
             )}
             {o.category && <Badge variant="outline">{o.category}</Badge>}
@@ -505,13 +505,13 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit }: { o: Occurrence; on
               <p className="flex items-center gap-1.5">
                 <Video className="size-4 text-muted-foreground" aria-hidden="true" />
                 <a href={meeting} onClick={(e) => openCall(e, meeting)} className="text-primary underline underline-offset-2">
-                  Join video meeting
+                  {t("Join video meeting")}
                 </a>
               </p>
             ) : (
               !meets.isLoading && (
                 <p className="flex items-start gap-1.5 text-muted-foreground">
-                  <Video className="mt-0.5 size-4 shrink-0" aria-hidden="true" /> This event has a video meeting, but video meetings are not set up on this server, so nobody can join it. An administrator can set them up.
+                  <Video className="mt-0.5 size-4 shrink-0" aria-hidden="true" /> {t("This event has a video meeting, but video meetings are not set up on this server, so nobody can join it. An administrator can set them up.")}
                 </p>
               )
             ))
@@ -520,18 +520,18 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit }: { o: Occurrence; on
               <p className="flex items-center gap-1.5">
                 <Video className="size-4 text-muted-foreground" aria-hidden="true" />
                 <a href={link} target="_blank" rel="noopener noreferrer" className="text-primary underline underline-offset-2">
-                  Join the meeting
+                  {t("Join the meeting")}
                 </a>
               </p>
             )
           )}
           {!link && o.is_organizer && meet && !cancelled && (
             <Button size="sm" variant="outline" className="justify-self-start" disabled={busy} onClick={() => void addMeeting()}>
-              <Video /> Add video meeting
+              <Video /> {t("Add video meeting")}
             </Button>
           )}
           {o.description && <p className="whitespace-pre-line text-muted-foreground">{o.description}</p>}
-          {by && !o.is_organizer && <p className="text-xs text-muted-foreground">Organized by {by}</p>}
+          {by && !o.is_organizer && <p className="text-xs text-muted-foreground">{t("Organized by {by}", { by })}</p>}
           {response !== null && !cancelled && (
             <div className="grid gap-2 border-t pt-2">
               <span className="text-xs font-medium text-muted-foreground">{response === "Needs Action" ? "Will you go? You have not answered yet." : "Will you go?"}</span>
@@ -542,7 +542,7 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit }: { o: Occurrence; on
                   </Button>
                 ))}
               </div>
-              <Textarea value={note} rows={2} maxLength={500} placeholder={`A note for ${by || "the organizer"} (sent with your next answer)`} aria-label="A note with your answer" onChange={(e) => setNote(e.target.value)} />
+              <Textarea value={note} rows={2} maxLength={500} placeholder={`A note for ${by || "the organizer"} (sent with your next answer)`} aria-label={t("A note with your answer")} onChange={(e) => setNote(e.target.value)} />
               {problem && (
                 <p role="alert" className="text-xs text-destructive">
                   {problem}
@@ -555,7 +555,7 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit }: { o: Occurrence; on
               <span className="text-xs font-medium text-muted-foreground">
                 {guests.length} {guests.length === 1 ? "guest" : "guests"}: {tally(guests)}
               </span>
-              <ul className="grid gap-1" aria-label="Guests">
+              <ul className="grid gap-1" aria-label={t("Guests")}>
                 {guests.map((g) => (
                   <li key={g.email} className="grid">
                     <span className="flex items-baseline gap-2">
@@ -571,9 +571,9 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit }: { o: Occurrence; on
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>
-            Close
+            {t("Close")}
           </Button>
-          {o.is_organizer && <Button onClick={onEdit}>Edit event</Button>}
+          {o.is_organizer && <Button onClick={onEdit}>{t("Edit event")}</Button>}
         </DialogFooter>
       </DialogContent>
     </Dialog>

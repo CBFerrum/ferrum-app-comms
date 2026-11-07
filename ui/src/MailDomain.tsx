@@ -9,15 +9,15 @@ import { useState } from "react";
 import { Link } from "react-router";
 import { Button, Skeleton } from "@ferrum/kit/primitives";
 import { cn, EmptyState, ErrorState, toast, useShellTitle } from "@ferrum/kit";
-import { ApiError, api, formatDateTime, relativeTime, saveBlob } from "@ferrum/client";
+import { ApiError, api, formatDateTime, relativeTime, saveBlob, t } from "@ferrum/client";
 import { DOMAIN, STATUS, headline, shown, zoneName, type Check, type Health } from "./lib/domain";
 
 const copy = async (text: string) => {
   try {
     await navigator.clipboard.writeText(text);
-    toast("Copied");
+    toast(t("Copied"));
   } catch {
-    toast("Your browser did not let this page copy. Select the text and copy it.", "error");
+    toast(t("Your browser did not let this page copy. Select the text and copy it."), "error");
   }
 };
 
@@ -39,27 +39,27 @@ export function DomainPage() {
     <div className="mx-auto grid max-w-4xl gap-4 p-4">
       <div>
         <Link to="/mail" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-          <ArrowLeft className="size-4" aria-hidden="true" /> Mail
+          <ArrowLeft className="size-4" aria-hidden="true" /> {t("Mail")}
         </Link>
       </div>
       {forbidden ? (
-        <EmptyState title="This page is for people who manage Communication Settings" icon="mail">
-          <p className="text-sm text-muted-foreground">Ask an administrator for the Comms Manager role.</p>
+        <EmptyState title={t("This page is for people who manage Communication Settings")} icon="mail">
+          <p className="text-sm text-muted-foreground">{t("Ask an administrator for the Comms Manager role.")}</p>
         </EmptyState>
       ) : q.error ? (
         <ErrorState error={q.error} onRetry={() => void q.refetch()} />
       ) : !h ? (
-        <div role="status" aria-label="Checking the domain">
+        <div role="status" aria-label={t("Checking the domain")}>
           <Skeleton className="h-24" />
           <Skeleton className="mt-3 h-48" />
         </div>
       ) : !h.domain ? (
-        <EmptyState title="No mail domain is set" icon="mail">
+        <EmptyState title={t("No mail domain is set")} icon="mail">
           <p className="max-w-md text-center text-sm text-muted-foreground">
-            Set the Mail Domain in Communication Settings (for example acme.com) and everyone whose address is in it gets a mailbox. Then this page shows which DNS records that domain needs.
+            {t("Set the Mail Domain in Communication Settings (for example acme.com) and everyone whose address is in it gets a mailbox. Then this page shows which DNS records that domain needs.")}
           </p>
           <Link className="text-primary underline" to="/open/CommsSettings" reloadDocument>
-            Open Communication Settings
+            {t("Open Communication Settings")}
           </Link>
         </EmptyState>
       ) : (
@@ -99,19 +99,19 @@ function Report({ h, only, setOnly, fetching, again }: { h: Health; only: boolea
         <Button onClick={again} disabled={fetching}>
           <RefreshCw className={cn(fetching && "motion-safe:animate-spin")} aria-hidden="true" /> {fetching ? "Checking…" : "Check again"}
         </Button>
-        {h.checked_at && <span className="text-xs text-muted-foreground">Last checked {formatDateTime(h.checked_at)}. DNS changes can take a few hours to show.</span>}
+        {h.checked_at && <span className="text-xs text-muted-foreground">{t("Last checked")} {formatDateTime(h.checked_at)}{t(". DNS changes can take a few hours to show.")}</span>}
         <span className="flex-1" />
         <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={only} onChange={(e) => setOnly(e.target.checked)} /> Only what is not right
+          <input type="checkbox" checked={only} onChange={(e) => setOnly(e.target.checked)} /> {t("Only what is not right")}
         </label>
         <Button variant="outline" onClick={download} disabled={!h.zone}>
-          <Download aria-hidden="true" /> Download zone file
+          <Download aria-hidden="true" /> {t("Download zone file")}
         </Button>
       </div>
       {checks.length === 0 ? (
-        <EmptyState title="Everything checked is in place" icon="check" />
+        <EmptyState title={t("Everything checked is in place")} icon="check" />
       ) : (
-        <ol className="grid gap-3" aria-label="DNS records">
+        <ol className="grid gap-3" aria-label={t("DNS records")}>
           {checks.map((c, i) => (
             <CheckCard key={`${c.id}-${c.name}-${i}`} c={c} />
           ))}
@@ -120,9 +120,9 @@ function Report({ h, only, setOnly, fetching, again }: { h: Health; only: boolea
       {(h.manual ?? []).length > 0 && (
         <section className="grid gap-2" aria-labelledby="by-hand">
           <h2 id="by-hand" className="font-semibold">
-            Two things to check by hand
+            {t("Two things to check by hand")}
           </h2>
-          <p className="text-sm text-muted-foreground">They cannot be seen from the domain's own records.</p>
+          <p className="text-sm text-muted-foreground">{t("They cannot be seen from the domain's own records.")}</p>
           <ul className="grid gap-2">
             {h.manual!.map((m) => (
               <li key={m.id} className="rounded-md border p-3 text-sm">
@@ -146,18 +146,18 @@ function CheckCard({ c }: { c: Check }) {
       </div>
       <p className="text-muted-foreground">{c.why}</p>
       <dl className="grid gap-x-4 gap-y-1 sm:grid-cols-[6rem_minmax(0,1fr)]">
-        <dt className="text-muted-foreground">Record</dt>
+        <dt className="text-muted-foreground">{t("Record")}</dt>
         <dd className="break-all">
           {c.kind} at <code className="font-mono text-xs">{c.name}</code>
         </dd>
-        <dt className="text-muted-foreground">Publish</dt>
+        <dt className="text-muted-foreground">{t("Publish")}</dt>
         <dd className="flex items-start gap-2">
           <code className="min-w-0 flex-1 font-mono text-xs break-all">{c.expected}</code>
           <Button variant="ghost" size="icon-xs" aria-label={`Copy the ${c.kind} value for ${c.name}`} onClick={() => void copy(c.expected)}>
             <Copy />
           </Button>
         </dd>
-        <dt className="text-muted-foreground">Found now</dt>
+        <dt className="text-muted-foreground">{t("Found now")}</dt>
         <dd>
           {c.found.length ? (
             <ul className="grid gap-1">

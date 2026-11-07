@@ -8,7 +8,7 @@ import { useState } from "react";
 import { useParams, useSearchParams } from "react-router";
 import { Button, Skeleton, Textarea } from "@ferrum/kit/primitives";
 import { cn, EmptyState, useShellTitle } from "@ferrum/kit";
-import { api, errorMessage } from "@ferrum/client";
+import { api, errorMessage, t } from "@ferrum/client";
 import { answerWord } from "./lib/calendar";
 
 interface Info {
@@ -48,7 +48,7 @@ export function RsvpPage() {
   }
   if (info.error || !info.data) {
     return (
-      <EmptyState title="This link does not work any more" icon="calendar">
+      <EmptyState title={t("This link does not work any more")} icon="calendar">
         <p className="max-w-sm text-center text-sm text-muted-foreground">{info.error ? errorMessage(info.error) : "Ask the person who invited you to send it again."}</p>
       </EmptyState>
     );
@@ -85,14 +85,14 @@ export function RsvpPage() {
       </header>
       {e.cancelled ? (
         <p role="status" className="rounded-md border bg-muted px-3 py-2 text-sm">
-          This event was cancelled, so there is nothing to answer.
+          {t("This event was cancelled, so there is nothing to answer.")}
         </p>
       ) : sent ? (
         <div role="status" className="grid gap-3 rounded-lg border bg-card p-4">
-          <p className="font-medium">Thank you. Your answer is {answerWord(sent)}.</p>
-          <p className="text-sm text-muted-foreground">{e.organizer} has been told{note.trim() ? ", with your note" : ""}. You can change your answer any time with this link.</p>
+          <p className="font-medium">{t("Thank you. Your answer is")} {answerWord(sent)}.</p>
+          <p className="text-sm text-muted-foreground">{t("{organizer} has been told", { organizer: e.organizer })}{note.trim() ? ", with your note" : ""}{t(". You can change your answer any time with this link.")}</p>
           <Button variant="outline" className="justify-self-start" onClick={() => setSent(null)}>
-            Change my answer
+            {t("Change my answer")}
           </Button>
         </div>
       ) : (
@@ -104,8 +104,8 @@ export function RsvpPage() {
           }}
         >
           <fieldset className="grid gap-2">
-            <legend className="font-medium">Will you come?</legend>
-            {before && <p className="text-sm text-muted-foreground">You answered {answerWord(before)} before.</p>}
+            <legend className="font-medium">{t("Will you come?")}</legend>
+            {before && <p className="text-sm text-muted-foreground">{t("You answered")} {answerWord(before)} before.</p>}
             <div className="grid grid-cols-3 gap-2">
               {ANSWERS.map((a) => (
                 <Button key={a} type="button" variant={choice === a ? "default" : "outline"} aria-pressed={choice === a} className="h-11" onClick={() => setChoice(a)}>
@@ -116,7 +116,7 @@ export function RsvpPage() {
           </fieldset>
           <div className="grid gap-1.5">
             <label htmlFor="rsvp-note" className="text-sm font-medium">
-              A note for {e.organizer} (optional)
+              {t("A note for {organizer} (optional)", { organizer: e.organizer })}
             </label>
             <Textarea id="rsvp-note" rows={3} maxLength={500} value={note} onChange={(ev) => setNote(ev.target.value)} />
           </div>

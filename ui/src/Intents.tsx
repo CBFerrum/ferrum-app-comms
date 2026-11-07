@@ -8,7 +8,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useId, useState } from "react";
 import { Route, Routes } from "react-router";
-import { api, docPath, errorMessage, shell, type IntentRequest } from "@ferrum/client";
+import { api, docPath, errorMessage, shell, type IntentRequest, t } from "@ferrum/client";
 import { EmptyState, Spinner, toast } from "@ferrum/kit";
 import { Button, Input, Label, Textarea } from "@ferrum/kit/primitives";
 import { useMe, usePeople } from "@ferrum/records";
@@ -40,9 +40,9 @@ export function ComposeIntentPage() {
   const session = useMailSession(!!req);
   const account = mailAccount(session.data);
   const boxes = useMailboxes(account);
-  if (error) return <EmptyState title="Nothing to write">{error}</EmptyState>;
+  if (error) return <EmptyState title={t("Nothing to write")}>{error}</EmptyState>;
   if (session.error) return <MailUnavailable error={session.error} />;
-  if (!req || !session.data || !account || !boxes.data) return <Spinner label="Opening Mail" />;
+  if (!req || !session.data || !account || !boxes.data) return <Spinner label={t("Opening Mail")} />;
   const d = (req.data ?? {}) as Record<string, unknown>;
   const attachments = (Array.isArray(d.attachments) ? d.attachments : [])
     .map((a) => a as { url?: unknown; name?: unknown })
@@ -106,8 +106,8 @@ export function ScheduleIntentPage() {
     enabled: !!me && guests.length > 0 && !!day,
     staleTime: 60_000,
   });
-  if (error) return <EmptyState title="Nothing to schedule">{error}</EmptyState>;
-  if (!req || !form) return <Spinner label="Opening Calendar" />;
+  if (error) return <EmptyState title={t("Nothing to schedule")}>{error}</EmptyState>;
+  if (!req || !form) return <Spinner label={t("Opening Calendar")} />;
   const set = (patch: Partial<typeof form>) => setForm({ ...form, ...patch });
   const names = (list: string[]) => list.map((e) => (e === me ? "You" : people.find((p) => p.email.toLowerCase() === e)?.full_name || e));
   const clash = free.data && span?.starts && span.ends ? clashes(free.data, span.starts, span.ends) : [];
@@ -118,8 +118,8 @@ export function ScheduleIntentPage() {
     e.preventDefault();
     const starts = new Date(form.starts);
     const ends = new Date(form.ends);
-    if (!form.subject.trim()) return toast("Give the meeting a subject.", "error");
-    if (Number.isNaN(starts.getTime()) || Number.isNaN(ends.getTime()) || ends <= starts) return toast("The meeting must end after it starts.", "error");
+    if (!form.subject.trim()) return toast(t("Give the meeting a subject."), "error");
+    if (Number.isNaN(starts.getTime()) || Number.isNaN(ends.getTime()) || ends <= starts) return toast(t("The meeting must end after it starts."), "error");
     const emails = form.attendees
       .split(/[,;\s]+/)
       .map((x) => x.trim())
@@ -146,29 +146,29 @@ export function ScheduleIntentPage() {
   };
   return (
     <form className="grid gap-3 p-4" onSubmit={save}>
-      <h1 className="text-lg font-semibold">Schedule a meeting</h1>
+      <h1 className="text-lg font-semibold">{t("Schedule a meeting")}</h1>
       <div className="grid gap-1.5">
-        <Label htmlFor={`${ids}-s`}>Subject</Label>
+        <Label htmlFor={`${ids}-s`}>{t("Subject")}</Label>
         <Input id={`${ids}-s`} autoFocus value={form.subject} maxLength={200} onChange={(e) => set({ subject: e.target.value })} />
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="grid gap-1.5">
-          <Label htmlFor={`${ids}-from`}>Starts</Label>
+          <Label htmlFor={`${ids}-from`}>{t("Starts")}</Label>
           <Input id={`${ids}-from`} type="datetime-local" value={form.starts} onChange={(e) => set({ starts: e.target.value })} />
         </div>
         <div className="grid gap-1.5">
-          <Label htmlFor={`${ids}-to`}>Ends</Label>
+          <Label htmlFor={`${ids}-to`}>{t("Ends")}</Label>
           <Input id={`${ids}-to`} type="datetime-local" value={form.ends} onChange={(e) => set({ ends: e.target.value })} />
         </div>
       </div>
       {clash.length > 0 && span?.starts && span.ends && (
         <div role="status" className="grid gap-1.5 rounded-md border border-warning bg-warning-soft px-3 py-2 text-sm">
           <span>
-            {names(clash).join(" and ")} {clash.length === 1 ? "is" : "are"} busy ({clash.map((c) => (free.data?.[c] ?? []).filter((b) => Date.parse(b.start) < span.ends!.getTime() && Date.parse(b.end) > span.starts!.getTime()).map(stretch).join(", ")).join("; ")}) then.
+            {names(clash).join(" and ")} {clash.length === 1 ? "is" : "are"} {t("busy (")}{clash.map((c) => (free.data?.[c] ?? []).filter((b) => Date.parse(b.start) < span.ends!.getTime() && Date.parse(b.end) > span.starts!.getTime()).map(stretch).join(", ")).join("; ")}{t(") then.")}
           </span>
           {better.length > 0 && (
             <span className="flex flex-wrap items-center gap-1.5">
-              Everyone is free:
+              {t("Everyone is free:")}
               {better.map((b) => (
                 <Button key={b.getTime()} type="button" size="xs" variant="outline" onClick={() => set({ starts: toInput(b), ends: toInput(new Date(b.getTime() + minutes * 60_000)) })}>
                   {b.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })}, {b.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
@@ -179,27 +179,27 @@ export function ScheduleIntentPage() {
         </div>
       )}
       <div className="grid gap-1.5">
-        <Label htmlFor={`${ids}-a`}>Guests</Label>
+        <Label htmlFor={`${ids}-a`}>{t("Guests")}</Label>
         <Input id={`${ids}-a`} value={form.attendees} placeholder="ana@acme.example, …" onChange={(e) => set({ attendees: e.target.value })} />
       </div>
       <div className="grid gap-1.5">
-        <Label htmlFor={`${ids}-l`}>Where</Label>
+        <Label htmlFor={`${ids}-l`}>{t("Where")}</Label>
         <Input id={`${ids}-l`} value={form.location} maxLength={200} onChange={(e) => set({ location: e.target.value })} />
       </div>
       <div className="grid gap-1.5">
-        <Label htmlFor={`${ids}-d`}>Notes</Label>
+        <Label htmlFor={`${ids}-d`}>{t("Notes")}</Label>
         <Textarea id={`${ids}-d`} rows={4} value={form.description} onChange={(e) => set({ description: e.target.value })} />
       </div>
       {meets ? (
         <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={form.meeting} onChange={(e) => set({ meeting: e.target.checked })} /> Add a video meeting
+          <input type="checkbox" checked={form.meeting} onChange={(e) => set({ meeting: e.target.checked })} /> {t("Add a video meeting")}
         </label>
       ) : (
-        <p className="text-xs text-muted-foreground">Video meetings are not set up on this server, so this one will not have a call.</p>
+        <p className="text-xs text-muted-foreground">{t("Video meetings are not set up on this server, so this one will not have a call.")}</p>
       )}
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" onClick={() => shell().intent.cancel()} disabled={busy}>
-          Cancel
+          {t("Cancel")}
         </Button>
         <Button type="submit" disabled={busy}>
           {busy ? "Scheduling…" : "Schedule"}
@@ -221,15 +221,15 @@ export function ShareIntentPage() {
     queryFn: ({ signal }) => api.get<{ channels: ChannelSummary[] }>(`${CHAT}/channels`, undefined, signal).then((r) => r.channels.filter((c) => !c.archived)),
     enabled: !!req,
   });
-  if (error) return <EmptyState title="Nothing to share">{error}</EmptyState>;
+  if (error) return <EmptyState title={t("Nothing to share")}>{error}</EmptyState>;
   const d = (req?.data ?? {}) as { entity?: unknown; id?: unknown; title?: unknown };
-  if (req && (typeof d.entity !== "string" || typeof d.id !== "string")) return <EmptyState title="Nothing to share">The app did not say which record.</EmptyState>;
-  if (!req || !channels.data) return channels.error ? <EmptyState title="Chat is not available">{errorMessage(channels.error)}</EmptyState> : <Spinner label="Opening Chat" />;
+  if (req && (typeof d.entity !== "string" || typeof d.id !== "string")) return <EmptyState title={t("Nothing to share")}>{t("The app did not say which record.")}</EmptyState>;
+  if (!req || !channels.data) return channels.error ? <EmptyState title={t("Chat is not available")}>{errorMessage(channels.error)}</EmptyState> : <Spinner label={t("Opening Chat")} />;
   const title = (typeof d.title === "string" && d.title.trim()) || `${d.entity} ${d.id}`;
   const link = `/open/${encodeURIComponent(d.entity as string)}/${encodeURIComponent(d.id as string)}`;
   const share = async (e: FormEvent) => {
     e.preventDefault();
-    if (!channel) return toast("Pick a conversation.", "error");
+    if (!channel) return toast(t("Pick a conversation."), "error");
     setBusy(true);
     try {
       // Markdown's brackets in a title would end the link early.
@@ -243,12 +243,12 @@ export function ShareIntentPage() {
   };
   return (
     <form className="grid gap-3 p-4" onSubmit={share}>
-      <h1 className="text-lg font-semibold">Share in Chat</h1>
-      <p className="text-sm text-muted-foreground">“{title}” goes to the conversation as a link; only people who may open it see it.</p>
+      <h1 className="text-lg font-semibold">{t("Share in Chat")}</h1>
+      <p className="text-sm text-muted-foreground">{t("“{title}” goes to the conversation as a link; only people who may open it see it.", { title })}</p>
       <div className="grid gap-1.5">
-        <Label htmlFor={`${ids}-c`}>Conversation</Label>
+        <Label htmlFor={`${ids}-c`}>{t("Conversation")}</Label>
         <select id={`${ids}-c`} className="h-9 rounded-md border bg-background px-2 text-sm" value={channel} onChange={(e) => setChannel(e.target.value)} autoFocus>
-          <option value="">Choose…</option>
+          <option value="">{t("Choose…")}</option>
           {channels.data.map((c) => (
             <option key={c.id} value={c.id}>
               {c.title || c.name}
@@ -257,12 +257,12 @@ export function ShareIntentPage() {
         </select>
       </div>
       <div className="grid gap-1.5">
-        <Label htmlFor={`${ids}-n`}>Message</Label>
+        <Label htmlFor={`${ids}-n`}>{t("Message")}</Label>
         <Textarea id={`${ids}-n`} rows={3} value={note} maxLength={2000} onChange={(e) => setNote(e.target.value)} />
       </div>
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" onClick={() => shell().intent.cancel()} disabled={busy}>
-          Cancel
+          {t("Cancel")}
         </Button>
         <Button type="submit" disabled={busy || !channel}>
           {busy ? "Sharing…" : "Share"}

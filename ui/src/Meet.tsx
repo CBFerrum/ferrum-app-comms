@@ -31,7 +31,7 @@ import { Button } from "@ferrum/kit/primitives";
 import { Input } from "@ferrum/kit/primitives";
 import { Label } from "@ferrum/kit/primitives";
 import { Skeleton } from "@ferrum/kit/primitives";
-import { ApiError, api, errorMessage, shell } from "@ferrum/client";
+import { ApiError, api, errorMessage, shell, t as tr } from "@ferrum/client";
 import { CHAT } from "./lib/chat";
 import { MEET, mediaProblem, meetLink, notSetUp, useMeetAvailable, useMeetRecordings, type MeetKind, type MeetPass } from "./lib/meet";
 import { CallTools } from "./CallTools";
@@ -56,11 +56,11 @@ const copy = async (link: string, what: string) => {
 /** Where meetings are not set up there is no call to join, and the page says so. */
 function NotSetUp({ onBack }: { onBack?: () => void }) {
   return (
-    <EmptyState title="Video meetings are not set up on this server" icon="video">
-      <p className="max-w-md text-center text-sm text-muted-foreground">Nobody can join a call here yet. An administrator can turn meetings on: see “Meetings” in Ferrum's operations guide.</p>
+    <EmptyState title={tr("Video meetings are not set up on this server")} icon="video">
+      <p className="max-w-md text-center text-sm text-muted-foreground">{tr("Nobody can join a call here yet. An administrator can turn meetings on: see “Meetings” in Ferrum's operations guide.")}</p>
       {onBack && (
         <Button variant="outline" onClick={onBack}>
-          Back
+          {tr("Back")}
         </Button>
       )}
     </EmptyState>
@@ -90,11 +90,11 @@ export function MeetPage() {
   const meetKind = kind as MeetKind;
   // A call in its own window (opened from Chat or Calendar) closes it when done.
   const leave = () => (shell().host === "companion" ? window.close() : goBack(navigate, home(meetKind, id)));
-  if (!valid) return <EmptyState title="Meeting not found" />;
+  if (!valid) return <EmptyState title={tr("Meeting not found")} />;
   if (available.isLoading) return <Skeleton className="m-6 h-64" />;
   if (!available.data) return <NotSetUp onBack={leave} />;
   if (pass.error) {
-    return notSetUp(errorMessage(pass.error)) ? <NotSetUp onBack={leave} /> : <ErrorState title="You can't join this meeting" error={pass.error} onRetry={() => void pass.refetch()} />;
+    return notSetUp(errorMessage(pass.error)) ? <NotSetUp onBack={leave} /> : <ErrorState title={tr("You can't join this meeting")} error={pass.error} onRetry={() => void pass.refetch()} />;
   }
   return (
     <div data-fullbleed className="grid h-[calc(100dvh-var(--ferrum-bar-height,48px))] min-h-0 grid-rows-[auto_minmax(0,1fr)]">
@@ -103,8 +103,8 @@ export function MeetPage() {
         <h1 className="min-w-0 flex-1 truncate font-semibold">{pass.data?.title ?? "Meeting"}</h1>
         <span ref={setTools} className="contents" />
         {meetKind === "room" && pass.data && <GuestLink room={id} initial={pass.data.guest_path ?? null} />}
-        <Button variant="outline" size="sm" aria-label="Copy the meeting link" onClick={() => void copy(meetLink(meetKind, id), "Meeting link")}>
-          <Copy /> <span className="hidden sm:inline">Copy link</span>
+        <Button variant="outline" size="sm" aria-label={tr("Copy the meeting link")} onClick={() => void copy(meetLink(meetKind, id), "Meeting link")}>
+          <Copy /> <span className="hidden sm:inline">{tr("Copy link")}</span>
         </Button>
       </header>
       <div data-lk-theme="default" className="ferrum-meet min-h-0">
@@ -196,10 +196,10 @@ function Stage({
       <div className="grid h-full place-content-center justify-items-center gap-4 p-6 text-center">
         <p className="text-lg">{left === DisconnectReason.CLIENT_INITIATED ? "You left the meeting." : "You were disconnected from the meeting."}</p>
         <div className="flex gap-2">
-          <Button onClick={() => void onRejoin().then(() => setLeft(null))}>Rejoin</Button>
+          <Button onClick={() => void onRejoin().then(() => setLeft(null))}>{tr("Rejoin")}</Button>
           {onBack && (
             <Button variant="outline" onClick={onBack}>
-              Back
+              {tr("Back")}
             </Button>
           )}
         </div>
@@ -210,10 +210,10 @@ function Stage({
       <div className="grid h-full place-content-center justify-items-center gap-4 overflow-auto p-6 text-center">
         <p className="max-w-md">{unable}</p>
         <div className="flex gap-2">
-          <Button onClick={() => setChoices({ username: name, videoEnabled: false, audioEnabled: false, videoDeviceId: "", audioDeviceId: "" })}>Join without camera or microphone</Button>
+          <Button onClick={() => setChoices({ username: name, videoEnabled: false, audioEnabled: false, videoDeviceId: "", audioDeviceId: "" })}>{tr("Join without camera or microphone")}</Button>
           {onBack && (
             <Button variant="outline" onClick={onBack}>
-              Back
+              {tr("Back")}
             </Button>
           )}
         </div>
@@ -241,11 +241,11 @@ function Stage({
             action={
               <span className="flex shrink-0 gap-1">
                 <Button size="xs" variant="outline" onClick={() => void onRejoin().then(() => setProblem(null))}>
-                  Try again
+                  {tr("Try again")}
                 </Button>
                 {onBack && (
                   <Button size="xs" variant="ghost" onClick={onBack}>
-                    Leave
+                    {tr("Leave")}
                   </Button>
                 )}
               </span>
@@ -264,7 +264,7 @@ function Stage({
         audio={choices.audioEnabled}
         onDisconnected={(reason) => setLeft(reason)}
         onError={(e) => setProblem(plain(e.message))}
-        onMediaDeviceFailure={() => toast("Your camera or microphone could not be used. Check the browser's permission for this site.", "error")}
+        onMediaDeviceFailure={() => toast(tr("Your camera or microphone could not be used. Check the browser's permission for this site."), "error")}
         className="h-full"
       >
         <Connected onConnected={() => setProblem(null)} />
@@ -339,12 +339,12 @@ function PopOut({ slot }: { slot: HTMLElement }) {
       // Whoever is speaking, else the first video that plays.
       const videos = Array.from(document.querySelectorAll<HTMLVideoElement>(".ferrum-meet video")).filter((v) => v.readyState > 0 && !v.disablePictureInPicture);
       const video = videos.find((v) => v.closest("[data-lk-speaking='true']")) ?? videos[0];
-      if (!video) return toast("Nobody's camera is on yet.");
+      if (!video) return toast(tr("Nobody's camera is on yet."));
       await video.requestPictureInPicture();
     } catch (e) {
       if (e instanceof DOMException && e.name === "NotSupportedError") {
         setUnable(true);
-        return toast("This browser can't pop the call out.", "error");
+        return toast(tr("This browser can't pop the call out."), "error");
       }
       // Refused (the browser wants the click itself) or already floating elsewhere.
       toast(e instanceof DOMException && e.name === "NotAllowedError" ? "The browser did not allow the call to pop out; try again." : errorMessage(e), "error");
@@ -381,7 +381,7 @@ function MiniCall() {
     tracks[0];
   return (
     <div data-lk-theme="default" className="ferrum-meet ferrum-pip">
-      {focus ? <ParticipantTile trackRef={focus} /> : <p className="ferrum-pip-empty">Nobody else is here yet.</p>}
+      {focus ? <ParticipantTile trackRef={focus} /> : <p className="ferrum-pip-empty">{tr("Nobody else is here yet.")}</p>}
       <ControlBar variation="minimal" controls={{ microphone: true, camera: true, screenShare: false, chat: false, leave: true }} />
     </div>
   );
@@ -414,7 +414,7 @@ function GuestLink({ room, initial }: { room: string; initial: string | null }) 
         : await api.del<{ guest_path: string | null }>(`${MEET}/room/${room}/guest-link`);
       setPath(r.guest_path);
       if (r.guest_path) await copy(`${location.origin}${r.guest_path}`, "Guest link");
-      else toast("The guest link no longer works");
+      else toast(tr("The guest link no longer works"));
     } catch (e) {
       toast(errorMessage(e), "error");
     } finally {
@@ -423,17 +423,17 @@ function GuestLink({ room, initial }: { room: string; initial: string | null }) 
   };
   if (!path)
     return (
-      <Button variant="outline" size="sm" disabled={busy} aria-label="Invite guests" onClick={() => void change(true)}>
-        <UserPlus /> <span className="hidden sm:inline">Invite guests</span>
+      <Button variant="outline" size="sm" disabled={busy} aria-label={tr("Invite guests")} onClick={() => void change(true)}>
+        <UserPlus /> <span className="hidden sm:inline">{tr("Invite guests")}</span>
       </Button>
     );
   return (
     <>
-      <Button variant="outline" size="sm" aria-label="Copy the guest link" onClick={() => void copy(`${location.origin}${path}`, "Guest link")}>
-        <UserPlus /> <span className="hidden sm:inline">Copy guest link</span>
+      <Button variant="outline" size="sm" aria-label={tr("Copy the guest link")} onClick={() => void copy(`${location.origin}${path}`, "Guest link")}>
+        <UserPlus /> <span className="hidden sm:inline">{tr("Copy guest link")}</span>
       </Button>
-      <Button variant="ghost" size="sm" disabled={busy} aria-label="Turn off the guest link" onClick={() => void change(false)}>
-        <X /> <span className="hidden sm:inline">Turn off guest link</span>
+      <Button variant="ghost" size="sm" disabled={busy} aria-label={tr("Turn off the guest link")} onClick={() => void change(false)}>
+        <X /> <span className="hidden sm:inline">{tr("Turn off guest link")}</span>
       </Button>
     </>
   );
@@ -460,15 +460,15 @@ export function MeetHomePage() {
   if (!available.data) return <NotSetUp />;
   return (
     <div className="mx-auto grid max-w-md gap-4 py-10">
-      <h1 className="text-xl font-semibold">Meet</h1>
+      <h1 className="text-xl font-semibold">{tr("Meet")}</h1>
       <p className="text-muted-foreground">
-        Start a meeting now and share its link with people in your workspace. Chat channels have their own calls, and calendar events their own meetings.
+        {tr("Start a meeting now and share its link with people in your workspace. Chat channels have their own calls, and calendar events their own meetings.")}
       </p>
       <form onSubmit={(e) => void start(e)} className="grid gap-2">
-        <Label htmlFor="meet-title">Name (optional)</Label>
-        <Input id="meet-title" maxLength={140} placeholder="Meeting" value={title} onChange={(e) => setTitle(e.target.value)} />
+        <Label htmlFor="meet-title">{tr("Name (optional)")}</Label>
+        <Input id="meet-title" maxLength={140} placeholder={tr("Meeting")} value={title} onChange={(e) => setTitle(e.target.value)} />
         <Button type="submit" disabled={busy}>
-          <Video /> Start a meeting
+          <Video /> {tr("Start a meeting")}
         </Button>
       </form>
     </div>
@@ -514,7 +514,7 @@ export function GuestMeetPage() {
       <header className="flex items-center gap-2 px-4 py-3">
         <Video className="size-4 opacity-70" aria-hidden="true" />
         <h1 className="min-w-0 flex-1 truncate font-semibold">{pass?.title ?? "Meeting"}</h1>
-        {pass && <span className="text-sm opacity-70">You are joining as {pass.name} (guest)</span>}
+        {pass && <span className="text-sm opacity-70">{tr("You are joining as {name} (guest)", { name: pass.name })}</span>}
         <span ref={setTools} className="contents" />
       </header>
       <main className="min-h-0">
@@ -522,12 +522,12 @@ export function GuestMeetPage() {
           <div className="grid h-full place-content-center gap-2 p-6 text-center">
             {notSetUp(errorMessage(error)) ? (
               <>
-                <p className="text-lg">Video meetings are not set up here</p>
-                <p className="opacity-70">The organization that invited you has not turned them on yet. Ask the person who invited you.</p>
+                <p className="text-lg">{tr("Video meetings are not set up here")}</p>
+                <p className="opacity-70">{tr("The organization that invited you has not turned them on yet. Ask the person who invited you.")}</p>
               </>
             ) : (
               <>
-                <p className="text-lg">You can't join this meeting</p>
+                <p className="text-lg">{tr("You can't join this meeting")}</p>
                 <p className="opacity-70">{errorMessage(error)}</p>
               </>
             )}
@@ -542,10 +542,10 @@ export function GuestMeetPage() {
               if (name.trim()) void ask(name.trim());
             }}
           >
-            <Label htmlFor="guest-name">Your name</Label>
-            <Input id="guest-name" autoFocus maxLength={60} value={name} onChange={(e) => setName(e.target.value)} placeholder="As others will see it" />
+            <Label htmlFor="guest-name">{tr("Your name")}</Label>
+            <Input id="guest-name" autoFocus maxLength={60} value={name} onChange={(e) => setName(e.target.value)} placeholder={tr("As others will see it")} />
             <Button type="submit" disabled={busy || !name.trim()}>
-              Continue
+              {tr("Continue")}
             </Button>
           </form>
         ) : (
