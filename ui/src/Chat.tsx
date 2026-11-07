@@ -119,7 +119,7 @@ export function ChatPage() {
 
   return (
     <div data-fullbleed className="grid h-[calc(100dvh-var(--ferrum-bar-height,48px))] min-h-0 md:grid-cols-[280px_minmax(0,1fr)]">
-      <aside className={cn("min-h-0 border-r", channel && "hidden md:block")} aria-label="Conversations">
+      <aside className={cn("min-h-0 border-e", channel && "hidden md:block")} aria-label="Conversations">
         <ChannelList list={channels.data?.channels} loading={channels.isLoading} error={channels.error} onRetry={() => void channels.refetch()} active={channel} waiting={waiting} />
       </aside>
       <section className={cn("min-h-0", !channel && "hidden md:grid md:place-items-center")}>
@@ -748,14 +748,14 @@ function MessageRow({
             {onThread && (m.reply_count ?? 0) > 0 && (
               <button type="button" className="font-medium text-primary hover:underline" onClick={() => onThread(m.id)}>
                 {m.reply_count} {m.reply_count === 1 ? "reply" : "replies"}
-                {m.last_reply_at && <span className="ml-1 font-normal text-muted-foreground">· {relativeTime(m.last_reply_at)}</span>}
+                {m.last_reply_at && <span className="ms-1 font-normal text-muted-foreground">· {relativeTime(m.last_reply_at)}</span>}
               </button>
             )}
           </div>
         )}
       </div>
       {!m.deleted && !editing && (
-        <div className="absolute -top-3 right-1 z-10 hidden gap-0.5 rounded-md border bg-background p-0.5 shadow-sm group-focus-within:flex group-hover:flex">
+        <div className="absolute -top-3 end-1 z-10 hidden gap-0.5 rounded-md border bg-background p-0.5 shadow-sm group-focus-within:flex group-hover:flex">
           {onThread && (
             <Button variant="ghost" size="icon-sm" aria-label="Reply in thread" title="Reply in thread" onClick={() => onThread(m.id)}>
               <MessagesSquare />

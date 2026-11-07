@@ -145,7 +145,7 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
   if (boxes.error) return <ErrorState error={boxes.error} onRetry={() => void boxes.refetch()} />;
   return (
     <div data-fullbleed className="grid h-[calc(100dvh-var(--ferrum-bar-height,48px))] min-h-0 md:grid-cols-[200px_340px_minmax(0,1fr)]">
-      <aside className="hidden min-h-0 flex-col gap-2 border-r p-2 md:flex" aria-label="Folders">
+      <aside className="hidden min-h-0 flex-col gap-2 border-e p-2 md:flex" aria-label="Folders">
         <Button onClick={() => setDraft({ kind: "new" })} title="Write a message (c)">
           <Pencil aria-hidden="true" /> Write
         </Button>
@@ -157,7 +157,7 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
                   type="button"
                   onClick={() => switchTo(id)}
                   aria-current={id === account ? "true" : undefined}
-                  className={cn("flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent pointer-coarse:min-h-11", id === account && "bg-accent font-medium")}
+                  className={cn("flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-start text-sm hover:bg-accent pointer-coarse:min-h-11", id === account && "bg-accent font-medium")}
                 >
                   {a.isPersonal ? <Mail className="size-4 shrink-0" aria-hidden="true" /> : <Users className="size-4 shrink-0" aria-hidden="true" />}
                   <span className="min-w-0 flex-1 truncate">{a.name}</span>
@@ -198,7 +198,7 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
           <Settings aria-hidden="true" /> Mail settings
         </Button>
       </aside>
-      <section className={cn("min-h-0 border-r", email && "hidden md:block")} aria-label="Messages">
+      <section className={cn("min-h-0 border-e", email && "hidden md:block")} aria-label="Messages">
         {current && (
           <MessageList
             key={account + current}
@@ -420,8 +420,8 @@ function MessageList(p: {
           ))}
         </select>
         <div className="relative min-w-0 flex-1">
-          <Search className="pointer-events-none absolute top-2.5 left-2 size-4 text-muted-foreground" aria-hidden="true" />
-          <Input ref={searchBox} className="pl-8" type="search" placeholder={`Search ${p.mailbox?.name ?? "mail"}`} aria-label="Search mail" value={typed} onChange={(e) => setTyped(e.target.value)} />
+          <Search className="pointer-events-none absolute top-2.5 start-2 size-4 text-muted-foreground" aria-hidden="true" />
+          <Input ref={searchBox} className="ps-8" type="search" placeholder={`Search ${p.mailbox?.name ?? "mail"}`} aria-label="Search mail" value={typed} onChange={(e) => setTyped(e.target.value)} />
         </div>
         <Button size="icon-sm" variant="outline" className="md:hidden" aria-label="Write" onClick={p.onWrite}>
           <Pencil />
@@ -496,7 +496,7 @@ function MessageList(p: {
                   <span className={cn("min-w-0 flex-1 truncate", m.unread && "font-semibold")}>
                     {sender}
                     {m.count > 1 && (
-                      <span className="ml-1 font-normal text-muted-foreground" title={messagesIn(m.count)}>
+                      <span className="ms-1 font-normal text-muted-foreground" title={messagesIn(m.count)}>
                         ({m.count})
                       </span>
                     )}
