@@ -255,7 +255,7 @@ export function Compose({
     e?.preventDefault();
     setProblem(null);
     setAsking(null);
-    if (bad.length) return setProblem(`Not an email address: ${bad.join(", ")}. Fix it, or take it out, and send again.`);
+    if (bad.length) return setProblem(t("Not an email address: {bad}. Fix it, or take it out, and send again.", { bad: bad.join(", ") }));
     if (!fields.to.length && !fields.cc.length && !fields.bcc.length) return setProblem("Add at least one recipient.");
     if (!drafts || !sent || !identity) return setProblem("The mailbox has no Drafts or Sent folder, or no address to send as. Nothing was sent.");
     if (!subject.trim() && !anyway) return setAsking("subject");
@@ -303,7 +303,7 @@ export function Compose({
       const why = errorMessage(err);
       setProblem(
         err instanceof Refused || why.startsWith("The mail server refused it")
-          ? `Not sent. ${why} Your message is still here.`
+          ? t("Not sent. {why} Your message is still here.", { why })
           : `Not sent: ${why}. The mail server may not have been reached; look in Sent before sending it again. Your message is still here, and kept in this browser.`,
       );
     } finally {

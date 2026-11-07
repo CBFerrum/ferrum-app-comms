@@ -95,7 +95,7 @@ export async function jmap(calls: Call[]): Promise<Record<string, Record<string,
   const out = await api.post<{ methodResponses: [string, Record<string, unknown>, string][] }>(`${MAIL}/jmap`, { using: USING, methodCalls: calls });
   const answers: Record<string, Record<string, unknown>> = {};
   for (const [name, args, id] of out.methodResponses) {
-    if (name === "error") throw new Error(`The mail server refused it: ${String(args.description ?? args.type)}`);
+    if (name === "error") throw new Error(tr("The mail server refused it: {value}", { value: String(args.description ?? args.type) }));
     answers[id] = args;
   }
   return answers;
@@ -181,7 +181,7 @@ export function quote(m: Pick<Message, "from" | "receivedAt" | "text" | "subject
     ].join("\n");
   }
   const lines = m.text.replace(/\s+$/, "").split("\n").map((l) => `> ${l}`);
-  return ["", "", `On ${when}, ${addressLabel(m.from?.[0])} wrote:`, ...lines].join("\n");
+  return ["", "", tr("On {when}, {value} wrote:", { when, value: addressLabel(m.from?.[0]) }), ...lines].join("\n");
 }
 
 /**
@@ -201,8 +201,8 @@ export function frameDocument(html: string, images: boolean): string {
 /** Size for people: 12 KB, 3.4 MB. */
 export function sizeLabel(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes < 1024 * 1024) return tr("{n} KB", { n: Math.round(bytes / 1024) });
+  return tr("{value} MB", { value: (bytes / 1024 / 1024).toFixed(1) });
 }
 
 // ───────────────────────────── conversations ─────────────────────────────
@@ -379,8 +379,8 @@ const PROBLEMS: Record<string, string> = {
 export function refusal(err: { type?: string; description?: string; properties?: string[] } | undefined, fallback = "The mail server refused it."): string {
   if (!err) return fallback;
   if (err.type && PROBLEMS[err.type]) return PROBLEMS[err.type]!;
-  if (err.type === "invalidProperties" && err.properties?.length) return `The mail server did not accept the message (${err.properties.join(", ")}).`;
-  return err.description ? `The mail server said: ${err.description}` : fallback;
+  if (err.type === "invalidProperties" && err.properties?.length) return tr("The mail server did not accept the message ({value}).", { value: err.properties.join(", ") });
+  return err.description ? tr("The mail server said: {description}", { description: err.description }) : fallback;
 }
 
 /** The part of a typed list of addresses the caret is in, and what has been typed there. */

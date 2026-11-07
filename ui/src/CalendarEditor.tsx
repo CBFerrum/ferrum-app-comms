@@ -159,7 +159,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
   };
   const addGuests = (text: string) => {
     const got = parseGuests(text);
-    if (got.bad.length) setProblem(`Not an email address: ${got.bad.join(", ")}`);
+    if (got.bad.length) setProblem(t("Not an email address: {value}", { value: got.bad.join(", ") }));
     else setProblem(null);
     if (got.emails.length) setGuests((g) => [...g, ...got.emails.filter((e) => !g.includes(e) && e !== me)]);
     setTyped(got.bad.join(" "));
@@ -174,7 +174,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
     e?.preventDefault();
     if (busy) return;
     const left = typed.trim() ? parseGuests(typed) : { emails: [] as string[], bad: [] as string[] };
-    if (left.bad.length) return setProblem(`Not an email address: ${left.bad.join(", ")}. Fix it or take it out.`);
+    if (left.bad.length) return setProblem(t("Not an email address: {value}. Fix it or take it out.", { value: left.bad.join(", ") }));
     if (mistakes.length || !when) return setProblem(mistakes.join(" "));
     const list = [...new Set([...guests, ...left.emails.filter((x) => x !== me)])];
     const sameDay = (d: Date) => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
@@ -207,7 +207,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
       toast(existing ? t("Event saved") : list.length ? t("Event saved. Your guests were told.") : t("Event saved"));
       navigate(`/calendar?event=${id}&at=${encodeURIComponent(when.starts.toISOString())}`);
     } catch (err) {
-      setProblem(`Not saved: ${errorMessage(err)}`);
+      setProblem(t("Not saved: {err}", { err: errorMessage(err) }));
       setBusy(false);
     }
   };
@@ -504,7 +504,7 @@ function FindTime(p: {
     const minutes = Math.round((((e.clientX - box.left) / box.width) * (TO - FROM) * 60) / 30) * 30;
     p.onPick(new Date(p.day.getFullYear(), p.day.getMonth(), p.day.getDate(), FROM, minutes));
   };
-  const said = (list: Busy[] | undefined) => (list?.length ? `busy ${list.map(stretch).join(", ")}` : "free");
+  const said = (list: Busy[] | undefined) => (list?.length ? t("busy {value}", { value: list.map(stretch).join(", ") }) : t("free"));
   return (
     <div className="grid gap-3 text-sm">
       <div className="flex items-center gap-2">

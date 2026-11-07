@@ -3,7 +3,7 @@
 // a calendar event's meeting or a room started here.
 
 import { useQuery } from "@tanstack/react-query";
-import { api, shell } from "@ferrum/client";
+import { api, shell, t } from "@ferrum/client";
 
 export const MEET = "/api/app/comms/meet";
 
@@ -116,7 +116,7 @@ export function recordingWords(r: Pick<Recording, "status" | "ended_at" | "locat
     case "EGRESS_ENDING":
       return "Finishing the file";
     case "EGRESS_COMPLETE":
-      return r.location ? `Saved at ${r.location}` : "Saved";
+      return r.location ? t("Saved at {location}", { location: r.location }) : "Saved";
     case "EGRESS_LIMIT_REACHED":
       return "Stopped at the server's limit";
     default:

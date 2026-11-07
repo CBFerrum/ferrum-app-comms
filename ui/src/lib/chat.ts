@@ -85,8 +85,8 @@ export function attachmentsOf(m: Pick<Message, "attachments">): Attachment[] {
 /** `840 B`, `12 KB`, `3.4 MB`. */
 export function fileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 ** 2) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  if (bytes < 1024 ** 2) return t("{n} KB", { n: Math.round(bytes / 1024) });
+  return t("{value} MB", { value: (bytes / 1024 ** 2).toFixed(1) });
 }
 
 export interface Person {
@@ -204,7 +204,7 @@ export function posting(c: Pick<ChannelSummary, "archived" | "role" | "post_poli
 export function accessText(c: Pick<ChannelSummary, "type" | "post_policy" | "archived">): string {
   if (c.type === "Direct") return "Only the two of you can read this conversation.";
   const reads = c.type === "Private" ? "Only its members can read it." : "Anyone in the workspace can read it and join.";
-  if (c.archived) return `${reads} It is archived, so nobody can post.`;
+  if (c.archived) return t("{reads} It is archived, so nobody can post.", { reads });
   return `${reads} ${c.post_policy === "Owners" ? "Only its owners start posts; members reply in threads." : "Every member can post."}`;
 }
 
