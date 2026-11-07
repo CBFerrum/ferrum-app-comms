@@ -27,7 +27,7 @@ import {
   Skeleton,
   Textarea,
 } from "@ferrum/kit/primitives";
-import { api, download, errorMessage, fetchBlob, relativeTime, shell, t as tr } from "@ferrum/client";
+import { api, download, errorMessage, fetchBlob, relativeTime, shell, t as tr, isolate } from "@ferrum/client";
 import { cn, confirmDialog, EmptyState, ErrorState, Markdown, toast, useLivePush } from "@ferrum/kit";
 import { useMe, usePeople } from "@ferrum/records";
 import { Composer, PeoplePicker } from "./ChatComposer";
@@ -136,9 +136,9 @@ export function ChatPage() {
 }
 
 const SHOWS: { id: Show; label: string }[] = [
-  { id: "all", label: "All" },
-  { id: "unread", label: "Unread" },
-  { id: "mentions", label: "Mentions" },
+  { id: "all", get label() { return tr("All"); } },
+  { id: "unread", get label() { return tr("Unread"); } },
+  { id: "mentions", get label() { return tr("Mentions"); } },
 ];
 
 function ChannelList({
@@ -206,8 +206,8 @@ function ChannelList({
           )}
           {(b.count > 0 || b.mention) && (
             <span className="sr-only">
-              {b.count > 0 ? `${b.count} unread` : ""}
-              {b.mention ? ", you were mentioned" : ""}
+              {b.count > 0 ? tr("{count} unread", { count: b.count }) : ""}
+              {b.mention ? tr(", you were mentioned") : ""}
             </span>
           )}
         </Link>
@@ -245,7 +245,7 @@ function ChannelList({
       <div className="flex gap-1" role="group" aria-label={tr("Show")}>
         {SHOWS.map((s) => (
           <Button key={s.id} size="xs" variant={show === s.id ? "secondary" : "ghost"} aria-pressed={show === s.id} onClick={() => setShow(s.id)}>
-            {s.label}
+            {isolate(s.label)}
           </Button>
         ))}
       </div>
@@ -272,7 +272,7 @@ function ChannelList({
         )}
         {none && (
           <p className="px-2 py-4 text-sm text-muted-foreground">
-            {filter.trim() ? `No conversation matches “${filter.trim()}”.` : show === "unread" ? "Nothing unread. You are up to date." : show === "mentions" ? "Nobody has mentioned you lately." : "No conversations yet. Start one with the buttons above."}
+            {filter.trim() ? tr("No conversation matches “{filter}”.", { filter: filter.trim() }) : show === "unread" ? tr("Nothing unread. You are up to date.") : show === "mentions" ? tr("Nobody has mentioned you lately.") : tr("No conversations yet. Start one with the buttons above.")}
           </p>
         )}
       </nav>
@@ -419,10 +419,10 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
           {view ? <ChannelIcon c={view} /> : null}
           <div className="min-w-0 flex-1">
             <h2 className="truncate font-semibold">{c?.title || c?.name || summary?.title || "…"}</h2>
-            {c?.topic && <p className="truncate text-xs text-muted-foreground">{c.topic}</p>}
+            {c?.topic && <p className="truncate text-xs text-muted-foreground">{isolate(c.topic)}</p>}
           </div>
           {c && !direct && (
-            <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => open("members")} aria-label={`${c.members.length} ${c.members.length === 1 ? "member" : "members"}: see who is in`}>
+            <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => open("members")} aria-label={tr("{length} {value}: see who is in", { length: c.members.length, value: c.members.length === 1 ? "member" : "members" })}>
               <Users aria-hidden="true" />
               <span className="tabular-nums">{c.members.length}</span>
             </Button>
@@ -444,7 +444,7 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
         </header>
         {target && (
           <div role="status" className="flex items-center gap-2 border-b bg-muted px-3 py-1.5 text-sm">
-            <span className="min-w-0 flex-1">{feed.error ? "That message could not be found." : "Showing the messages around the one you picked."}</span>
+            <span className="min-w-0 flex-1">{feed.error ? tr("That message could not be found.") : tr("Showing the messages around the one you picked.")}</span>
             <Button size="xs" variant="outline" onClick={() => patch({ m: null })}>
               {tr("Back to the latest")}
             </Button>
@@ -475,14 +475,14 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
         {!view ? (
           <Skeleton className="h-10" />
         ) : state.state === "ok" ? (
-          <Composer channel={id} people={mentionable} placeholder={`Message ${direct ? view.title : `#${view.name}`}`} onSent={target ? () => patch({ m: null }) : undefined} />
+          <Composer channel={id} people={mentionable} placeholder={tr("Message {value}", { value: direct ? view.title : `#${view.name}` })} onSent={target ? () => patch({ m: null }) : undefined} />
         ) : state.state === "join" ? (
           <div className="flex items-center gap-3 text-sm">
             <span className="flex-1 text-muted-foreground">{tr("You are reading a public channel. Join it to post and to hear of new messages.")}</span>
             <Button onClick={() => void join()}>{tr("Join channel")}</Button>
           </div>
         ) : (
-          <p className="text-sm text-muted-foreground">{state.why}</p>
+          <p className="text-sm text-muted-foreground">{isolate(state.why)}</p>
         )}
       </div>
       {side === "thread" && threadId && (
@@ -595,30 +595,30 @@ function MessageList(p: {
         {p.hasMore && (
           <div className="py-2 text-center">
             <Button variant="ghost" size="sm" onClick={p.loadMore} disabled={p.loadingMore}>
-              {p.loadingMore ? "Loading…" : "Earlier messages"}
+              {p.loadingMore ? tr("Loading…") : tr("Earlier messages")}
             </Button>
           </div>
         )}
         {p.loading && <Skeleton className="h-32" />}
         {!!p.error && (
           <p role="alert" className="text-sm text-destructive">
-            {errorMessage(p.error)}
+            {isolate(errorMessage(p.error))}
           </p>
         )}
-        {!p.loading && !p.error && !p.list.length && <p className="py-8 text-center text-sm text-muted-foreground">{p.empty ?? "No messages yet."}</p>}
+        {!p.loading && !p.error && !p.list.length && <p className="py-8 text-center text-sm text-muted-foreground">{p.empty ?? tr("No messages yet.")}</p>}
         {p.list.map((m, i) => (
           <div key={m.id}>
             {startsDay(m, p.list[i - 1]) && (
               <div className="my-3 flex items-center gap-3 text-xs text-muted-foreground" role="separator">
                 <span className="h-px flex-1 bg-border" />
-                {day(m.posted_at)}
+                {isolate(day(m.posted_at))}
                 <span className="h-px flex-1 bg-border" />
               </div>
             )}
             {p.marks?.[m.id] && (
               <div id={`mark-${p.scope}-${m.id}`} className="my-2 flex items-center gap-3 text-xs font-medium text-primary" role="separator" aria-label={p.marks[m.id]}>
                 <span className="h-px flex-1 bg-primary/40" />
-                {p.marks[m.id]}
+                {isolate(p.marks[m.id])}
                 <span className="h-px flex-1 bg-primary/40" />
               </div>
             )}
@@ -682,7 +682,7 @@ function MessageRow({
   const [editing, setEditing] = useState(false);
   const name = m.sender_name || m.sender;
   const remove = async () => {
-    if (!(await confirmDialog({ title: "Delete this message?", message: "Its text and attachments are erased for everyone.", confirmLabel: "Delete", danger: true }))) return;
+    if (!(await confirmDialog({ title: tr("Delete this message?"), message: tr("Its text and attachments are erased for everyone."), confirmLabel: tr("Delete"), danger: true }))) return;
     try {
       await api.del(`${CHAT}/messages/${m.id}`);
       refreshMessages(qc);
@@ -696,7 +696,7 @@ function MessageRow({
       await navigator.clipboard.writeText(url);
       toast(tr("Link copied"));
     } catch {
-      toast(`Copy this link: ${url}`);
+      toast(tr("Copy this link: {url}", { url }));
     }
   };
   const canDelete = mine || canModerate;
@@ -714,21 +714,21 @@ function MessageRow({
         toMe && "border-l-2 border-primary bg-primary/5",
         picked && "bg-warning-soft ring-1 ring-warning",
       )}
-      aria-label={`${name} at ${time(m.posted_at)}${toMe ? ", mentions you" : ""}`}
+      aria-label={tr("{name} at {value}{value2}", { name, value: time(m.posted_at), value2: toMe ? ", mentions you" : "" })}
     >
       <div className="w-8 shrink-0">
         {!compact && (
           <span className="grid size-8 place-items-center rounded-full bg-primary/10 text-xs font-semibold text-primary" aria-hidden="true">
-            {initials(name)}
+            {isolate(initials(name))}
           </span>
         )}
       </div>
       <div className="min-w-0 flex-1">
         {!compact && (
           <div className="flex items-baseline gap-2">
-            <span className="text-sm font-semibold">{name}</span>
+            <span className="text-sm font-semibold">{isolate(name)}</span>
             <time className="text-xs text-muted-foreground" dateTime={m.posted_at}>
-              {time(m.posted_at)}
+              {isolate(time(m.posted_at))}
             </time>
           </div>
         )}
@@ -747,8 +747,8 @@ function MessageRow({
             {m.edited_at && !m.deleted && <span className="text-muted-foreground">{tr("(edited)")}</span>}
             {onThread && (m.reply_count ?? 0) > 0 && (
               <button type="button" className="font-medium text-primary hover:underline" onClick={() => onThread(m.id)}>
-                {m.reply_count} {m.reply_count === 1 ? "reply" : "replies"}
-                {m.last_reply_at && <span className="ms-1 font-normal text-muted-foreground">· {relativeTime(m.last_reply_at)}</span>}
+                {m.reply_count} {m.reply_count === 1 ? tr("reply") : tr("replies")}
+                {m.last_reply_at && <span className="ms-1 font-normal text-muted-foreground">· {isolate(relativeTime(m.last_reply_at))}</span>}
               </button>
             )}
           </div>
@@ -807,11 +807,11 @@ function FileChip({ a }: { a: Attachment }) {
       type="button"
       onClick={() => void saveFile(a)}
       className="inline-flex max-w-full items-center gap-1.5 rounded-md border bg-card px-2 py-1 text-xs hover:bg-accent pointer-coarse:min-h-11"
-      aria-label={`Download ${a.file_name}`}
+      aria-label={tr("Download {file_name}", { file_name: a.file_name })}
     >
       <Paperclip className="size-3.5 shrink-0" aria-hidden="true" />
-      <span className="truncate">{a.file_name}</span>
-      {a.size != null && <span className="shrink-0 text-muted-foreground">{fileSize(a.size)}</span>}
+      <span className="truncate">{isolate(a.file_name)}</span>
+      {a.size != null && <span className="shrink-0 text-muted-foreground">{isolate(fileSize(a.size))}</span>}
     </button>
   );
 }
@@ -829,7 +829,7 @@ function AttachedImage({ a }: { a: Attachment }) {
   if (q.isError) return <FileChip a={a} />;
   if (!url) return <Skeleton className="h-32 w-48" />;
   return (
-    <button type="button" onClick={() => void saveFile(a)} className="block overflow-hidden rounded-md border" aria-label={`Download ${a.file_name}`}>
+    <button type="button" onClick={() => void saveFile(a)} className="block overflow-hidden rounded-md border" aria-label={tr("Download {file_name}", { file_name: a.file_name })}>
       <img src={url} alt={a.file_name} className="max-h-48 max-w-full object-contain sm:max-w-xs" />
     </button>
   );
@@ -955,7 +955,7 @@ function Thread({
             {tr("Join the channel to reply")}
           </Button>
         ) : (
-          <p className="text-sm text-muted-foreground">{allowed.why}</p>
+          <p className="text-sm text-muted-foreground">{isolate(allowed.why)}</p>
         )}
       </div>
     </aside>
@@ -1002,7 +1002,7 @@ function NewChannel({ onClose }: { onClose: () => void }) {
             <Input id="ch-name" required autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="sales-team" aria-invalid={!!failed || undefined} />
             {failed && (
               <p role="alert" className="text-xs text-destructive">
-                {failed}
+                {isolate(failed)}
               </p>
             )}
           </div>
@@ -1014,7 +1014,7 @@ function NewChannel({ onClose }: { onClose: () => void }) {
             <legend className="mb-1 text-sm font-medium">{tr("Who can find it")}</legend>
             {(["Public", "Private"] as const).map((t) => (
               <label key={t} className="flex items-center gap-2">
-                <input type="radio" name="ch-type" checked={type === t} onChange={() => setType(t)} /> {t}
+                <input type="radio" name="ch-type" checked={type === t} onChange={() => setType(t)} /> {isolate(t)}
               </label>
             ))}
           </fieldset>

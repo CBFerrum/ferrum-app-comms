@@ -2,7 +2,7 @@
 // and 8621): shapes and the pure parts of the mail screen.
 
 import { useQuery } from "@tanstack/react-query";
-import { api } from "@ferrum/client";
+import { api, t as tr } from "@ferrum/client";
 import { matchPeople, type Person } from "./chat";
 
 export const MAIL = "/api/app/comms/mail";
@@ -255,21 +255,21 @@ export type MailKey = "next" | "previous" | "open" | "back" | "reply" | "replyAl
 
 /** What the keys do, for the list of shortcuts. */
 export const SHORTCUTS: { keys: string[]; action: MailKey; label: string }[] = [
-  { keys: ["j"], action: "next", label: "Next conversation" },
-  { keys: ["k"], action: "previous", label: "Previous conversation" },
-  { keys: ["Enter", "o"], action: "open", label: "Open the conversation" },
-  { keys: ["u", "Esc"], action: "back", label: "Back to the list" },
-  { keys: ["r"], action: "reply", label: "Reply" },
-  { keys: ["a"], action: "replyAll", label: "Reply to all" },
-  { keys: ["f"], action: "forward", label: "Forward" },
-  { keys: ["e"], action: "archive", label: "Archive" },
-  { keys: ["#"], action: "delete", label: "Delete" },
-  { keys: ["!"], action: "spam", label: "Mark as spam" },
-  { keys: ["Shift", "U"], action: "unread", label: "Mark as unread" },
-  { keys: ["s"], action: "star", label: "Star or unstar" },
-  { keys: ["c"], action: "compose", label: "Write a message" },
-  { keys: ["/"], action: "search", label: "Search" },
-  { keys: ["?"], action: "help", label: "Show these shortcuts" },
+  { keys: ["j"], action: "next", get label() { return tr("Next conversation"); } },
+  { keys: ["k"], action: "previous", get label() { return tr("Previous conversation"); } },
+  { keys: ["Enter", "o"], action: "open", get label() { return tr("Open the conversation"); } },
+  { keys: ["u", "Esc"], action: "back", get label() { return tr("Back to the list"); } },
+  { keys: ["r"], action: "reply", get label() { return tr("Reply"); } },
+  { keys: ["a"], action: "replyAll", get label() { return tr("Reply to all"); } },
+  { keys: ["f"], action: "forward", get label() { return tr("Forward"); } },
+  { keys: ["e"], action: "archive", get label() { return tr("Archive"); } },
+  { keys: ["#"], action: "delete", get label() { return tr("Delete"); } },
+  { keys: ["!"], action: "spam", get label() { return tr("Mark as spam"); } },
+  { keys: ["Shift", "U"], action: "unread", get label() { return tr("Mark as unread"); } },
+  { keys: ["s"], action: "star", get label() { return tr("Star or unstar"); } },
+  { keys: ["c"], action: "compose", get label() { return tr("Write a message"); } },
+  { keys: ["/"], action: "search", get label() { return tr("Search"); } },
+  { keys: ["?"], action: "help", get label() { return tr("Show these shortcuts"); } },
 ];
 
 const KEYS: Record<string, MailKey> = {

@@ -9,7 +9,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Captions, CircleDot, FileText, Mic } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@ferrum/kit/primitives";
-import { api, errorMessage, t as tr } from "@ferrum/client";
+import { api, errorMessage, t as tr, isolate } from "@ferrum/client";
 import { confirmDialog, Dialog, toast } from "@ferrum/kit";
 import { MEET, recordingWords, segmentId, type MeetKind, type Recording } from "./lib/meet";
 
@@ -43,15 +43,15 @@ function Transcript({ kind, id, onClose }: { kind: MeetKind; id: string; onClose
       {q.isPending ? (
         <p className="text-sm text-muted-foreground">{tr("Loading…")}</p>
       ) : q.isError ? (
-        <p className="text-sm">{errorMessage(q.error)}</p>
+        <p className="text-sm">{isolate(errorMessage(q.error))}</p>
       ) : q.data.length === 0 ? (
         <p className="text-sm text-muted-foreground">{tr("Nothing yet. What people caption of their own voices appears here.")}</p>
       ) : (
         <ol className="grid gap-2 text-sm">
           {q.data.map((s, i) => (
             <li key={`${s.said_at}-${i}`}>
-              <strong>{s.name}</strong> <span className="text-muted-foreground">{new Date(s.said_at).toLocaleTimeString()}</span>
-              <div>{s.text}</div>
+              <strong>{isolate(s.name)}</strong> <span className="text-muted-foreground">{isolate(new Date(s.said_at).toLocaleTimeString())}</span>
+              <div>{isolate(s.text)}</div>
             </li>
           ))}
         </ol>
@@ -131,7 +131,7 @@ export function CallTools({ kind, id, recordings }: { kind: MeetKind; id: string
   });
 
   const nameOf = (identity: string) =>
-    identity === localParticipant.identity ? "You" : (room.getParticipantByIdentity(identity)?.name ?? "Someone");
+    identity === localParticipant.identity ? tr("You") : (room.getParticipantByIdentity(identity)?.name ?? tr("Someone"));
   const latest = transcriptions.slice(-3);
   return (
     <>
@@ -155,7 +155,7 @@ export function CallTools({ kind, id, recordings }: { kind: MeetKind; id: string
               if (!mine) setShown(true);
             }}
           >
-            <Mic className="size-3.5" aria-hidden /> {mine ? "Captioning my voice" : "Caption my voice"}
+            <Mic className="size-3.5" aria-hidden /> {mine ? tr("Captioning my voice") : tr("Caption my voice")}
           </Button>
         )}
         <Button size="xs" variant="outline" onClick={() => setReading(true)}>
@@ -169,19 +169,19 @@ export function CallTools({ kind, id, recordings }: { kind: MeetKind; id: string
             onClick={async () => {
               if (
                 !going &&
-                !(await confirmDialog({ title: "Record this call?", message: "Everyone in the call sees that it is being recorded. The recording is kept where this server's operator stores them.", confirmLabel: "Record" }))
+                !(await confirmDialog({ title: tr("Record this call?"), message: tr("Everyone in the call sees that it is being recorded. The recording is kept where this server's operator stores them."), confirmLabel: tr("Record") }))
               )
                 return;
               record.mutate();
             }}
           >
-            <CircleDot className="size-3.5" aria-hidden /> {going ? "Stop recording" : "Record"}
+            <CircleDot className="size-3.5" aria-hidden /> {going ? tr("Stop recording") : tr("Record")}
           </Button>
         )}
       </div>
       {recordings && !!recs.data?.length && !going && recs.data[0].ended_at === null && (
         <p className="absolute start-2 top-2 z-20 rounded bg-background/80 px-2 py-1 text-xs" role="status">
-          {recordingWords(recs.data[0])}
+          {isolate(recordingWords(recs.data[0]))}
         </p>
       )}
       {shown && (
@@ -192,7 +192,7 @@ export function CallTools({ kind, id, recordings }: { kind: MeetKind; id: string
             ) : (
               latest.map((t) => (
                 <div key={t.streamInfo.id}>
-                  <strong>{nameOf(t.participantInfo.identity)}:</strong> {t.text}
+                  <strong>{isolate(nameOf(t.participantInfo.identity))}:</strong> {isolate(t.text)}
                 </div>
               ))
             )}

@@ -9,7 +9,7 @@ import { useMemo, useState, type FormEvent, type MouseEvent } from "react";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router";
 import { Badge, Button, Input, Label, Skeleton, Textarea } from "@ferrum/kit/primitives";
 import { Alert, confirmDialog, EmptyState, ErrorState, PageLoading, toast, useShellTitle } from "@ferrum/kit";
-import { api, docPath, errorMessage, t } from "@ferrum/client";
+import { api, docPath, errorMessage, t, isolate } from "@ferrum/client";
 import { useMe, usePeople } from "@ferrum/records";
 import { matchPeople, type Person } from "./lib/chat";
 import {
@@ -63,7 +63,7 @@ export function EventPage() {
   const me = useMe().data?.user.email.toLowerCase();
   const [params] = useSearchParams();
   const doc = useQuery({ queryKey: ["calendar", "event", event], queryFn: ({ signal }) => api.get<EventDoc>(docPath("CalendarEvent", event), undefined, signal), enabled: event !== "new", gcTime: 0, retry: false });
-  useShellTitle(event === "new" ? "New event" : "Edit event");
+  useShellTitle(event === "new" ? t("New event") : t("Edit event"));
   if (event === "new") return me ? <Editor key="new" me={me} params={params} /> : <PageLoading />;
   if (doc.error) {
     return (
@@ -204,7 +204,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
         if (call) await api.patch(docPath("CalendarEvent", made.id), { meeting_link: meetLink("event", made.id) }, made.version ? { ifMatch: made.version } : undefined);
       }
       void qc.invalidateQueries({ queryKey: ["calendar"] });
-      toast(existing ? "Event saved" : list.length ? "Event saved. Your guests were told." : "Event saved");
+      toast(existing ? t("Event saved") : list.length ? t("Event saved. Your guests were told.") : t("Event saved"));
       navigate(`/calendar?event=${id}&at=${encodeURIComponent(when.starts.toISOString())}`);
     } catch (err) {
       setProblem(`Not saved: ${errorMessage(err)}`);
@@ -214,7 +214,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
   const cancelEvent = async () => {
     if (!doc) return;
     const on = doc.status !== "Cancelled";
-    if (!(await confirmDialog({ title: on ? "Cancel this event?" : "Bring this event back?", message: on ? "Your guests are told it is cancelled. It stays on the calendar, struck through." : "Your guests are told it is on again.", confirmLabel: on ? "Cancel the event" : "Bring it back", danger: on }))) return;
+    if (!(await confirmDialog({ title: on ? t("Cancel this event?") : t("Bring this event back?"), message: on ? t("Your guests are told it is cancelled. It stays on the calendar, struck through.") : t("Your guests are told it is on again."), confirmLabel: on ? t("Cancel the event") : t("Bring it back"), danger: on }))) return;
     try {
       await api.patch(docPath("CalendarEvent", doc.id), { status: on ? "Cancelled" : "Confirmed" }, { ifMatch: doc.version });
       void qc.invalidateQueries({ queryKey: ["calendar"] });
@@ -225,7 +225,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
   };
   const remove = async () => {
     if (!doc) return;
-    if (!(await confirmDialog({ title: "Delete this event?", message: "It goes from every calendar, and your guests are told it is cancelled.", confirmLabel: "Delete", danger: true }))) return;
+    if (!(await confirmDialog({ title: t("Delete this event?"), message: t("It goes from every calendar, and your guests are told it is cancelled."), confirmLabel: t("Delete"), danger: true }))) return;
     try {
       await api.del(docPath("CalendarEvent", doc.id));
       void qc.invalidateQueries({ queryKey: ["calendar"] });
@@ -249,11 +249,11 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
               <ArrowLeft />
             </Link>
           </Button>
-          <h1 className="flex-1 text-lg font-semibold">{existing ? "Edit event" : "New event"}</h1>
+          <h1 className="flex-1 text-lg font-semibold">{existing ? t("Edit event") : t("New event")}</h1>
         </div>
         {problem && (
           <Alert tone="error">
-            <span>{problem}</span>
+            <span>{isolate(problem)}</span>
           </Alert>
         )}
         {doc?.status === "Cancelled" && (
@@ -282,12 +282,12 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
                 setEnd(toInput(new Date(s.getTime() + 3_600_000)));
               }
             }}
-          />{" "}
+          />{isolate(" ")}
           {t("All day")}
         </label>
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="grid gap-1.5">
-            <Label htmlFor="ev-start">{allDay ? "First day" : "Starts"}</Label>
+            <Label htmlFor="ev-start">{allDay ? t("First day") : t("Starts")}</Label>
             <Input
               id="ev-start"
               type={allDay ? "date" : "datetime-local"}
@@ -300,14 +300,14 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
             />
           </div>
           <div className="grid gap-1.5">
-            <Label htmlFor="ev-end">{allDay ? "Last day" : "Ends"}</Label>
+            <Label htmlFor="ev-end">{allDay ? t("Last day") : t("Ends")}</Label>
             <Input id="ev-end" type={allDay ? "date" : "datetime-local"} value={end} onChange={(e) => setEnd(e.target.value)} />
           </div>
         </div>
         {clash.length > 0 && when && (
           <p role="status" className="rounded-md border border-warning bg-warning-soft px-3 py-2 text-sm">
-            {clash.map((who) => `${nameOf(who)} (${(others[who] ?? []).filter((b) => Date.parse(b.start) < when.ends.getTime() && Date.parse(b.end) > when.starts.getTime()).map(stretch).join(", ")})`).join(" and ")}{" "}
-            {clash.length === 1 ? "is" : "are"} {t("busy then. The times that suit everyone are on the right.")}
+            {isolate(clash.map((who) => `${nameOf(who)} (${(others[who] ?? []).filter((b) => Date.parse(b.start) < when.ends.getTime() && Date.parse(b.end) > when.starts.getTime()).map(stretch).join(", ")})`).join(" and "))}{isolate(" ")}
+            {clash.length === 1 ? t("is") : t("are")} {t("busy then. The times that suit everyone are on the right.")}
           </p>
         )}
         <p className="-mt-2 text-xs text-muted-foreground">{t("Times are in your time zone, {timeZone}. Guests see them in theirs.", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone })}</p>
@@ -317,7 +317,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
             <select id="ev-repeat" className="h-9 rounded-md border bg-background px-2 text-sm" value={repeat} onChange={(e) => setRepeat(e.target.value as Repeat)}>
               {REPEATS.map((r) => (
                 <option key={r.value} value={r.value}>
-                  {r.label}
+                  {isolate(r.label)}
                 </option>
               ))}
               {repeat === "custom" && <option value="custom">{t("Custom (kept as it is)")}</option>}
@@ -335,15 +335,15 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
           <legend className="mb-1 text-sm font-medium">{t("Guests")}</legend>
           {guests.length > 0 && (
             <>
-              <p className="text-xs text-muted-foreground">{replies ? `So far: ${replies}.` : `${guests.length} invited. Colleagues are told in Ferrum, others by email.`}</p>
+              <p className="text-xs text-muted-foreground">{replies ? t("So far: {replies}.", { replies }) : t("{length} invited. Colleagues are told in Ferrum, others by email.", { length: guests.length })}</p>
               <ul className="flex flex-wrap gap-1.5" aria-label={t("Guests")}>
                 {guests.map((g) => (
                   <li key={g}>
                     <Badge variant="secondary" className="h-7 gap-1.5 pl-2.5">
                       <span>{names[g] || g}</span>
-                      {!colleague(g) && <span className="text-muted-foreground">outside</span>}
-                      {answers.has(g) && <span className="text-muted-foreground">· {answerWord(answers.get(g)?.response)}</span>}
-                      <button type="button" aria-label={`Remove ${names[g] || g}`} className="grid size-5 place-items-center rounded-full hover:bg-background" onClick={() => setGuests((x) => x.filter((y) => y !== g))}>
+                      {!colleague(g) && <span className="text-muted-foreground">{t("outside")}</span>}
+                      {answers.has(g) && <span className="text-muted-foreground">· {isolate(answerWord(answers.get(g)?.response))}</span>}
+                      <button type="button" aria-label={t("Remove {value}", { value: names[g] || g })} className="grid size-5 place-items-center rounded-full hover:bg-background" onClick={() => setGuests((x) => x.filter((y) => y !== g))}>
                         <X className="size-3" aria-hidden="true" />
                       </button>
                     </Badge>
@@ -367,7 +367,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
         ) : null}
         {link && !hasCall && (
           <p className="break-all text-sm">
-            {t("Meeting link:")} <a className="text-primary underline" href={link} target="_blank" rel="noopener noreferrer">{link}</a>
+            {t("Meeting link:")} <a className="text-primary underline" href={link} target="_blank" rel="noopener noreferrer">{isolate(link)}</a>
           </p>
         )}
         <div className="grid gap-1.5">
@@ -386,7 +386,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
               <option value="none">{t("None")}</option>
               {REMINDERS.map((r) => (
                 <option key={r.minutes} value={r.minutes}>
-                  {r.label}
+                  {isolate(r.label)}
                 </option>
               ))}
               {reminder === "custom" && <option value="custom">{t("Several (kept as they are)")}</option>}
@@ -402,7 +402,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
         </div>
         <div className="flex flex-wrap items-center gap-2 border-t pt-4">
           <Button type="submit" disabled={busy}>
-            {busy ? "Saving…" : existing ? "Save" : guests.length ? "Save and invite" : "Save"}
+            {busy ? t("Saving…") : existing ? t("Save") : guests.length ? t("Save and invite") : t("Save")}
           </Button>
           <Button asChild variant="outline">
             <Link to="/calendar">{t("Cancel")}</Link>
@@ -411,7 +411,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
           {doc && (
             <>
               <Button type="button" variant="ghost" onClick={() => void cancelEvent()}>
-                {doc.status === "Cancelled" ? "Bring it back" : "Cancel the event"}
+                {doc.status === "Cancelled" ? t("Bring it back") : t("Cancel the event")}
               </Button>
               <Button type="button" variant="ghost" onClick={() => void remove()}>
                 {t("Delete")}
@@ -468,7 +468,7 @@ function GuestInput({ people, taken, typed, setTyped, add }: { people: Person[];
             <li key={p.id}>
               <button type="button" className="flex w-full items-baseline gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent pointer-coarse:min-h-11" onClick={() => add(p.email)}>
                 <span className="font-medium">{p.full_name || p.email}</span>
-                <span className="truncate text-xs text-muted-foreground">{p.email}</span>
+                <span className="truncate text-xs text-muted-foreground">{isolate(p.email)}</span>
               </button>
             </li>
           ))}
@@ -511,7 +511,7 @@ function FindTime(p: {
         <Button type="button" variant="outline" size="icon-sm" aria-label={t("Previous day")} onClick={() => step(-1)}>
           <ArrowLeft />
         </Button>
-        <span className="flex-1 text-center font-medium">{dayWord(p.day)}</span>
+        <span className="flex-1 text-center font-medium">{isolate(dayWord(p.day))}</span>
         <Button type="button" variant="outline" size="icon-sm" aria-label={t("Next day")} onClick={() => step(1)}>
           <ArrowLeft className="rotate-180" />
         </Button>
@@ -525,7 +525,7 @@ function FindTime(p: {
           <div className="relative ml-24 h-4 text-[10px] text-muted-foreground" aria-hidden="true">
             {hours.map((h) => (
               <span key={h} className="absolute -translate-x-1/2 tabular-nums" style={{ left: `${((h - FROM) / (TO - FROM)) * 100}%` }}>
-                {new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: "numeric" })}
+                {isolate(new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: "numeric" }))}
               </span>
             ))}
           </div>
@@ -533,12 +533,12 @@ function FindTime(p: {
             {p.insiders.map((who) => (
               <div key={who} className="flex items-center gap-2">
                 <span className="w-22 shrink-0 truncate text-xs" title={who}>
-                  {label(who)}
+                  {isolate(label(who))}
                 </span>
                 <div
                   className="relative h-6 flex-1 cursor-pointer overflow-hidden rounded bg-muted"
                   role="img"
-                  aria-label={`${label(who)}: ${said(p.busy[who])} on ${dayWord(p.day)}`}
+                  aria-label={t("{who}: {value} on {value2}", { who: label(who), value: said(p.busy[who]), value2: dayWord(p.day) })}
                   onClick={pick}
                 >
                   {bars(p.busy[who] ?? [], p.day, FROM, TO).map((b, i) => (
@@ -551,7 +551,7 @@ function FindTime(p: {
             {p.outsiders.map((who) => (
               <div key={who} className="flex items-center gap-2 text-muted-foreground">
                 <span className="w-22 shrink-0 truncate text-xs" title={who}>
-                  {who}
+                  {isolate(who)}
                 </span>
                 <span className="text-xs">{t("Outside your workspace: when they are free is not known.")}</span>
               </div>
@@ -561,15 +561,15 @@ function FindTime(p: {
         </div>
       )}
       <div className="grid gap-1.5">
-        <h3 className="font-medium">{t("Times that suit")} {p.insiders.length > 1 ? "everyone" : "you"}</h3>
+        <h3 className="font-medium">{t("Times that suit")} {p.insiders.length > 1 ? t("everyone") : t("you")}</h3>
         {p.suggestions.length === 0 && !p.loading ? (
-          <p className="text-muted-foreground">{t("No time in the next week (working days, 9 to 6) suits")} {p.insiders.length > 1 ? "everyone" : "you"} {t("for this long. Try a shorter event.")}</p>
+          <p className="text-muted-foreground">{t("No time in the next week (working days, 9 to 6) suits")} {p.insiders.length > 1 ? t("everyone") : t("you")} {t("for this long. Try a shorter event.")}</p>
         ) : (
           <ul className="flex flex-wrap gap-1.5" aria-label={t("Suggested times")}>
             {p.suggestions.map((s) => (
               <li key={s.getTime()}>
                 <Button type="button" size="sm" variant={p.when && s.getTime() === p.when.starts.getTime() ? "secondary" : "outline"} onClick={() => p.onPick(s)}>
-                  {s.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })}, {s.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                  {isolate(s.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" }))}, {isolate(s.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }))}
                 </Button>
               </li>
             ))}

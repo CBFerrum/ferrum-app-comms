@@ -9,7 +9,7 @@ import { useState } from "react";
 import { Link } from "react-router";
 import { Button, Skeleton } from "@ferrum/kit/primitives";
 import { cn, EmptyState, ErrorState, toast, useShellTitle } from "@ferrum/kit";
-import { ApiError, api, formatDateTime, relativeTime, saveBlob, t } from "@ferrum/client";
+import { ApiError, api, formatDateTime, relativeTime, saveBlob, t, isolate } from "@ferrum/client";
 import { DOMAIN, STATUS, headline, shown, zoneName, type Check, type Health } from "./lib/domain";
 
 const copy = async (text: string) => {
@@ -29,7 +29,7 @@ const TONE: Record<Check["status"], string> = {
 };
 
 export function DomainPage() {
-  useShellTitle("Mail domain");
+  useShellTitle(t("Mail domain"));
   const [only, setOnly] = useState(false);
   const q = useQuery({ queryKey: ["mail", "domain"], queryFn: ({ signal }) => api.get<Health>(DOMAIN, undefined, signal), staleTime: 0, gcTime: 0 });
   const h = q.data;
@@ -75,31 +75,31 @@ function Report({ h, only, setOnly, fetching, again }: { h: Health; only: boolea
   return (
     <>
       <header className="grid gap-1">
-        <h1 className="text-xl font-semibold">{h.domain}</h1>
+        <h1 className="text-xl font-semibold">{isolate(h.domain ?? "")}</h1>
         <p className="text-sm text-muted-foreground">
           {h.hosted ? (
             <>
-              {h.mailboxes ?? 0} {h.mailboxes === 1 ? "mailbox" : "mailboxes"} and {h.shared ?? 0} shared {h.shared === 1 ? "mailbox" : "mailboxes"}
-              {h.synced_at ? `, last brought in step with your people ${relativeTime(h.synced_at)}` : ", not brought in step with your people yet"}.
+              {h.mailboxes ?? 0} {h.mailboxes === 1 ? t("mailbox") : t("mailboxes")} {t("and")} {h.shared ?? 0} {t("shared")} {h.shared === 1 ? t("mailbox") : t("mailboxes")}
+              {h.synced_at ? t(", last brought in step with your people {value}", { value: relativeTime(h.synced_at) }) : t(", not brought in step with your people yet")}.
             </>
           ) : (
-            "Hosted mail is not set up on this server."
+            t("Hosted mail is not set up on this server.")
           )}
         </p>
         <p className="text-base" aria-live="polite">
-          {headline(h)}
+          {isolate(headline(h))}
         </p>
       </header>
       {h.note && (
         <p role="note" className="rounded-md border bg-muted px-3 py-2 text-sm">
-          {h.note}
+          {isolate(h.note)}
         </p>
       )}
       <div className="flex flex-wrap items-center gap-2">
         <Button onClick={again} disabled={fetching}>
-          <RefreshCw className={cn(fetching && "motion-safe:animate-spin")} aria-hidden="true" /> {fetching ? "Checking…" : "Check again"}
+          <RefreshCw className={cn(fetching && "motion-safe:animate-spin")} aria-hidden="true" /> {fetching ? t("Checking…") : t("Check again")}
         </Button>
-        {h.checked_at && <span className="text-xs text-muted-foreground">{t("Last checked")} {formatDateTime(h.checked_at)}{t(". DNS changes can take a few hours to show.")}</span>}
+        {h.checked_at && <span className="text-xs text-muted-foreground">{t("Last checked")} {isolate(formatDateTime(h.checked_at))}{t(". DNS changes can take a few hours to show.")}</span>}
         <span className="flex-1" />
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={only} onChange={(e) => setOnly(e.target.checked)} /> {t("Only what is not right")}
@@ -126,7 +126,7 @@ function Report({ h, only, setOnly, fetching, again }: { h: Health; only: boolea
           <ul className="grid gap-2">
             {h.manual!.map((m) => (
               <li key={m.id} className="rounded-md border p-3 text-sm">
-                <strong className="font-medium">{m.title}.</strong> {m.how}
+                <strong className="font-medium">{isolate(m.title)}.</strong> {isolate(m.how)}
               </li>
             ))}
           </ul>
@@ -140,20 +140,20 @@ function CheckCard({ c }: { c: Check }) {
   return (
     <li className="grid gap-2 rounded-lg border bg-card p-3 text-sm">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <h2 className="min-w-0 flex-1 font-medium">{c.title}</h2>
-        <span className={cn("font-medium", TONE[c.status])}>{STATUS[c.status]}</span>
-        {c.importance !== "optional" && <span className="text-xs text-muted-foreground">{c.importance === "required" ? "Mail needs this" : "Recommended"}</span>}
+        <h2 className="min-w-0 flex-1 font-medium">{isolate(c.title)}</h2>
+        <span className={cn("font-medium", TONE[c.status])}>{isolate(STATUS[c.status])}</span>
+        {c.importance !== "optional" && <span className="text-xs text-muted-foreground">{c.importance === "required" ? t("Mail needs this") : t("Recommended")}</span>}
       </div>
-      <p className="text-muted-foreground">{c.why}</p>
+      <p className="text-muted-foreground">{isolate(c.why)}</p>
       <dl className="grid gap-x-4 gap-y-1 sm:grid-cols-[6rem_minmax(0,1fr)]">
         <dt className="text-muted-foreground">{t("Record")}</dt>
         <dd className="break-all">
-          {c.kind} at <code className="font-mono text-xs">{c.name}</code>
+          {t("{kind} at", { kind: c.kind })} <code className="font-mono text-xs">{isolate(c.name)}</code>
         </dd>
         <dt className="text-muted-foreground">{t("Publish")}</dt>
         <dd className="flex items-start gap-2">
-          <code className="min-w-0 flex-1 font-mono text-xs break-all">{c.expected}</code>
-          <Button variant="ghost" size="icon-xs" aria-label={`Copy the ${c.kind} value for ${c.name}`} onClick={() => void copy(c.expected)}>
+          <code className="min-w-0 flex-1 font-mono text-xs break-all">{isolate(c.expected)}</code>
+          <Button variant="ghost" size="icon-xs" aria-label={t("Copy the {kind} value for {name}", { kind: c.kind, name: c.name })} onClick={() => void copy(c.expected)}>
             <Copy />
           </Button>
         </dd>
@@ -163,17 +163,17 @@ function CheckCard({ c }: { c: Check }) {
             <ul className="grid gap-1">
               {c.found.map((f, i) => (
                 <li key={i}>
-                  <code className="font-mono text-xs break-all">{f}</code>
+                  <code className="font-mono text-xs break-all">{isolate(f)}</code>
                 </li>
               ))}
             </ul>
           ) : (
-            <span className="text-muted-foreground">{c.status === "unknown" ? "Could not be looked up." : "Nothing is published."}</span>
+            <span className="text-muted-foreground">{c.status === "unknown" ? t("Could not be looked up.") : t("Nothing is published.")}</span>
           )}
         </dd>
       </dl>
-      {c.note && <p>{c.note}</p>}
-      {c.fix && <p className="rounded-md bg-muted px-3 py-2">{c.fix}</p>}
+      {c.note && <p>{isolate(c.note)}</p>}
+      {c.fix && <p className="rounded-md bg-muted px-3 py-2">{isolate(c.fix)}</p>}
     </li>
   );
 }

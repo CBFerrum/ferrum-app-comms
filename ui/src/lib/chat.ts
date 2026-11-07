@@ -1,3 +1,4 @@
+import { t } from "@ferrum/client";
 // Team chat (the Mail app's `/api/app/comms/chat`): shapes and the pure parts of the chat screen.
 
 export const CHAT = "/api/app/comms/chat";
@@ -145,9 +146,9 @@ export function loudness(c: Pick<ChannelSummary, "type" | "notify_level">): Loud
 }
 
 export const LOUDNESS: { value: Loud; label: string; hint: string }[] = [
-  { value: "All", label: "Every message", hint: "You are told of each new message." },
-  { value: "Mentions", label: "Mentions and replies", hint: "You are told when someone mentions you or answers in a thread you are in." },
-  { value: "Nothing", label: "Nothing, mute it", hint: "No notifications and no unread count. A mention still marks the channel." },
+  { value: "All", get label() { return t("Every message"); }, get hint() { return t("You are told of each new message."); } },
+  { value: "Mentions", get label() { return t("Mentions and replies"); }, get hint() { return t("You are told when someone mentions you or answers in a thread you are in."); } },
+  { value: "Nothing", get label() { return t("Nothing, mute it"); }, get hint() { return t("No notifications and no unread count. A mention still marks the channel."); } },
 ];
 
 /** The count and mention marker a channel row shows: a muted channel counts nothing, but a

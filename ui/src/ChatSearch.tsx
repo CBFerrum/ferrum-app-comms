@@ -7,7 +7,7 @@ import { useState, type FormEvent } from "react";
 import { Link } from "react-router";
 import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Input, Skeleton } from "@ferrum/kit/primitives";
 import { ErrorState, useDebounced } from "@ferrum/kit";
-import { api, relativeTime, t } from "@ferrum/client";
+import { api, relativeTime, t, isolate } from "@ferrum/client";
 import { usePeople } from "@ferrum/records";
 import { CHAT, showMentions, snippet, type Message } from "./lib/chat";
 
@@ -18,12 +18,12 @@ function Hit({ m, term, people }: { m: Message; term: string; people: Parameters
   const s = snippet(showMentions(m.body, people), term);
   return (
     <>
-      <span className="font-medium">{m.sender_name || m.sender}</span> <span className="text-xs text-muted-foreground">{relativeTime(m.posted_at)}</span>
+      <span className="font-medium">{m.sender_name || m.sender}</span> <span className="text-xs text-muted-foreground">{isolate(relativeTime(m.posted_at))}</span>
       {m.parent && <span className="ms-1 text-xs text-muted-foreground">{t("in a thread")}</span>}
       <span className="mt-0.5 line-clamp-2 block text-muted-foreground">
-        {s.before}
-        {s.hit && <mark className="rounded-sm bg-warning-soft px-0.5 text-foreground">{s.hit}</mark>}
-        {s.after}
+        {isolate(s.before)}
+        {s.hit && <mark className="rounded-sm bg-warning-soft px-0.5 text-foreground">{isolate(s.hit)}</mark>}
+        {isolate(s.after)}
       </span>
     </>
   );
@@ -99,7 +99,7 @@ export function SearchDialog({ base, onClose }: { base: string; onClose: () => v
           <DialogDescription>{t("In your conversations and in public channels.")}</DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="flex gap-2">
-          <Input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder={`At least ${LEAST} letters`} aria-label={t("Search text")} />
+          <Input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("At least {LEAST} letters", { LEAST })} aria-label={t("Search text")} />
           <Button type="submit" disabled={q.trim().length < LEAST}>
             {t("Search")}
           </Button>

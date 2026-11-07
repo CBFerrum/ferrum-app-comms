@@ -10,7 +10,7 @@ import { Keyboard, Mail, Paperclip, Pencil, Search, Settings, Star, Users } from
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { Badge, Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Input, Skeleton } from "@ferrum/kit/primitives";
-import { api, errorMessage, relativeTime, t as tr } from "@ferrum/client";
+import { api, errorMessage, relativeTime, t as tr, isolate } from "@ferrum/client";
 import { cn, confirmDialog, ErrorState, toast, useDebounced } from "@ferrum/kit";
 import { Compose } from "./MailCompose";
 import { asDraft, Conversation } from "./MailReader";
@@ -54,11 +54,11 @@ export function MailUnavailable({ error, onRetry }: { error: unknown; onRetry?: 
       <div className="grid h-[60vh] place-items-center p-6 text-center">
         <div className="grid max-w-md gap-2">
           <Mail className="mx-auto size-8 text-muted-foreground" aria-hidden="true" />
-          <h1 className="text-lg font-semibold">{status === 403 ? "Your mailbox is locked" : "You have no mailbox here"}</h1>
+          <h1 className="text-lg font-semibold">{status === 403 ? tr("Your mailbox is locked") : tr("You have no mailbox here")}</h1>
           <p className="text-sm text-muted-foreground">
             {status === 403
-              ? "An administrator deactivated it or your address left the workspace's mail domain. Your mail is kept."
-              : "Mailboxes come with hosted mail: an administrator sets the workspace's mail domain, and everyone whose address is in it gets one."}
+              ? tr("An administrator deactivated it or your address left the workspace's mail domain. Your mail is kept.")
+              : tr("Mailboxes come with hosted mail: an administrator sets the workspace's mail domain, and everyone whose address is in it gets one.")}
           </p>
         </div>
       </div>
@@ -135,7 +135,7 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
     try {
       setDraft(asDraft(await api.get<Message>(`${MAIL}/message/${account}/${id}`), id));
     } catch (e) {
-      toast(`The draft could not be opened: ${errorMessage(e)}`, "error");
+      toast(tr("The draft could not be opened: {e}", { e: errorMessage(e) }), "error");
     } finally {
       setOpening(null);
     }
@@ -160,7 +160,7 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
                   className={cn("flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-start text-sm hover:bg-accent pointer-coarse:min-h-11", id === account && "bg-accent font-medium")}
                 >
                   {a.isPersonal ? <Mail className="size-4 shrink-0" aria-hidden="true" /> : <Users className="size-4 shrink-0" aria-hidden="true" />}
-                  <span className="min-w-0 flex-1 truncate">{a.name}</span>
+                  <span className="min-w-0 flex-1 truncate">{isolate(a.name)}</span>
                 </button>
               </li>
             ))}
@@ -179,9 +179,9 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
                     b.id === current && "bg-accent font-medium",
                   )}
                 >
-                  <span className="min-w-0 flex-1 truncate">{b.name}</span>
+                  <span className="min-w-0 flex-1 truncate">{isolate(b.name)}</span>
                   {b.unreadEmails > 0 && b.role !== "trash" && b.role !== "sent" && b.role !== "drafts" && (
-                    <Badge className="h-5 min-w-5 justify-center px-1.5" aria-label={`${b.unreadEmails} unread`}>
+                    <Badge className="h-5 min-w-5 justify-center px-1.5" aria-label={tr("{unreadEmails} unread", { unreadEmails: b.unreadEmails })}>
                       {b.unreadEmails > 999 ? "999+" : b.unreadEmails}
                     </Badge>
                   )}
@@ -256,11 +256,11 @@ function Shortcuts({ onClose }: { onClose: () => void }) {
         <dl className="grid grid-cols-[1fr_auto] items-center gap-x-4 gap-y-2 text-sm">
           {SHORTCUTS.map((s) => (
             <div key={s.action} className="contents">
-              <dt>{s.label}</dt>
+              <dt>{isolate(s.label)}</dt>
               <dd className="flex gap-1">
                 {s.keys.map((k) => (
                   <kbd key={k} className="rounded border bg-muted px-1.5 py-0.5 font-mono text-xs">
-                    {k}
+                    {isolate(k)}
                   </kbd>
                 ))}
               </dd>
@@ -358,13 +358,13 @@ function MessageList(p: {
     } else if (k === "search") {
       searchBox.current?.focus();
     } else if (row && !p.active) {
-      if (k === "star") void act(row, { "keywords/$flagged": row.keywords?.$flagged ? null : true }, row.keywords?.$flagged ? "Star removed" : "Starred");
-      else if (k === "unread") void act(row, { "keywords/$seen": null }, "Marked as unread");
-      else if (k === "archive" && role("archive") && p.mailbox?.role !== "archive") void act(row, { mailboxIds: { [role("archive")!.id]: true } }, "Archived");
-      else if (k === "spam" && role("junk")) void act(row, { mailboxIds: { [role("junk")!.id]: true }, "keywords/$junk": true, "keywords/$notjunk": null }, "Moved to Junk");
+      if (k === "star") void act(row, { "keywords/$flagged": row.keywords?.$flagged ? null : true }, row.keywords?.$flagged ? tr("Star removed") : tr("Starred"));
+      else if (k === "unread") void act(row, { "keywords/$seen": null }, tr("Marked as unread"));
+      else if (k === "archive" && role("archive") && p.mailbox?.role !== "archive") void act(row, { mailboxIds: { [role("archive")!.id]: true } }, tr("Archived"));
+      else if (k === "spam" && role("junk")) void act(row, { mailboxIds: { [role("junk")!.id]: true }, "keywords/$junk": true, "keywords/$notjunk": null }, tr("Moved to Junk"));
       else if (k === "delete") {
         if (p.mailbox?.role === "trash") {
-          void confirmDialog({ title: "Delete this conversation for good?", message: "It cannot be recovered.", confirmLabel: "Delete", danger: true }).then(async (ok) => {
+          void confirmDialog({ title: tr("Delete this conversation for good?"), message: tr("It cannot be recovered."), confirmLabel: tr("Delete"), danger: true }).then(async (ok) => {
             if (!ok) return;
             try {
               await jmap([["Email/set", { accountId: p.account, destroy: row.folderIds }, "0"]]);
@@ -374,7 +374,7 @@ function MessageList(p: {
             }
             void refresh();
           });
-        } else if (role("trash")) void act(row, { mailboxIds: { [role("trash")!.id]: true } }, "Moved to Trash");
+        } else if (role("trash")) void act(row, { mailboxIds: { [role("trash")!.id]: true } }, tr("Moved to Trash"));
       }
     }
   };
@@ -404,7 +404,7 @@ function MessageList(p: {
           <select className="h-9 w-full rounded-md border bg-background px-2 text-sm" aria-label={tr("Mailbox")} value={p.account} onChange={(e) => p.onAccount(e.target.value)}>
             {p.accounts.map(([id, a]) => (
               <option key={id} value={id}>
-                {a.isPersonal ? a.name : `${a.name} (shared)`}
+                {a.isPersonal ? a.name : tr("{name} (shared)", { name: a.name })}
               </option>
             ))}
           </select>
@@ -414,14 +414,14 @@ function MessageList(p: {
         <select className="h-9 rounded-md border bg-background px-2 text-sm md:hidden" aria-label={tr("Folder")} value={p.mailboxId} onChange={(e) => p.onFolder(e.target.value)}>
           {p.boxes.map((b) => (
             <option key={b.id} value={b.id}>
-              {b.name}
+              {isolate(b.name)}
               {b.unreadEmails && b.role !== "drafts" ? ` (${b.unreadEmails})` : ""}
             </option>
           ))}
         </select>
         <div className="relative min-w-0 flex-1">
           <Search className="pointer-events-none absolute top-2.5 start-2 size-4 text-muted-foreground" aria-hidden="true" />
-          <Input ref={searchBox} className="ps-8" type="search" placeholder={`Search ${p.mailbox?.name ?? "mail"}`} aria-label={tr("Search mail")} value={typed} onChange={(e) => setTyped(e.target.value)} />
+          <Input ref={searchBox} className="ps-8" type="search" placeholder={tr("Search {value}", { value: p.mailbox?.name ?? "mail" })} aria-label={tr("Search mail")} value={typed} onChange={(e) => setTyped(e.target.value)} />
         </div>
         <Button size="icon-sm" variant="outline" className="md:hidden" aria-label={tr("Write")} onClick={p.onWrite}>
           <Pencil />
@@ -433,7 +433,7 @@ function MessageList(p: {
       {lost.map((k) => (
         <div key={k.key} role="status" className="grid gap-1 border-b bg-warning-soft px-3 py-2 text-sm">
           <span>
-            {tr("You have a message you did not send, from")} {relativeTime(k.savedAt)}: <strong className="font-medium">{k.subject || k.body.trim().slice(0, 40) || "(no subject)"}</strong>
+            {tr("You have a message you did not send, from")} {isolate(relativeTime(k.savedAt))}: <strong className="font-medium">{k.subject || k.body.trim().slice(0, 40) || tr("(no subject)")}</strong>
           </span>
           <span className="flex gap-2">
             <Button
@@ -469,10 +469,10 @@ function MessageList(p: {
           </li>
         )}
         {!list.isLoading && !list.error && !rows.length && (
-          <li className="p-6 text-center text-sm text-muted-foreground">{search ? `Nothing in ${p.mailbox?.name ?? "this folder"} matches “${search}”.` : p.mailbox?.role === "drafts" ? "No drafts. A message you start and leave is kept here." : "No messages here."}</li>
+          <li className="p-6 text-center text-sm text-muted-foreground">{search ? tr("Nothing in {value} matches “{search}”.", { value: p.mailbox?.name ?? "this folder", search }) : p.mailbox?.role === "drafts" ? tr("No drafts. A message you start and leave is kept here.") : tr("No messages here.")}</li>
         )}
         {rows.map((m, i) => {
-          const sender = outgoing ? `To: ${addressList(m.to) || "(no recipients)"}` : addressList(m.from) || "(unknown sender)";
+          const sender = outgoing ? tr("To: {value}", { value: addressList(m.to) || "(no recipients)" }) : addressList(m.from) || tr("(unknown sender)");
           const starred = !!m.keywords?.$flagged;
           return (
             <li key={m.id}>
@@ -494,7 +494,7 @@ function MessageList(p: {
                 <span className="flex items-center gap-2">
                   {m.unread && <span className="size-2 shrink-0 rounded-full bg-primary" role="img" aria-label={tr("Unread")} />}
                   <span className={cn("min-w-0 flex-1 truncate", m.unread && "font-semibold")}>
-                    {sender}
+                    {isolate(sender)}
                     {m.count > 1 && (
                       <span className="ms-1 font-normal text-muted-foreground" title={messagesIn(m.count)}>
                         ({m.count})
@@ -504,11 +504,11 @@ function MessageList(p: {
                   {starred && <Star className="size-3.5 shrink-0 fill-warning text-warning" aria-label={tr("Starred")} />}
                   {m.hasAttachment && <Paperclip className="size-3.5 shrink-0 text-muted-foreground" aria-label={tr("Has attachments")} />}
                   <time className="shrink-0 text-xs text-muted-foreground" dateTime={m.receivedAt}>
-                    {relativeTime(m.receivedAt)}
+                    {isolate(relativeTime(m.receivedAt))}
                   </time>
                 </span>
-                <span className={cn("truncate", m.unread && "font-medium")}>{m.subject || "(no subject)"}</span>
-                <span className="truncate text-xs text-muted-foreground">{m.preview}</span>
+                <span className={cn("truncate", m.unread && "font-medium")}>{m.subject || tr("(no subject)")}</span>
+                <span className="truncate text-xs text-muted-foreground">{isolate(m.preview)}</span>
               </button>
             </li>
           );
@@ -516,7 +516,7 @@ function MessageList(p: {
         {list.hasNextPage && (
           <li className="p-2 text-center">
             <Button variant="ghost" size="sm" disabled={list.isFetchingNextPage} onClick={() => void list.fetchNextPage()}>
-              {list.isFetchingNextPage ? "Loading…" : "Older messages"}
+              {list.isFetchingNextPage ? tr("Loading…") : tr("Older messages")}
             </Button>
           </li>
         )}

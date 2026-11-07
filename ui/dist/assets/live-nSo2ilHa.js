@@ -1,1 +1,0 @@
-import{r as i,o as f}from"./index-CKOzpvLv.js";function o(s,e){i.useEffect(()=>f().live.subscribe(s,u=>{u.entity===s&&typeof u.id=="string"&&e(u)}),[s,e])}function r(s,e){i.useEffect(()=>f().live.subscribe(`push:${s}`,u=>{const t=u.push;t?.kind===s&&e(t.data??{})},{resync:()=>e(null)}),[s,e])}export{r as a,o as u};

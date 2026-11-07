@@ -8,7 +8,7 @@ import { Archive, ArrowLeft, ChevronDown, ChevronRight, Forward, FolderInput, Ma
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Label, Skeleton } from "@ferrum/kit/primitives";
 import { can, LinkInput, useMetaIndex } from "@ferrum/records";
-import { api, download, errorMessage, formatDateTime, relativeTime, t as tr } from "@ferrum/client";
+import { api, download, errorMessage, formatDateTime, relativeTime, t as tr, isolate } from "@ferrum/client";
 import { cn, confirmDialog, ErrorState, toast } from "@ferrum/kit";
 import {
   MAIL,
@@ -113,7 +113,7 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
   };
   const remove = async () => {
     if (p.folder !== role("trash")?.id) return move(role("trash"), "Moved to Trash");
-    if (!(await confirmDialog({ title: "Delete this conversation for good?", message: "It cannot be recovered.", confirmLabel: "Delete", danger: true }))) return;
+    if (!(await confirmDialog({ title: tr("Delete this conversation for good?"), message: tr("It cannot be recovered."), confirmLabel: tr("Delete"), danger: true }))) return;
     try {
       await jmap([["Email/set", { accountId: p.account, destroy: ids }, "0"]]);
       toast(tr("Deleted"));
@@ -160,7 +160,7 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
   const single = messages.length === 1;
   const draftOpen = !!role("drafts") && !!newest.mailboxIds[role("drafts")!.id];
   return (
-    <article className="grid h-full min-h-0 grid-rows-[auto_auto_minmax(0,1fr)]" aria-label={subject ?? "Conversation"}>
+    <article className="grid h-full min-h-0 grid-rows-[auto_auto_minmax(0,1fr)]" aria-label={subject ?? tr("Conversation")}>
       <header className="flex flex-wrap items-center gap-1 border-b px-2 py-1.5">
         <Button variant="ghost" size="icon-sm" className="md:hidden" aria-label={tr("Back to messages")} onClick={p.onBack}>
           <ArrowLeft />
@@ -175,7 +175,7 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
           <Forward aria-hidden="true" /> {tr("Forward")}
         </Button>
         <span className="flex-1" />
-        <Button variant="ghost" size="icon-sm" aria-label={starred ? "Remove the star" : "Star"} aria-pressed={starred} title={tr("Star (s)")} onClick={star}>
+        <Button variant="ghost" size="icon-sm" aria-label={starred ? tr("Remove the star") : tr("Star")} aria-pressed={starred} title={tr("Star (s)")} onClick={star}>
           <Star className={cn(starred && "fill-warning text-warning")} />
         </Button>
         {role("archive") && !inBox("archive") && (
@@ -200,13 +200,13 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
             <FolderInput />
           </Button>
         )}
-        <Button variant="ghost" size="icon-sm" aria-label={p.folder === role("trash")?.id ? "Delete for good" : "Delete"} title={tr("Delete (#)")} onClick={() => void remove()}>
+        <Button variant="ghost" size="icon-sm" aria-label={p.folder === role("trash")?.id ? tr("Delete for good") : tr("Delete")} title={tr("Delete (#)")} onClick={() => void remove()}>
           <Trash2 />
         </Button>
       </header>
       <div className="border-b px-4 py-2">
-        <h2 className="text-lg font-semibold break-words">{subject || "(no subject)"}</h2>
-        {!single && <p className="text-xs text-muted-foreground">{messagesIn(messages.length)} {tr("in this conversation")}</p>}
+        <h2 className="text-lg font-semibold break-words">{subject || tr("(no subject)")}</h2>
+        {!single && <p className="text-xs text-muted-foreground">{isolate(messagesIn(messages.length))} {tr("in this conversation")}</p>}
         {draftOpen && latest.data && (
           <Button size="sm" variant="outline" className="mt-1" onClick={() => p.onDraft(asDraft(latest.data!, newest.id))}>
             {tr("Continue writing this draft")}
@@ -248,17 +248,17 @@ function Card({ account, summary, open, fill, onToggle, me, onDraft }: { account
   const from = addressLabel(summary.from?.[0]);
   const mine = !!summary.from?.some((a) => a.email.toLowerCase() === me.toLowerCase());
   return (
-    <section className={cn(fill ? "grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)]" : "border-b")} aria-label={`${mine ? "You" : from} on ${formatDateTime(summary.receivedAt)}`}>
+    <section className={cn(fill ? "grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)]" : "border-b")} aria-label={tr("{value} on {value2}", { value: mine ? "You" : from, value2: formatDateTime(summary.receivedAt) })}>
       <div>
         <button type="button" onClick={onToggle} aria-expanded={open} className="flex w-full items-center gap-2 px-4 py-2 text-start hover:bg-accent/50 pointer-coarse:min-h-11">
           {open ? <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" /> : <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />}
           {unread && <span className="size-2 shrink-0 rounded-full bg-primary" role="img" aria-label={tr("Unread")} />}
-          <span className={cn("shrink-0 text-sm", unread ? "font-semibold" : "font-medium")}>{mine ? "You" : from || "(unknown sender)"}</span>
-          {!open && <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">{summary.preview}</span>}
+          <span className={cn("shrink-0 text-sm", unread ? "font-semibold" : "font-medium")}>{mine ? tr("You") : from || tr("(unknown sender)")}</span>
+          {!open && <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">{isolate(summary.preview)}</span>}
           {open && <span className="flex-1" />}
           {summary.hasAttachment && <Paperclip className="size-3.5 shrink-0 text-muted-foreground" aria-label={tr("Has attachments")} />}
           <time className="shrink-0 text-xs text-muted-foreground" dateTime={summary.receivedAt} title={formatDateTime(summary.receivedAt)}>
-            {relativeTime(summary.receivedAt)}
+            {isolate(relativeTime(summary.receivedAt))}
           </time>
         </button>
         {open && (
@@ -266,10 +266,10 @@ function Card({ account, summary, open, fill, onToggle, me, onDraft }: { account
             {m ? (
               <>
                 <p className="text-sm">
-                  {m.from?.[0]?.name && <span className="text-muted-foreground">&lt;{m.from[0].email}&gt; </span>}
+                  {m.from?.[0]?.name && <span className="text-muted-foreground">&lt;{isolate(m.from[0].email)}&gt; </span>}
                   <span className="text-xs text-muted-foreground">
                     {tr("To")} {addressList(m.to) || "—"}
-                    {m.cc?.length ? ` · Cc ${addressList(m.cc)}` : ""} · {formatDateTime(m.receivedAt)}
+                    {m.cc?.length ? tr(" · Cc {value}", { value: addressList(m.cc) }) : ""} · {isolate(formatDateTime(m.receivedAt))}
                   </span>
                 </p>
                 <div className="flex flex-wrap gap-1">
@@ -285,7 +285,7 @@ function Card({ account, summary, open, fill, onToggle, me, onDraft }: { account
                 </div>
                 {m.remote_images > 0 && !images && (
                   <p className="flex items-center gap-2 text-xs text-muted-foreground">
-                    {m.remote_images === 1 ? "1 remote image is hidden" : `${m.remote_images} remote images are hidden`} {tr("to protect your privacy.")}
+                    {m.remote_images === 1 ? tr("1 remote image is hidden") : tr("{remote_images} remote images are hidden", { remote_images: m.remote_images })} {tr("to protect your privacy.")}
                     <Button variant="link" size="xs" className="h-auto p-0" onClick={() => setImages(true)}>
                       {tr("Show images")}
                     </Button>
@@ -304,7 +304,7 @@ function Card({ account, summary, open, fill, onToggle, me, onDraft }: { account
                             )
                           }
                         >
-                          <Paperclip aria-hidden="true" /> {a.name ?? "attachment"} <span className="text-muted-foreground">{sizeLabel(a.size)}</span>
+                          <Paperclip aria-hidden="true" /> {a.name ?? tr("attachment")} <span className="text-muted-foreground">{isolate(sizeLabel(a.size))}</span>
                         </Button>
                       </li>
                     ))}
@@ -313,7 +313,7 @@ function Card({ account, summary, open, fill, onToggle, me, onDraft }: { account
               </>
             ) : msg.error ? (
               <p role="alert" className="text-sm text-destructive">
-                {tr("This message could not be loaded:")} {errorMessage(msg.error)}{" "}
+                {tr("This message could not be loaded:")} {isolate(errorMessage(msg.error))}{isolate(" ")}
                 <Button variant="link" size="xs" className="h-auto p-0" onClick={() => void msg.refetch()}>
                   {tr("Try again")}
                 </Button>
@@ -327,7 +327,7 @@ function Card({ account, summary, open, fill, onToggle, me, onDraft }: { account
       {open &&
         (m ? (
           <iframe
-            title={`Message from ${from}`}
+            title={tr("Message from {from}", { from })}
             sandbox="allow-popups allow-popups-to-escape-sandbox"
             referrerPolicy="no-referrer"
             className={cn("w-full border-0 bg-white", fill ? "h-full" : "h-[26rem] max-h-[70dvh]")}
@@ -368,7 +368,7 @@ export function FileDialog({ account, email, onClose }: { account: string; email
           <DialogHeader>
             <DialogTitle>{tr("File to a record")}</DialogTitle>
             <DialogDescription>
-              "{email.subject || "(no subject)"}{tr("\" goes onto the record's timeline with its attachments, for everyone who can see the record.")}
+              "{email.subject || tr("(no subject)")}{tr("\" goes onto the record's timeline with its attachments, for everyone who can see the record.")}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-1.5">
@@ -385,7 +385,7 @@ export function FileDialog({ account, email, onClose }: { account: string; email
               <option value="">{tr("Choose…")}</option>
               {entities.map((e) => (
                 <option key={e.name} value={e.name}>
-                  {e.label}
+                  {isolate(e.label)}
                 </option>
               ))}
             </select>

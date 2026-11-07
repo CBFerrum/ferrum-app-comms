@@ -8,7 +8,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useId, useState } from "react";
 import { Route, Routes } from "react-router";
-import { api, docPath, errorMessage, shell, type IntentRequest, t } from "@ferrum/client";
+import { api, docPath, errorMessage, shell, type IntentRequest, t, isolate } from "@ferrum/client";
 import { EmptyState, Spinner, toast } from "@ferrum/kit";
 import { Button, Input, Label, Textarea } from "@ferrum/kit/primitives";
 import { useMe, usePeople } from "@ferrum/records";
@@ -40,7 +40,7 @@ export function ComposeIntentPage() {
   const session = useMailSession(!!req);
   const account = mailAccount(session.data);
   const boxes = useMailboxes(account);
-  if (error) return <EmptyState title={t("Nothing to write")}>{error}</EmptyState>;
+  if (error) return <EmptyState title={t("Nothing to write")}>{isolate(error)}</EmptyState>;
   if (session.error) return <MailUnavailable error={session.error} />;
   if (!req || !session.data || !account || !boxes.data) return <Spinner label={t("Opening Mail")} />;
   const d = (req.data ?? {}) as Record<string, unknown>;
@@ -106,7 +106,7 @@ export function ScheduleIntentPage() {
     enabled: !!me && guests.length > 0 && !!day,
     staleTime: 60_000,
   });
-  if (error) return <EmptyState title={t("Nothing to schedule")}>{error}</EmptyState>;
+  if (error) return <EmptyState title={t("Nothing to schedule")}>{isolate(error)}</EmptyState>;
   if (!req || !form) return <Spinner label={t("Opening Calendar")} />;
   const set = (patch: Partial<typeof form>) => setForm({ ...form, ...patch });
   const names = (list: string[]) => list.map((e) => (e === me ? "You" : people.find((p) => p.email.toLowerCase() === e)?.full_name || e));
@@ -164,14 +164,14 @@ export function ScheduleIntentPage() {
       {clash.length > 0 && span?.starts && span.ends && (
         <div role="status" className="grid gap-1.5 rounded-md border border-warning bg-warning-soft px-3 py-2 text-sm">
           <span>
-            {names(clash).join(" and ")} {clash.length === 1 ? "is" : "are"} {t("busy (")}{clash.map((c) => (free.data?.[c] ?? []).filter((b) => Date.parse(b.start) < span.ends!.getTime() && Date.parse(b.end) > span.starts!.getTime()).map(stretch).join(", ")).join("; ")}{t(") then.")}
+            {isolate(names(clash).join(" and "))} {clash.length === 1 ? t("is") : t("are")} {t("busy (")}{isolate(clash.map((c) => (free.data?.[c] ?? []).filter((b) => Date.parse(b.start) < span.ends!.getTime() && Date.parse(b.end) > span.starts!.getTime()).map(stretch).join(", ")).join("; "))}{t(") then.")}
           </span>
           {better.length > 0 && (
             <span className="flex flex-wrap items-center gap-1.5">
               {t("Everyone is free:")}
               {better.map((b) => (
                 <Button key={b.getTime()} type="button" size="xs" variant="outline" onClick={() => set({ starts: toInput(b), ends: toInput(new Date(b.getTime() + minutes * 60_000)) })}>
-                  {b.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })}, {b.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                  {isolate(b.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" }))}, {isolate(b.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }))}
                 </Button>
               ))}
             </span>
@@ -202,7 +202,7 @@ export function ScheduleIntentPage() {
           {t("Cancel")}
         </Button>
         <Button type="submit" disabled={busy}>
-          {busy ? "Scheduling…" : "Schedule"}
+          {busy ? t("Scheduling…") : t("Schedule")}
         </Button>
       </div>
     </form>
@@ -221,10 +221,10 @@ export function ShareIntentPage() {
     queryFn: ({ signal }) => api.get<{ channels: ChannelSummary[] }>(`${CHAT}/channels`, undefined, signal).then((r) => r.channels.filter((c) => !c.archived)),
     enabled: !!req,
   });
-  if (error) return <EmptyState title={t("Nothing to share")}>{error}</EmptyState>;
+  if (error) return <EmptyState title={t("Nothing to share")}>{isolate(error)}</EmptyState>;
   const d = (req?.data ?? {}) as { entity?: unknown; id?: unknown; title?: unknown };
   if (req && (typeof d.entity !== "string" || typeof d.id !== "string")) return <EmptyState title={t("Nothing to share")}>{t("The app did not say which record.")}</EmptyState>;
-  if (!req || !channels.data) return channels.error ? <EmptyState title={t("Chat is not available")}>{errorMessage(channels.error)}</EmptyState> : <Spinner label={t("Opening Chat")} />;
+  if (!req || !channels.data) return channels.error ? <EmptyState title={t("Chat is not available")}>{isolate(errorMessage(channels.error))}</EmptyState> : <Spinner label={t("Opening Chat")} />;
   const title = (typeof d.title === "string" && d.title.trim()) || `${d.entity} ${d.id}`;
   const link = `/open/${encodeURIComponent(d.entity as string)}/${encodeURIComponent(d.id as string)}`;
   const share = async (e: FormEvent) => {
@@ -265,7 +265,7 @@ export function ShareIntentPage() {
           {t("Cancel")}
         </Button>
         <Button type="submit" disabled={busy || !channel}>
-          {busy ? "Sharing…" : "Share"}
+          {busy ? t("Sharing…") : t("Share")}
         </Button>
       </div>
     </form>

@@ -1,3 +1,4 @@
+import { t as tr } from "@ferrum/client";
 // The calendar screen's pure parts, on the Mail app's `/api/app/comms/calendar`: the month grid
 // and which occurrences (recurrences already expanded by the server) fall on which day.
 
@@ -272,12 +273,12 @@ export function nextHour(now = new Date()): Date {
 export type Repeat = "none" | "daily" | "weekdays" | "weekly" | "monthly" | "yearly" | "custom";
 
 export const REPEATS: { value: Exclude<Repeat, "custom">; label: string }[] = [
-  { value: "none", label: "Does not repeat" },
-  { value: "daily", label: "Every day" },
-  { value: "weekdays", label: "Every weekday" },
-  { value: "weekly", label: "Every week" },
-  { value: "monthly", label: "Every month" },
-  { value: "yearly", label: "Every year" },
+  { value: "none", get label() { return tr("Does not repeat"); } },
+  { value: "daily", get label() { return tr("Every day"); } },
+  { value: "weekdays", get label() { return tr("Every weekday"); } },
+  { value: "weekly", get label() { return tr("Every week"); } },
+  { value: "monthly", get label() { return tr("Every month"); } },
+  { value: "yearly", get label() { return tr("Every year"); } },
 ];
 
 const RULES: Record<Exclude<Repeat, "none" | "custom">, string> = {
@@ -307,13 +308,13 @@ export function ruleFor(kind: Exclude<Repeat, "custom">, until: string): string 
 
 /** Reminders the editor offers, minutes before. */
 export const REMINDERS: { minutes: number; label: string }[] = [
-  { minutes: 0, label: "When it starts" },
-  { minutes: 5, label: "5 minutes before" },
-  { minutes: 10, label: "10 minutes before" },
-  { minutes: 15, label: "15 minutes before" },
-  { minutes: 30, label: "30 minutes before" },
-  { minutes: 60, label: "1 hour before" },
-  { minutes: 1440, label: "1 day before" },
+  { minutes: 0, get label() { return tr("When it starts"); } },
+  { minutes: 5, get label() { return tr("5 minutes before"); } },
+  { minutes: 10, get label() { return tr("10 minutes before"); } },
+  { minutes: 15, get label() { return tr("15 minutes before"); } },
+  { minutes: 30, get label() { return tr("30 minutes before"); } },
+  { minutes: 60, get label() { return tr("1 hour before"); } },
+  { minutes: 1440, get label() { return tr("1 day before"); } },
 ];
 
 /** The one reminder the editor shows for a list of them: none, one of the offered, or "custom" (kept). */
