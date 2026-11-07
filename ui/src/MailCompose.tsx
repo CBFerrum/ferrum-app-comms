@@ -9,7 +9,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEven
 import { Badge, Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Input, Label, Textarea } from "@ferrum/kit/primitives";
 import { Alert, cn, toast, useCanIntent } from "@ferrum/kit";
 import { errorMessage, fetchBlob, newKey, request, shell } from "@ferrum/client";
-import { formatDateTime, t } from "@ferrum/client";
+import { formatDateTime, t, isolate } from "@ferrum/client";
 import { usePeople } from "@ferrum/records";
 import {
   MAIL,
@@ -211,7 +211,7 @@ export function Compose({
   const fromDrive = useCanIntent("pick", "file");
   const pickFromDrive = async () => {
     const out = await shell()
-      .intent<{ files: { url: string; name: string }[] }>({ action: "pick", type: "file", data: { multiple: true, title: "Attach files from Drive" } })
+      .intent<{ files: { url: string; name: string }[] }>({ action: "pick", type: "file", data: { multiple: true, title: t("Attach files from Drive") } })
       .catch((e: unknown) => (toast(errorMessage(e), "error"), null));
     if (out?.status === "done" && out.result?.files?.length) await attachFrom(out.result.files);
   };
@@ -244,7 +244,7 @@ export function Compose({
         await jmap([["Email/set", { accountId: account, destroy: [draftId.current] }, "0"]]);
         void refresh();
       } catch (e) {
-        toast(`The draft in Drafts could not be deleted: ${errorMessage(e)}`, "error");
+        toast(t("The draft in Drafts could not be deleted: {e}", { e: errorMessage(e) }), "error");
       }
     }
     dropDraft(account, key);
@@ -311,12 +311,12 @@ export function Compose({
     }
   };
 
-  const title = { new: "New message", reply: "Reply", replyAll: "Reply to all", forward: "Forward" }[draft.kind];
+  const title = { new: t("New message"), reply: t("Reply"), replyAll: t("Reply to all"), forward: t("Forward") }[draft.kind];
   const status_ =
     status.state === "saving"
-      ? "Saving the draft…"
+      ? t("Saving the draft…")
       : status.state === "saved"
-        ? `Draft saved ${status.at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+        ? t("Draft saved {value}", { value: status.at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) })
         : status.state === "failed"
           ? null
           : "";
@@ -332,14 +332,14 @@ export function Compose({
       >
         <form onSubmit={send} className="grid gap-3">
           <DialogHeader>
-            <DialogTitle>{title}</DialogTitle>
+            <DialogTitle>{isolate(title)}</DialogTitle>
             <DialogDescription>
-              {(identities.data?.length ?? 0) > 1 ? "Choose who it is from." : `From ${identity ? (identity.name ? `${identity.name} <${identity.email}>` : identity.email) : me}`}
+              {(identities.data?.length ?? 0) > 1 ? t("Choose who it is from.") : t("From {value}", { value: identity ? (identity.name ? `${identity.name} <${identity.email}>` : identity.email) : me })}
             </DialogDescription>
           </DialogHeader>
           {problem && (
             <Alert tone="error">
-              <span>{problem}</span>
+              <span>{isolate(problem)}</span>
             </Alert>
           )}
           <fieldset disabled={busy} className="contents">
@@ -437,7 +437,7 @@ export function Compose({
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button type="button" variant="outline" size="sm" disabled={uploading} onClick={() => picker.current?.click()}>
-              <Paperclip aria-hidden="true" /> {uploading ? "Uploading…" : "Attach"}
+              <Paperclip aria-hidden="true" /> {uploading ? t("Uploading…") : t("Attach")}
             </Button>
             <input ref={picker} type="file" multiple hidden onChange={(e) => void attach(e.target.files)} />
             {fromDrive && (
@@ -447,8 +447,8 @@ export function Compose({
             )}
             {files.map((f) => (
               <Badge key={f.blobId} variant="secondary" className="gap-1">
-                {f.name} <span className="text-muted-foreground">{sizeLabel(f.size)}</span>
-                <button type="button" aria-label={`Remove ${f.name}`} onClick={() => setFiles((x) => x.filter((y) => y.blobId !== f.blobId))}>
+                {isolate(f.name)} <span className="text-muted-foreground">{isolate(sizeLabel(f.size))}</span>
+                <button type="button" aria-label={t("Remove {name}", { name: f.name })} onClick={() => setFiles((x) => x.filter((y) => y.blobId !== f.blobId))}>
                   <X className="size-3" />
                 </button>
               </Badge>
@@ -457,7 +457,7 @@ export function Compose({
           </fieldset>
           <DialogFooter className="items-center sm:justify-between">
             <span className="text-xs text-muted-foreground sm:me-auto" role="status" aria-live="polite">
-              {status_}
+              {isolate(status_ ?? "")}
             </span>
             <Button type="button" variant="outline" onClick={() => void discard()} disabled={busy}>
               {t("Discard")}
@@ -466,7 +466,7 @@ export function Compose({
               {t("Save and close")}
             </Button>
             <Button type="submit" disabled={busy || uploading}>
-              <Send aria-hidden="true" /> {busy ? "Sending…" : "Send"}
+              <Send aria-hidden="true" /> {busy ? t("Sending…") : t("Send")}
             </Button>
           </DialogFooter>
         </form>
@@ -527,7 +527,7 @@ function RecipientField({
   };
   return (
     <div className="relative grid gap-1.5">
-      <Label htmlFor={id}>{label}</Label>
+      <Label htmlFor={id}>{isolate(label)}</Label>
       <Input
         ref={input}
         id={id}
@@ -552,7 +552,7 @@ function RecipientField({
         aria-describedby={left && bad.length ? `${id}-bad` : undefined}
       />
       {choices.length > 0 && (
-        <ul id={`${id}-list`} role="listbox" aria-label={`People for ${label}`} className="absolute top-full end-0 start-0 z-20 mt-1 max-h-48 overflow-y-auto rounded-md border bg-popover p-1 shadow-md">
+        <ul id={`${id}-list`} role="listbox" aria-label={t("People for {label}", { label })} className="absolute top-full end-0 start-0 z-20 mt-1 max-h-48 overflow-y-auto rounded-md border bg-popover p-1 shadow-md">
           {choices.map((p, i) => (
             <li key={p.id} role="option" aria-selected={i === active}>
               <button
@@ -563,7 +563,7 @@ function RecipientField({
                 className={cn("flex w-full items-baseline gap-2 rounded px-2 py-1.5 text-start text-sm pointer-coarse:min-h-11", i === active ? "bg-accent" : "hover:bg-accent")}
               >
                 <span className="font-medium">{p.full_name || p.email}</span>
-                <span className="truncate text-xs text-muted-foreground">{p.email}</span>
+                <span className="truncate text-xs text-muted-foreground">{isolate(p.email)}</span>
               </button>
             </li>
           ))}
@@ -571,7 +571,7 @@ function RecipientField({
       )}
       {left && bad.length > 0 && (
         <p id={`${id}-bad`} className="text-xs text-destructive">
-          {bad.length === 1 ? "This is not an email address" : "These are not email addresses"}: {bad.join(", ")}
+          {bad.length === 1 ? t("This is not an email address") : t("These are not email addresses")}: {isolate(bad.join(", "))}
         </p>
       )}
     </div>

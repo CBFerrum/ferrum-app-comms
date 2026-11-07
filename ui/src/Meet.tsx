@@ -31,7 +31,7 @@ import { Button } from "@ferrum/kit/primitives";
 import { Input } from "@ferrum/kit/primitives";
 import { Label } from "@ferrum/kit/primitives";
 import { Skeleton } from "@ferrum/kit/primitives";
-import { ApiError, api, errorMessage, shell, t as tr } from "@ferrum/client";
+import { ApiError, api, errorMessage, shell, t as tr, isolate } from "@ferrum/client";
 import { CHAT } from "./lib/chat";
 import { MEET, mediaProblem, meetLink, notSetUp, useMeetAvailable, useMeetRecordings, type MeetKind, type MeetPass } from "./lib/meet";
 import { CallTools } from "./CallTools";
@@ -47,9 +47,9 @@ const home = (kind: MeetKind, id: string) => (kind === "channel" ? `/chat/${id}`
 const copy = async (link: string, what: string) => {
   try {
     await navigator.clipboard.writeText(link);
-    toast(`${what} copied`);
+    toast(tr("{what} copied", { what }));
   } catch {
-    toast(`Copy this link: ${link}`);
+    toast(tr("Copy this link: {link}", { link }));
   }
 };
 
@@ -100,7 +100,7 @@ export function MeetPage() {
     <div data-fullbleed className="grid h-[calc(100dvh-var(--ferrum-bar-height,48px))] min-h-0 grid-rows-[auto_minmax(0,1fr)]">
       <header className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
         <Video className="size-4 text-muted-foreground" aria-hidden="true" />
-        <h1 className="min-w-0 flex-1 truncate font-semibold">{pass.data?.title ?? "Meeting"}</h1>
+        <h1 className="min-w-0 flex-1 truncate font-semibold">{pass.data?.title ?? tr("Meeting")}</h1>
         <span ref={setTools} className="contents" />
         {meetKind === "room" && pass.data && <GuestLink room={id} initial={pass.data.guest_path ?? null} />}
         <Button variant="outline" size="sm" aria-label={tr("Copy the meeting link")} onClick={() => void copy(meetLink(meetKind, id), "Meeting link")}>
@@ -194,7 +194,7 @@ function Stage({
   if (left !== null)
     return (
       <div className="grid h-full place-content-center justify-items-center gap-4 p-6 text-center">
-        <p className="text-lg">{left === DisconnectReason.CLIENT_INITIATED ? "You left the meeting." : "You were disconnected from the meeting."}</p>
+        <p className="text-lg">{left === DisconnectReason.CLIENT_INITIATED ? tr("You left the meeting.") : tr("You were disconnected from the meeting.")}</p>
         <div className="flex gap-2">
           <Button onClick={() => void onRejoin().then(() => setLeft(null))}>{tr("Rejoin")}</Button>
           {onBack && (
@@ -208,7 +208,7 @@ function Stage({
   if (!choices && unable)
     return (
       <div className="grid h-full place-content-center justify-items-center gap-4 overflow-auto p-6 text-center">
-        <p className="max-w-md">{unable}</p>
+        <p className="max-w-md">{isolate(unable)}</p>
         <div className="flex gap-2">
           <Button onClick={() => setChoices({ username: name, videoEnabled: false, audioEnabled: false, videoDeviceId: "", audioDeviceId: "" })}>{tr("Join without camera or microphone")}</Button>
           {onBack && (
@@ -251,7 +251,7 @@ function Stage({
               </span>
             }
           >
-            <span>{problem}</span>
+            <span>{isolate(problem)}</span>
           </Alert>
         </div>
       )}
@@ -347,14 +347,14 @@ function PopOut({ slot }: { slot: HTMLElement }) {
         return toast(tr("This browser can't pop the call out."), "error");
       }
       // Refused (the browser wants the click itself) or already floating elsewhere.
-      toast(e instanceof DOMException && e.name === "NotAllowedError" ? "The browser did not allow the call to pop out; try again." : errorMessage(e), "error");
+      toast(e instanceof DOMException && e.name === "NotAllowedError" ? tr("The browser did not allow the call to pop out; try again.") : errorMessage(e), "error");
     }
   };
   return (
     <>
       {createPortal(
         <Button variant="outline" size="sm" aria-pressed={out} onClick={() => void toggle()}>
-          <PictureInPicture2 /> {out ? "Bring back" : "Pop out"}
+          <PictureInPicture2 /> {out ? tr("Bring back") : tr("Pop out")}
         </Button>,
         slot,
       )}
@@ -513,7 +513,7 @@ export function GuestMeetPage() {
     <div data-lk-theme="default" className="ferrum-meet grid h-dvh grid-rows-[auto_minmax(0,1fr)]">
       <header className="flex items-center gap-2 px-4 py-3">
         <Video className="size-4 opacity-70" aria-hidden="true" />
-        <h1 className="min-w-0 flex-1 truncate font-semibold">{pass?.title ?? "Meeting"}</h1>
+        <h1 className="min-w-0 flex-1 truncate font-semibold">{pass?.title ?? tr("Meeting")}</h1>
         {pass && <span className="text-sm opacity-70">{tr("You are joining as {name} (guest)", { name: pass.name })}</span>}
         <span ref={setTools} className="contents" />
       </header>
@@ -528,7 +528,7 @@ export function GuestMeetPage() {
             ) : (
               <>
                 <p className="text-lg">{tr("You can't join this meeting")}</p>
-                <p className="opacity-70">{errorMessage(error)}</p>
+                <p className="opacity-70">{isolate(errorMessage(error))}</p>
               </>
             )}
           </div>

@@ -9,7 +9,7 @@ import { useContext, useId, useState } from "react";
 import { useNavigate } from "react-router";
 import { Badge, Button, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, Input, Label, Skeleton, Textarea } from "@ferrum/kit/primitives";
 import { cn, confirmDialog, ErrorState, TabPanel, Tabs, toast } from "@ferrum/kit";
-import { api, errorMessage, t as tr } from "@ferrum/client";
+import { api, errorMessage, t as tr, isolate } from "@ferrum/client";
 import { useMe, usePeople } from "@ferrum/records";
 import { CHAT, LOUDNESS, SIDE_PANEL, accessText, addable, initials, keys, loudness, memberRows, type Channel, type Loud, type Member } from "./lib/chat";
 import { Base } from "./chatBase";
@@ -17,9 +17,9 @@ import { Base } from "./chatBase";
 export type DetailsTab = "general" | "personal" | "members";
 
 const TABS: { id: DetailsTab; label: string }[] = [
-  { id: "general", label: "General" },
-  { id: "personal", label: "Notifications" },
-  { id: "members", label: "Members" },
+  { id: "general", get label() { return tr("General"); } },
+  { id: "personal", get label() { return tr("Notifications"); } },
+  { id: "members", get label() { return tr("Members"); } },
 ];
 
 export function ChannelDetails({ id, tab, onTab, onClose }: { id: string; tab: DetailsTab; onTab: (t: DetailsTab) => void; onClose: () => void }) {
@@ -33,7 +33,7 @@ export function ChannelDetails({ id, tab, onTab, onClose }: { id: string; tab: D
     <aside className={SIDE_PANEL} aria-label={tr("Channel details")} onKeyDown={(e) => e.key === "Escape" && onClose()}>
       <header className="flex items-center gap-2 border-b px-3 py-2">
         <div className="min-w-0 flex-1">
-          <h3 className="font-semibold">{direct ? "Conversation" : "Channel"} details</h3>
+          <h3 className="font-semibold">{direct ? tr("Conversation") : tr("Channel")} {tr("details")}</h3>
           {c && <p className="truncate text-xs text-muted-foreground">{c.title || c.name}</p>}
         </div>
         <Button variant="ghost" size="icon-sm" aria-label={tr("Close details")} onClick={onClose}>
@@ -98,9 +98,9 @@ function General({ c }: { c: Channel }) {
   const archive = async () => {
     const on = !c.archived;
     const ok = await confirmDialog({
-      title: on ? `Archive #${c.name}?` : `Bring back #${c.name}?`,
-      message: on ? "Nobody can post in an archived channel. Its messages stay readable and it can be brought back." : "Members can post again.",
-      confirmLabel: on ? "Archive" : "Bring back",
+      title: on ? tr("Archive #{name}?", { name: c.name }) : tr("Bring back #{name}?", { name: c.name }),
+      message: on ? tr("Nobody can post in an archived channel. Its messages stay readable and it can be brought back.") : tr("Members can post again."),
+      confirmLabel: on ? tr("Archive") : tr("Bring back"),
       danger: on,
     });
     if (ok) await save("archived", { archived: on }, on ? "Archived" : "Brought back");
@@ -108,16 +108,16 @@ function General({ c }: { c: Channel }) {
   const type = async (to: "Public" | "Private") => {
     if (to === c.type) return;
     const ok = await confirmDialog({
-      title: to === "Private" ? "Make it private?" : "Make it public?",
-      message: to === "Private" ? "Only its members will be able to find and read it." : "Anyone in the workspace will be able to find, read and join it.",
-      confirmLabel: to === "Private" ? "Make private" : "Make public",
+      title: to === "Private" ? tr("Make it private?") : tr("Make it public?"),
+      message: to === "Private" ? tr("Only its members will be able to find and read it.") : tr("Anyone in the workspace will be able to find, read and join it."),
+      confirmLabel: to === "Private" ? tr("Make private") : tr("Make public"),
     });
     if (ok) await save("type", { type: to }, "Updated");
   };
   const problemFor = (field: string) =>
     problem?.field === field ? (
       <p role="alert" className="text-xs text-destructive">
-        {problem.message}
+        {isolate(problem.message)}
       </p>
     ) : null;
 
@@ -136,7 +136,7 @@ function General({ c }: { c: Channel }) {
             onBlur={() => name.trim() && name.trim() !== c.name && void save("name", { name: name.trim() }, "Renamed")}
           />
         ) : (
-          <p>#{c.name}</p>
+          <p>#{isolate(c.name)}</p>
         )}
         {problemFor("name")}
       </div>
@@ -154,7 +154,7 @@ function General({ c }: { c: Channel }) {
             onBlur={() => topic.trim() !== (c.topic ?? "") && void save("topic", { topic: topic.trim() || null })}
           />
         ) : (
-          <p className={c.topic ? undefined : "text-muted-foreground"}>{c.topic || "No topic yet."}</p>
+          <p className={c.topic ? undefined : "text-muted-foreground"}>{c.topic || tr("No topic yet.")}</p>
         )}
         {problemFor("topic")}
       </div>
@@ -166,7 +166,7 @@ function General({ c }: { c: Channel }) {
             <option value="Private">{tr("Only its members")}</option>
           </select>
         ) : (
-          <p>{c.type === "Private" ? "Only its members" : "Anyone in the workspace"}</p>
+          <p>{c.type === "Private" ? tr("Only its members") : tr("Anyone in the workspace")}</p>
         )}
         {problemFor("type")}
       </div>
@@ -184,15 +184,15 @@ function General({ c }: { c: Channel }) {
             <option value="Owners">{tr("Only owners start posts (members reply in threads)")}</option>
           </select>
         ) : (
-          <p>{c.post_policy === "Owners" ? "Only owners start posts; members reply in threads" : "Every member"}</p>
+          <p>{c.post_policy === "Owners" ? tr("Only owners start posts; members reply in threads") : tr("Every member")}</p>
         )}
         {problemFor("post_policy")}
       </div>
-      <p className="rounded-md bg-muted px-3 py-2 text-muted-foreground">{accessText(c)}</p>
+      <p className="rounded-md bg-muted px-3 py-2 text-muted-foreground">{isolate(accessText(c))}</p>
       {owner && (
         <div className="grid gap-1.5 border-t pt-3">
           <Button variant="outline" className="justify-self-start" disabled={busy} onClick={() => void archive()}>
-            {c.archived ? "Bring this channel back" : "Archive this channel"}
+            {c.archived ? tr("Bring this channel back") : tr("Archive this channel")}
           </Button>
           {problemFor("archived")}
         </div>
@@ -226,9 +226,9 @@ function Personal({ c }: { c: Channel }) {
   };
   const leave = async () => {
     const ok = await confirmDialog({
-      title: `Leave #${c.name}?`,
-      message: c.type === "Private" ? "You will not be able to read it again unless someone adds you." : "You can join it again whenever you like.",
-      confirmLabel: "Leave",
+      title: tr("Leave #{name}?", { name: c.name }),
+      message: c.type === "Private" ? tr("You will not be able to read it again unless someone adds you.") : tr("You can join it again whenever you like."),
+      confirmLabel: tr("Leave"),
       danger: true,
     });
     if (!ok) return;
@@ -236,7 +236,7 @@ function Personal({ c }: { c: Channel }) {
       await api.post(`${CHAT}/channels/${c.id}/leave`, {});
       void qc.invalidateQueries({ queryKey: ["chat"] });
       navigate(base);
-      toast(`You left #${c.name}`);
+      toast(tr("You left #{name}", { name: c.name }));
     } catch (e) {
       toast(errorMessage(e), "error");
     }
@@ -251,14 +251,14 @@ function Personal({ c }: { c: Channel }) {
           <label key={o.value} htmlFor={`${ids}-${o.value}`} className={cn("flex cursor-pointer items-start gap-2 rounded-md border p-2 pointer-coarse:min-h-11", level === o.value && "border-primary bg-primary/5")}>
             <input id={`${ids}-${o.value}`} className="mt-0.5" type="radio" name={`${ids}-loud`} checked={level === o.value} onChange={() => void set(o.value)} />
             <span>
-              <span className="block font-medium">{o.label}</span>
-              <span className="block text-xs text-muted-foreground">{o.hint}</span>
+              <span className="block font-medium">{isolate(o.label)}</span>
+              <span className="block text-xs text-muted-foreground">{isolate(o.hint)}</span>
             </span>
           </label>
         ))}
         {c.notify_level && c.notify_level !== usual && (
           <Button variant="link" size="xs" className="justify-self-start p-0" onClick={() => void set(null)}>
-            {tr("Back to the usual for")} {direct ? "a direct message" : "a channel"}
+            {tr("Back to the usual for")} {direct ? tr("a direct message") : tr("a channel")}
           </Button>
         )}
       </fieldset>
@@ -304,7 +304,7 @@ function Members({ c }: { c: Channel }) {
     void change({ add: [email] }, (ms) => [...ms, { email, full_name: p?.full_name ?? null, role: "Member" }]);
   };
   const remove = async (m: Member) => {
-    const ok = await confirmDialog({ title: `Remove ${m.full_name || m.email}?`, message: `They will no longer be in #${c.name}${c.type === "Private" ? " or able to read it" : ""}.`, confirmLabel: "Remove", danger: true });
+    const ok = await confirmDialog({ title: tr("Remove {value}?", { value: m.full_name || m.email }), message: tr("They will no longer be in #{name}{value}.", { name: c.name, value: c.type === "Private" ? " or able to read it" : "" }), confirmLabel: tr("Remove"), danger: true });
     if (ok) void change({ remove: [m.email] }, (ms) => ms.filter((x) => x.email !== m.email));
   };
   const role = (m: Member, to: "Owner" | "Member") =>
@@ -329,18 +329,18 @@ function Members({ c }: { c: Channel }) {
                   <button type="button" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-start hover:bg-accent pointer-coarse:min-h-11" onClick={() => add(p.email)}>
                     <Plus className="size-4 shrink-0" aria-hidden="true" />
                     <span className="font-medium">{p.full_name || p.email}</span>
-                    <span className="truncate text-xs text-muted-foreground">{p.email}</span>
+                    <span className="truncate text-xs text-muted-foreground">{isolate(p.email)}</span>
                   </button>
                 </li>
               ))}
-              {!offered.length && <li className="px-2 py-1.5 text-muted-foreground">{tr("Nobody to add matches “")}{adding.trim()}”.</li>}
+              {!offered.length && <li className="px-2 py-1.5 text-muted-foreground">{tr("Nobody to add matches “")}{isolate(adding.trim())}”.</li>}
             </ul>
           )}
         </div>
       )}
       <div className="grid gap-1.5">
         <Label htmlFor={`${ids}-find`}>
-          {c.members.length} {c.members.length === 1 ? "member" : "members"}
+          {c.members.length} {c.members.length === 1 ? tr("member") : tr("members")}
         </Label>
         <Input id={`${ids}-find`} type="search" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder={tr("Find a member")} />
       </div>
@@ -350,7 +350,7 @@ function Members({ c }: { c: Channel }) {
           return (
             <li key={m.email} className="flex items-center gap-2 rounded-md px-1 py-1 pointer-coarse:min-h-11">
               <span className="relative grid size-8 shrink-0 place-items-center rounded-full bg-primary/10 text-xs font-semibold text-primary" aria-hidden="true">
-                {initials(m.full_name || m.email)}
+                {isolate(initials(m.full_name || m.email))}
                 {m.active && <span className="absolute -end-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-background bg-emerald-500" />}
               </span>
               <span className="min-w-0 flex-1">
@@ -359,21 +359,21 @@ function Members({ c }: { c: Channel }) {
                   {you && <span className="font-normal text-muted-foreground"> {tr("(you)")}</span>}
                 </span>
                 {(m.full_name || m.active) && (
-                  <span className="block truncate text-xs text-muted-foreground">{[m.active && "Active now", m.full_name && m.email].filter(Boolean).join(" · ")}</span>
+                  <span className="block truncate text-xs text-muted-foreground">{isolate([m.active && "Active now", m.full_name && m.email].filter(Boolean).join(" · "))}</span>
                 )}
               </span>
               {m.role === "Owner" && <Badge variant="secondary">{tr("Owner")}</Badge>}
               {owner && (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${m.full_name || m.email}`}>
+                    <Button variant="ghost" size="icon-sm" aria-label={tr("Actions for {value}", { value: m.full_name || m.email })}>
                       <MoreHorizontal />
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
                     {m.role === "Owner" ? (
                       <DropdownMenuItem disabled={owners < 2} onSelect={() => role(m, "Member")}>
-                        {owners < 2 ? "The only owner" : "Remove as owner"}
+                        {owners < 2 ? tr("The only owner") : tr("Remove as owner")}
                       </DropdownMenuItem>
                     ) : (
                       <DropdownMenuItem onSelect={() => role(m, "Owner")}>{tr("Make an owner")}</DropdownMenuItem>
@@ -390,7 +390,7 @@ function Members({ c }: { c: Channel }) {
             </li>
           );
         })}
-        {!rows.length && <li className="py-2 text-muted-foreground">{tr("Nobody here matches “")}{filter.trim()}”.</li>}
+        {!rows.length && <li className="py-2 text-muted-foreground">{tr("Nobody here matches “")}{isolate(filter.trim())}”.</li>}
       </ul>
     </div>
   );

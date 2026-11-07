@@ -1,0 +1,1 @@
+import"./index-FVqZ3lEG.js";import{u as o}from"./skeleton-BP0qMo_5.js";import{b as r}from"./chat-asHg7yNQ.js";const i=()=>o({queryKey:["people"],queryFn:({signal:e})=>r.get("/api/users",void 0,e),staleTime:5*6e4});export{i as u};

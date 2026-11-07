@@ -7,7 +7,7 @@ import { AtSign, Paperclip, X } from "lucide-react";
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { Button, Input, Textarea } from "@ferrum/kit/primitives";
 import { cn, toast } from "@ferrum/kit";
-import { errorMessage, newKey, uploadFile, type StoredFile, api, t as tr } from "@ferrum/client";
+import { errorMessage, newKey, uploadFile, type StoredFile, api, t as tr, isolate } from "@ferrum/client";
 import { useMe } from "@ferrum/records";
 import { CHAT, MAX_FILES, bodyTooLong, completeMention, draftKey, fileSize, matchPeople, mentionAt, mentionsIn, readDraft, refreshMessages, writeDraft, type Person } from "./lib/chat";
 
@@ -69,7 +69,7 @@ export function Composer({
   const addFiles = (picked: FileList | File[] | null) => {
     const wanted = Array.from(picked ?? []);
     const room = Math.max(0, MAX_FILES - files.length);
-    if (wanted.length > room) toast(`A message carries at most ${MAX_FILES} files.`, "error");
+    if (wanted.length > room) toast(tr("A message carries at most {MAX_FILES} files.", { MAX_FILES }), "error");
     for (const file of wanted.slice(0, room)) {
       const k = newKey();
       setFiles((fs) => [...fs, { key: k, name: file.name, size: file.size }]);
@@ -168,9 +168,9 @@ export function Composer({
           {files.map((f) => (
             <li key={f.key} className={cn("flex max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-xs", f.error && "border-destructive text-destructive")}>
               <Paperclip className="size-3.5 shrink-0" aria-hidden="true" />
-              <span className="truncate">{f.name}</span>
-              <span className="shrink-0 text-muted-foreground">{f.error ? f.error : f.stored ? fileSize(f.size) : "Uploading…"}</span>
-              <Button type="button" variant="ghost" size="icon-sm" aria-label={`Remove ${f.name}`} onClick={() => setFiles((fs) => fs.filter((x) => x.key !== f.key))}>
+              <span className="truncate">{isolate(f.name)}</span>
+              <span className="shrink-0 text-muted-foreground">{f.error ? f.error : f.stored ? fileSize(f.size) : tr("Uploading…")}</span>
+              <Button type="button" variant="ghost" size="icon-sm" aria-label={tr("Remove {name}", { name: f.name })} onClick={() => setFiles((fs) => fs.filter((x) => x.key !== f.key))}>
                 <X />
               </Button>
             </li>
@@ -190,7 +190,7 @@ export function Composer({
                 className={cn("flex w-full items-baseline gap-2 rounded px-2 py-1.5 text-start text-sm pointer-coarse:min-h-11", i === active ? "bg-accent" : "hover:bg-accent")}
               >
                 <span className="font-medium">{p.full_name || p.email}</span>
-                <span className="truncate text-xs text-muted-foreground">{p.email}</span>
+                <span className="truncate text-xs text-muted-foreground">{isolate(p.email)}</span>
               </button>
             </li>
           ))}
@@ -239,7 +239,7 @@ export function Composer({
           <AtSign />
         </Button>
         <Button type="submit" disabled={busy || uploading || (!body.trim() && !ready.length) || tooLong}>
-          {busy ? "Sending…" : "Send"}
+          {busy ? tr("Sending…") : tr("Send")}
         </Button>
       </div>
       {tooLong && <p className="text-xs text-destructive">{tr("Messages are at most 4 KB.")}</p>}
@@ -269,7 +269,7 @@ export function PeoplePicker({ people, onPick, onClose }: { people: Person[]; on
         {shown.map((p) => (
           <li key={p.id}>
             <button type="button" className="w-full rounded px-2 py-1.5 text-start text-sm hover:bg-accent pointer-coarse:min-h-11" onClick={() => onPick(p)}>
-              {p.full_name || p.email} <span className="text-muted-foreground">{p.email}</span>
+              {p.full_name || p.email} <span className="text-muted-foreground">{isolate(p.email)}</span>
             </button>
           </li>
         ))}

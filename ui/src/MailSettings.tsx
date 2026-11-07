@@ -12,7 +12,7 @@ import { Label } from "@ferrum/kit/primitives";
 import { Skeleton } from "@ferrum/kit/primitives";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ferrum/kit/primitives";
 import { Textarea } from "@ferrum/kit/primitives";
-import { errorMessage, formatDateTime, t } from "@ferrum/client";
+import { errorMessage, formatDateTime, t, isolate } from "@ferrum/client";
 import { can, useMetaIndex } from "@ferrum/records";
 import { confirmDialog, toast } from "@ferrum/kit";
 import { jmap } from "./lib/mail";
@@ -40,7 +40,7 @@ export function MailSettings({ account, me, servers, onClose }: { account: strin
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>{t("Mail settings")}</DialogTitle>
-          <DialogDescription>{me}</DialogDescription>
+          <DialogDescription>{isolate(me)}</DialogDescription>
         </DialogHeader>
         <Tabs defaultValue="vacation">
           <TabsList>
@@ -84,7 +84,7 @@ function VacationForm({ account }: { account: string }) {
   useEffect(() => {
     if (q.data && !form) setForm(q.data);
   }, [q.data, form]);
-  if (q.error) return <p className="text-sm text-destructive">{errorMessage(q.error)}</p>;
+  if (q.error) return <p className="text-sm text-destructive">{isolate(errorMessage(q.error))}</p>;
   if (!form) return <Skeleton className="h-40" />;
   const save = async (e: FormEvent) => {
     e.preventDefault();
@@ -100,7 +100,7 @@ function VacationForm({ account }: { account: string }) {
       const r = await jmap([["VacationResponse/set", { accountId: account, update: { singleton: patch } }, "0"]]);
       const failed = (r["0"].notUpdated as Record<string, { description?: string }> | undefined)?.singleton;
       if (failed) throw new Error(failed.description ?? "The mail server refused the change.");
-      toast(form.isEnabled ? "Your vacation reply is on." : "Your vacation reply is off.");
+      toast(form.isEnabled ? t("Your vacation reply is on.") : t("Your vacation reply is off."));
     } catch (err) {
       toast(errorMessage(err), "error");
     } finally {
@@ -164,7 +164,7 @@ function AppPasswords({ account, me, servers }: { account: string; me: string; s
     }
   };
   const revoke = async (a: AppPassword) => {
-    if (!(await confirmDialog({ title: `Remove "${a.description}"?`, message: "Mail programs using it stop getting mail.", confirmLabel: "Remove", danger: true }))) return;
+    if (!(await confirmDialog({ title: t("Remove \"{description}\"?", { description: a.description }), message: t("Mail programs using it stop getting mail."), confirmLabel: t("Remove"), danger: true }))) return;
     try {
       await jmap([["x:AppPassword/set", { accountId: account, destroy: [a.id] }, "0"]]);
       void qc.invalidateQueries({ queryKey: key });
@@ -175,22 +175,22 @@ function AppPasswords({ account, me, servers }: { account: string; me: string; s
   return (
     <div className="grid gap-3 pt-2 text-sm">
       <p className="text-muted-foreground">
-        {t("Mail programs (Outlook, Apple Mail, Thunderbird, phones) sign in with your address")} <strong className="text-foreground">{me}</strong> {t("and an app password made here, one per program.")}
+        {t("Mail programs (Outlook, Apple Mail, Thunderbird, phones) sign in with your address")} <strong className="text-foreground">{isolate(me)}</strong> {t("and an app password made here, one per program.")}
       </p>
       {servers && (
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-md border p-3">
           <dt className="text-muted-foreground">{t("Incoming (IMAP, SSL)")}</dt>
-          <dd className="font-mono">{servers.imap}</dd>
+          <dd className="font-mono">{isolate(servers.imap)}</dd>
           <dt className="text-muted-foreground">{t("Outgoing (SMTP, SSL)")}</dt>
-          <dd className="font-mono">{servers.smtp}</dd>
+          <dd className="font-mono">{isolate(servers.smtp)}</dd>
         </dl>
       )}
       {made && (
         <div className="grid gap-1 rounded-md border border-primary/40 bg-primary/5 p-3" role="status">
           <span>
-            {t("App password for")} <strong>{made.description}</strong>{t(". Copy it now: it is not shown again.")}
+            {t("App password for")} <strong>{isolate(made.description)}</strong>{t(". Copy it now: it is not shown again.")}
           </span>
-          <code className="rounded bg-background px-2 py-1 font-mono text-base select-all">{made.secret}</code>
+          <code className="rounded bg-background px-2 py-1 font-mono text-base select-all">{isolate(made.secret)}</code>
           <Button variant="outline" size="xs" className="justify-self-start" onClick={() => void navigator.clipboard?.writeText(made.secret).then(() => toast(t("Copied")))}>
             {t("Copy")}
           </Button>
@@ -203,13 +203,13 @@ function AppPasswords({ account, me, servers }: { account: string; me: string; s
         </Button>
       </form>
       {list.isLoading && <Skeleton className="h-16" />}
-      {!!list.error && <p className="text-destructive">{errorMessage(list.error)}</p>}
+      {!!list.error && <p className="text-destructive">{isolate(errorMessage(list.error))}</p>}
       <ul className="grid gap-1" aria-label={t("App passwords")}>
         {list.data?.map((a) => (
           <li key={a.id} className="flex items-center gap-2 rounded-md border px-3 py-1.5">
             <Inbox className="size-4 text-muted-foreground" aria-hidden="true" />
-            <span className="flex-1">{a.description || "(no description)"}</span>
-            {a.createdAt && <span className="text-xs text-muted-foreground">{formatDateTime(a.createdAt)}</span>}
+            <span className="flex-1">{a.description || t("(no description)")}</span>
+            {a.createdAt && <span className="text-xs text-muted-foreground">{isolate(formatDateTime(a.createdAt))}</span>}
             <Button variant="ghost" size="xs" onClick={() => void revoke(a)}>
               {t("Remove")}
             </Button>

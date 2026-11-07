@@ -8,7 +8,7 @@ import { useState } from "react";
 import { useParams, useSearchParams } from "react-router";
 import { Button, Skeleton, Textarea } from "@ferrum/kit/primitives";
 import { cn, EmptyState, useShellTitle } from "@ferrum/kit";
-import { api, errorMessage, t } from "@ferrum/client";
+import { api, errorMessage, t, isolate } from "@ferrum/client";
 import { answerWord } from "./lib/calendar";
 
 interface Info {
@@ -37,7 +37,7 @@ export function RsvpPage() {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [sent, setSent] = useState<Answer | null>(null);
-  useShellTitle(info.data?.subject ?? "Reply to an invitation");
+  useShellTitle(info.data?.subject ?? t("Reply to an invitation"));
 
   if (info.isLoading) {
     return (
@@ -49,7 +49,7 @@ export function RsvpPage() {
   if (info.error || !info.data) {
     return (
       <EmptyState title={t("This link does not work any more")} icon="calendar">
-        <p className="max-w-sm text-center text-sm text-muted-foreground">{info.error ? errorMessage(info.error) : "Ask the person who invited you to send it again."}</p>
+        <p className="max-w-sm text-center text-sm text-muted-foreground">{info.error ? errorMessage(info.error) : t("Ask the person who invited you to send it again.")}</p>
       </EmptyState>
     );
   }
@@ -71,17 +71,17 @@ export function RsvpPage() {
   return (
     <div className="mx-auto grid max-w-md gap-4 p-4 py-8">
       <header className="grid gap-1">
-        <p className="text-sm text-muted-foreground">{e.organizer} invited {e.guest.name || e.guest.email} to</p>
-        <h1 className={cn("text-xl font-semibold", e.cancelled && "line-through")}>{e.subject || "(no title)"}</h1>
+        <p className="text-sm text-muted-foreground">{t("{organizer} invited", { organizer: e.organizer })} {e.guest.name || e.guest.email} {t("to")}</p>
+        <h1 className={cn("text-xl font-semibold", e.cancelled && "line-through")}>{e.subject || t("(no title)")}</h1>
         <p className="flex items-start gap-2 text-sm">
-          <CalendarDays className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" /> {e.when}
+          <CalendarDays className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" /> {isolate(e.when)}
         </p>
         {e.where && (
           <p className="flex items-start gap-2 text-sm">
-            <MapPin className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" /> {e.where}
+            <MapPin className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" /> {isolate(e.where)}
           </p>
         )}
-        {e.description && <p className="mt-1 text-sm whitespace-pre-line text-muted-foreground">{e.description}</p>}
+        {e.description && <p className="mt-1 text-sm whitespace-pre-line text-muted-foreground">{isolate(e.description)}</p>}
       </header>
       {e.cancelled ? (
         <p role="status" className="rounded-md border bg-muted px-3 py-2 text-sm">
@@ -89,8 +89,8 @@ export function RsvpPage() {
         </p>
       ) : sent ? (
         <div role="status" className="grid gap-3 rounded-lg border bg-card p-4">
-          <p className="font-medium">{t("Thank you. Your answer is")} {answerWord(sent)}.</p>
-          <p className="text-sm text-muted-foreground">{t("{organizer} has been told", { organizer: e.organizer })}{note.trim() ? ", with your note" : ""}{t(". You can change your answer any time with this link.")}</p>
+          <p className="font-medium">{t("Thank you. Your answer is")} {isolate(answerWord(sent))}.</p>
+          <p className="text-sm text-muted-foreground">{t("{organizer} has been told", { organizer: e.organizer })}{note.trim() ? t(", with your note") : ""}{t(". You can change your answer any time with this link.")}</p>
           <Button variant="outline" className="justify-self-start" onClick={() => setSent(null)}>
             {t("Change my answer")}
           </Button>
@@ -105,11 +105,11 @@ export function RsvpPage() {
         >
           <fieldset className="grid gap-2">
             <legend className="font-medium">{t("Will you come?")}</legend>
-            {before && <p className="text-sm text-muted-foreground">{t("You answered")} {answerWord(before)} before.</p>}
+            {before && <p className="text-sm text-muted-foreground">{t("You answered")} {t("{before} before.", { before: answerWord(before) })}</p>}
             <div className="grid grid-cols-3 gap-2">
               {ANSWERS.map((a) => (
                 <Button key={a} type="button" variant={choice === a ? "default" : "outline"} aria-pressed={choice === a} className="h-11" onClick={() => setChoice(a)}>
-                  {answerWord(a)}
+                  {isolate(answerWord(a))}
                 </Button>
               ))}
             </div>
@@ -122,11 +122,11 @@ export function RsvpPage() {
           </div>
           {problem && (
             <p role="alert" className="text-sm text-destructive">
-              {problem}
+              {isolate(problem)}
             </p>
           )}
           <Button type="submit" disabled={busy} className="h-11">
-            {busy ? "Sending…" : "Send my answer"}
+            {busy ? t("Sending…") : t("Send my answer")}
           </Button>
         </form>
       )}
