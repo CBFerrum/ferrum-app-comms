@@ -1,6 +1,6 @@
 id: comms
 name: Mail, Chat and Calendar
-version: 0.10.9
+version: 0.10.10
 publisher: cbferrum
 summary: Email accounts (SMTP/IMAP), threaded communications on any record, templates, newsletters, team chat, calendars with ICS and calendar-app sync, contacts sync and video meetings
 description: README.md
@@ -67,3 +67,17 @@ contributes:
   shell.public:
     - {id: guest, path: meet/guest, title: Meeting}
     - {id: rsvp, path: calendar/rsvp, title: Reply to an invitation}
+  # What the assistant should know in Mail, Chat and Calendar's pages, and what it suggests asking there.
+  shell.assistant:
+    - id: comms
+      title: "Mail, Chat and Calendar"
+      instructions: >-
+        Mail sent and received about records is kept as Communication (Queued, Sending, Sent, Failed, Received),
+        threaded on the record it is about. A CalendarEvent is Confirmed, Tentative or Cancelled, with its attendees
+        and reminders. ChatChannel and ChatMessage are team chat. A Newsletter goes to email groups and is Draft,
+        Scheduled, Sending, Sent or Cancelled. Mailboxes and email accounts are set up by administrators.
+      suggestions:
+        - "What meetings do I have tomorrow?"
+        - "Which emails to customers failed to send today?"
+        - "Summarize the latest messages in a channel"
+        - "Which newsletters are scheduled?"
