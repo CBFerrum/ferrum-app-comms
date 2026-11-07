@@ -326,7 +326,7 @@ function Members({ c }: { c: Channel }) {
             <ul className="rounded-md border bg-popover p-1" aria-label="People to add">
               {offered.map((p) => (
                 <li key={p.id}>
-                  <button type="button" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent pointer-coarse:min-h-11" onClick={() => add(p.email)}>
+                  <button type="button" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-start hover:bg-accent pointer-coarse:min-h-11" onClick={() => add(p.email)}>
                     <Plus className="size-4 shrink-0" aria-hidden="true" />
                     <span className="font-medium">{p.full_name || p.email}</span>
                     <span className="truncate text-xs text-muted-foreground">{p.email}</span>

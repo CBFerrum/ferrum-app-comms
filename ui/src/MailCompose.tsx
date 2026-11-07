@@ -456,7 +456,7 @@ export function Compose({
           </div>
           </fieldset>
           <DialogFooter className="items-center sm:justify-between">
-            <span className="text-xs text-muted-foreground sm:mr-auto" role="status" aria-live="polite">
+            <span className="text-xs text-muted-foreground sm:me-auto" role="status" aria-live="polite">
               {status_}
             </span>
             <Button type="button" variant="outline" onClick={() => void discard()} disabled={busy}>
@@ -552,7 +552,7 @@ function RecipientField({
         aria-describedby={left && bad.length ? `${id}-bad` : undefined}
       />
       {choices.length > 0 && (
-        <ul id={`${id}-list`} role="listbox" aria-label={`People for ${label}`} className="absolute top-full right-0 left-0 z-20 mt-1 max-h-48 overflow-y-auto rounded-md border bg-popover p-1 shadow-md">
+        <ul id={`${id}-list`} role="listbox" aria-label={`People for ${label}`} className="absolute top-full end-0 start-0 z-20 mt-1 max-h-48 overflow-y-auto rounded-md border bg-popover p-1 shadow-md">
           {choices.map((p, i) => (
             <li key={p.id} role="option" aria-selected={i === active}>
               <button
@@ -560,7 +560,7 @@ function RecipientField({
                 tabIndex={-1}
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => choose(p)}
-                className={cn("flex w-full items-baseline gap-2 rounded px-2 py-1.5 text-left text-sm pointer-coarse:min-h-11", i === active ? "bg-accent" : "hover:bg-accent")}
+                className={cn("flex w-full items-baseline gap-2 rounded px-2 py-1.5 text-start text-sm pointer-coarse:min-h-11", i === active ? "bg-accent" : "hover:bg-accent")}
               >
                 <span className="font-medium">{p.full_name || p.email}</span>
                 <span className="truncate text-xs text-muted-foreground">{p.email}</span>

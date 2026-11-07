@@ -178,7 +178,7 @@ export function Composer({
         </ul>
       )}
       {open && (
-        <ul id={list} role="listbox" aria-label="People to mention" className="absolute right-0 bottom-full left-0 z-20 mb-1 max-h-56 overflow-y-auto rounded-md border bg-popover p-1 shadow-md">
+        <ul id={list} role="listbox" aria-label="People to mention" className="absolute end-0 bottom-full start-0 z-20 mb-1 max-h-56 overflow-y-auto rounded-md border bg-popover p-1 shadow-md">
           {choices.map((p, i) => (
             <li key={p.id} id={`${list}-${i}`} role="option" aria-selected={i === active}>
               <button
@@ -187,7 +187,7 @@ export function Composer({
                 // Pressing must not take focus off the box, or the caret is lost before the click lands.
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => choose(p)}
-                className={cn("flex w-full items-baseline gap-2 rounded px-2 py-1.5 text-left text-sm pointer-coarse:min-h-11", i === active ? "bg-accent" : "hover:bg-accent")}
+                className={cn("flex w-full items-baseline gap-2 rounded px-2 py-1.5 text-start text-sm pointer-coarse:min-h-11", i === active ? "bg-accent" : "hover:bg-accent")}
               >
                 <span className="font-medium">{p.full_name || p.email}</span>
                 <span className="truncate text-xs text-muted-foreground">{p.email}</span>
@@ -268,7 +268,7 @@ export function PeoplePicker({ people, onPick, onClose }: { people: Person[]; on
       <ul className="mt-1 grid">
         {shown.map((p) => (
           <li key={p.id}>
-            <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-accent pointer-coarse:min-h-11" onClick={() => onPick(p)}>
+            <button type="button" className="w-full rounded px-2 py-1.5 text-start text-sm hover:bg-accent pointer-coarse:min-h-11" onClick={() => onPick(p)}>
               {p.full_name || p.email} <span className="text-muted-foreground">{p.email}</span>
             </button>
           </li>

@@ -135,7 +135,7 @@ export function CallTools({ kind, id, recordings }: { kind: MeetKind; id: string
   const latest = transcriptions.slice(-3);
   return (
     <>
-      <div className="absolute right-2 top-2 z-20 flex flex-wrap items-center justify-end gap-1">
+      <div className="absolute end-2 top-2 z-20 flex flex-wrap items-center justify-end gap-1">
         {recording && (
           <span className="flex items-center gap-1 rounded bg-red-600 px-2 py-1 text-xs font-medium text-white" role="status">
             <CircleDot className="size-3" aria-hidden /> Recording
@@ -180,7 +180,7 @@ export function CallTools({ kind, id, recordings }: { kind: MeetKind; id: string
         )}
       </div>
       {recordings && !!recs.data?.length && !going && recs.data[0].ended_at === null && (
-        <p className="absolute left-2 top-2 z-20 rounded bg-background/80 px-2 py-1 text-xs" role="status">
+        <p className="absolute start-2 top-2 z-20 rounded bg-background/80 px-2 py-1 text-xs" role="status">
           {recordingWords(recs.data[0])}
         </p>
       )}

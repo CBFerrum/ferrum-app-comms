@@ -250,7 +250,7 @@ function Card({ account, summary, open, fill, onToggle, me, onDraft }: { account
   return (
     <section className={cn(fill ? "grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)]" : "border-b")} aria-label={`${mine ? "You" : from} on ${formatDateTime(summary.receivedAt)}`}>
       <div>
-        <button type="button" onClick={onToggle} aria-expanded={open} className="flex w-full items-center gap-2 px-4 py-2 text-left hover:bg-accent/50 pointer-coarse:min-h-11">
+        <button type="button" onClick={onToggle} aria-expanded={open} className="flex w-full items-center gap-2 px-4 py-2 text-start hover:bg-accent/50 pointer-coarse:min-h-11">
           {open ? <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" /> : <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />}
           {unread && <span className="size-2 shrink-0 rounded-full bg-primary" role="img" aria-label="Unread" />}
           <span className={cn("shrink-0 text-sm", unread ? "font-semibold" : "font-medium")}>{mine ? "You" : from || "(unknown sender)"}</span>
@@ -262,7 +262,7 @@ function Card({ account, summary, open, fill, onToggle, me, onDraft }: { account
           </time>
         </button>
         {open && (
-          <div className="grid gap-1 px-4 pb-2 pl-10">
+          <div className="grid gap-1 px-4 pb-2 ps-10">
             {m ? (
               <>
                 <p className="text-sm">
