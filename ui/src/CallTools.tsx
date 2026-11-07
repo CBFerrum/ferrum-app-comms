@@ -9,7 +9,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Captions, CircleDot, FileText, Mic } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@ferrum/kit/primitives";
-import { api, errorMessage } from "@ferrum/client";
+import { api, errorMessage, t as tr } from "@ferrum/client";
 import { confirmDialog, Dialog, toast } from "@ferrum/kit";
 import { MEET, recordingWords, segmentId, type MeetKind, type Recording } from "./lib/meet";
 
@@ -39,13 +39,13 @@ interface Segment {
 function Transcript({ kind, id, onClose }: { kind: MeetKind; id: string; onClose: () => void }) {
   const q = useQuery({ queryKey: ["meet", "transcript", kind, id], queryFn: () => api.get<{ segments: Segment[] }>(`${MEET}/${kind}/${id}/transcript`).then((r) => r.segments) });
   return (
-    <Dialog open title="Transcript" onClose={onClose} footer={<Button onClick={onClose}>Done</Button>}>
+    <Dialog open title={tr("Transcript")} onClose={onClose} footer={<Button onClick={onClose}>{tr("Done")}</Button>}>
       {q.isPending ? (
-        <p className="text-sm text-muted-foreground">Loading…</p>
+        <p className="text-sm text-muted-foreground">{tr("Loading…")}</p>
       ) : q.isError ? (
         <p className="text-sm">{errorMessage(q.error)}</p>
       ) : q.data.length === 0 ? (
-        <p className="text-sm text-muted-foreground">Nothing yet. What people caption of their own voices appears here.</p>
+        <p className="text-sm text-muted-foreground">{tr("Nothing yet. What people caption of their own voices appears here.")}</p>
       ) : (
         <ol className="grid gap-2 text-sm">
           {q.data.map((s, i) => (
@@ -97,7 +97,7 @@ export function CallTools({ kind, id, recordings }: { kind: MeetKind; id: string
       if (e.error === "not-allowed" || e.error === "service-not-allowed") {
         over = true;
         setMine(false);
-        toast("This browser would not let captions hear your microphone.", "error");
+        toast(tr("This browser would not let captions hear your microphone."), "error");
       }
     };
     // Recognition stops by itself after a silence: it starts again while captions are on.
@@ -138,18 +138,18 @@ export function CallTools({ kind, id, recordings }: { kind: MeetKind; id: string
       <div className="absolute end-2 top-2 z-20 flex flex-wrap items-center justify-end gap-1">
         {recording && (
           <span className="flex items-center gap-1 rounded bg-red-600 px-2 py-1 text-xs font-medium text-white" role="status">
-            <CircleDot className="size-3" aria-hidden /> Recording
+            <CircleDot className="size-3" aria-hidden /> {tr("Recording")}
           </span>
         )}
         <Button size="xs" variant={shown ? "default" : "outline"} aria-pressed={shown} onClick={() => setShown(!shown)}>
-          <Captions className="size-3.5" aria-hidden /> Captions
+          <Captions className="size-3.5" aria-hidden /> {tr("Captions")}
         </Button>
         {canHear && (
           <Button
             size="xs"
             variant={mine ? "default" : "outline"}
             aria-pressed={mine}
-            title="Your browser's speech recognition hears your voice, and may send it to the browser's maker to recognise it. What it hears goes to everyone in the call and into the meeting's transcript."
+            title={tr("Your browser's speech recognition hears your voice, and may send it to the browser's maker to recognise it. What it hears goes to everyone in the call and into the meeting's transcript.")}
             onClick={() => {
               setMine(!mine);
               if (!mine) setShown(true);
@@ -159,7 +159,7 @@ export function CallTools({ kind, id, recordings }: { kind: MeetKind; id: string
           </Button>
         )}
         <Button size="xs" variant="outline" onClick={() => setReading(true)}>
-          <FileText className="size-3.5" aria-hidden /> Transcript
+          <FileText className="size-3.5" aria-hidden /> {tr("Transcript")}
         </Button>
         {recordings && (
           <Button
@@ -188,7 +188,7 @@ export function CallTools({ kind, id, recordings }: { kind: MeetKind; id: string
         <div className="pointer-events-none absolute inset-x-0 bottom-20 z-20 flex justify-center px-4" aria-live="polite">
           <div className="max-w-2xl rounded bg-black/70 px-3 py-2 text-center text-sm text-white">
             {latest.length === 0 ? (
-              <span className="opacity-80">Captions appear here when someone captions their voice.</span>
+              <span className="opacity-80">{tr("Captions appear here when someone captions their voice.")}</span>
             ) : (
               latest.map((t) => (
                 <div key={t.streamInfo.id}>

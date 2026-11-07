@@ -27,7 +27,7 @@ import {
   Skeleton,
   Textarea,
 } from "@ferrum/kit/primitives";
-import { api, download, errorMessage, fetchBlob, relativeTime, shell } from "@ferrum/client";
+import { api, download, errorMessage, fetchBlob, relativeTime, shell, t as tr } from "@ferrum/client";
 import { cn, confirmDialog, EmptyState, ErrorState, Markdown, toast, useLivePush } from "@ferrum/kit";
 import { useMe, usePeople } from "@ferrum/records";
 import { Composer, PeoplePicker } from "./ChatComposer";
@@ -84,7 +84,7 @@ function ChannelIcon({ c }: { c: Pick<ChannelSummary, "type" | "active"> }) {
     return (
       <span className="relative shrink-0">
         <MessageSquare className="size-4" aria-hidden="true" />
-        {c.active && <span className="absolute -end-0.5 -bottom-0.5 size-2 rounded-full border border-background bg-emerald-500" title="Active now" />}
+        {c.active && <span className="absolute -end-0.5 -bottom-0.5 size-2 rounded-full border border-background bg-emerald-500" title={tr("Active now")} />}
       </span>
     );
   if (c.type === "Private") return <Lock className="size-4 shrink-0" aria-hidden="true" />;
@@ -119,15 +119,15 @@ export function ChatPage() {
 
   return (
     <div data-fullbleed className="grid h-[calc(100dvh-var(--ferrum-bar-height,48px))] min-h-0 md:grid-cols-[280px_minmax(0,1fr)]">
-      <aside className={cn("min-h-0 border-e", channel && "hidden md:block")} aria-label="Conversations">
+      <aside className={cn("min-h-0 border-e", channel && "hidden md:block")} aria-label={tr("Conversations")}>
         <ChannelList list={channels.data?.channels} loading={channels.isLoading} error={channels.error} onRetry={() => void channels.refetch()} active={channel} waiting={waiting} />
       </aside>
       <section className={cn("min-h-0", !channel && "hidden md:grid md:place-items-center")}>
         {channel ? (
           <Conversation key={channel} id={channel} summary={channels.data?.channels.find((c) => c.id === channel)} />
         ) : (
-          <EmptyState title="Pick a conversation" icon="chat">
-            <p className="text-sm text-muted-foreground">Or start a new one from the buttons beside “Chat”.</p>
+          <EmptyState title={tr("Pick a conversation")} icon="chat">
+            <p className="text-sm text-muted-foreground">{tr("Or start a new one from the buttons beside “Chat”.")}</p>
           </EmptyState>
         )}
       </section>
@@ -170,7 +170,7 @@ function ChannelList({
     try {
       await api.post(`${CHAT}/read-all`, {});
       void qc.invalidateQueries({ queryKey: keys.channels });
-      toast("Everything is marked as read");
+      toast(tr("Everything is marked as read"));
     } catch (e) {
       toast(errorMessage(e), "error");
     }
@@ -193,7 +193,7 @@ function ChannelList({
         >
           <ChannelIcon c={c} />
           <span className="min-w-0 flex-1 truncate">{c.title || c.name}</span>
-          {quiet && <BellOff className="size-3.5 shrink-0" aria-label="Muted" />}
+          {quiet && <BellOff className="size-3.5 shrink-0" aria-label={tr("Muted")} />}
           {b.mention && (
             <span className="grid size-5 shrink-0 place-items-center rounded-full border border-destructive bg-destructive-soft text-[11px] leading-none font-bold text-destructive" aria-hidden="true">
               @
@@ -218,55 +218,55 @@ function ChannelList({
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 p-2">
       <div className="flex items-center gap-1">
-        <h1 className="flex-1 px-1 font-semibold">Chat</h1>
-        <Button size="icon-sm" variant="ghost" aria-label="Search messages" onClick={() => setSearching(true)}>
+        <h1 className="flex-1 px-1 font-semibold">{tr("Chat")}</h1>
+        <Button size="icon-sm" variant="ghost" aria-label={tr("Search messages")} onClick={() => setSearching(true)}>
           <Search />
         </Button>
-        <Button size="icon-sm" variant="ghost" aria-label="New direct message" onClick={() => setCreating("direct")}>
+        <Button size="icon-sm" variant="ghost" aria-label={tr("New direct message")} onClick={() => setCreating("direct")}>
           <MessageSquare />
         </Button>
-        <Button size="icon-sm" variant="ghost" aria-label="New channel" onClick={() => setCreating("channel")}>
+        <Button size="icon-sm" variant="ghost" aria-label={tr("New channel")} onClick={() => setCreating("channel")}>
           <Plus />
         </Button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button size="icon-sm" variant="ghost" aria-label="More">
+            <Button size="icon-sm" variant="ghost" aria-label={tr("More")}>
               <MoreHorizontal />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem disabled={waiting === 0} onSelect={() => void readAll()}>
-              Mark everything as read
+              {tr("Mark everything as read")}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      <Input type="search" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Find a conversation" aria-label="Find a conversation" />
-      <div className="flex gap-1" role="group" aria-label="Show">
+      <Input type="search" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder={tr("Find a conversation")} aria-label={tr("Find a conversation")} />
+      <div className="flex gap-1" role="group" aria-label={tr("Show")}>
         {SHOWS.map((s) => (
           <Button key={s.id} size="xs" variant={show === s.id ? "secondary" : "ghost"} aria-pressed={show === s.id} onClick={() => setShow(s.id)}>
             {s.label}
           </Button>
         ))}
       </div>
-      <nav className="min-h-0 flex-1 overflow-y-auto" aria-label="Conversations" aria-busy={loading}>
+      <nav className="min-h-0 flex-1 overflow-y-auto" aria-label={tr("Conversations")} aria-busy={loading}>
         {loading && <Skeleton className="h-40" />}
         {!!error && <ErrorState error={error} onRetry={onRetry} />}
         {direct.length > 0 && (
           <>
-            <h2 className="px-2 pt-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">Direct messages</h2>
+            <h2 className="px-2 pt-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">{tr("Direct messages")}</h2>
             <ul className="mt-1 grid gap-0.5">{direct.map(row)}</ul>
           </>
         )}
         {channels.length > 0 && (
           <>
-            <h2 className="mt-3 px-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">Channels</h2>
+            <h2 className="mt-3 px-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">{tr("Channels")}</h2>
             <ul className="mt-1 grid gap-0.5">{channels.map(row)}</ul>
           </>
         )}
         {joinable.length > 0 && (
           <>
-            <h2 className="mt-4 px-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">Channels you can join</h2>
+            <h2 className="mt-4 px-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">{tr("Channels you can join")}</h2>
             <ul className="mt-1 grid gap-0.5">{joinable.map(row)}</ul>
           </>
         )}
@@ -385,7 +385,7 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
       await api.post(`${CHAT}/channels/${id}/read`, { unread_from: m.id });
       setDivider(m.id);
       void qc.invalidateQueries({ queryKey: keys.channels });
-      toast("Marked as unread from that message");
+      toast(tr("Marked as unread from that message"));
     } catch (e) {
       kept.current = false;
       toast(errorMessage(e), "error");
@@ -411,7 +411,7 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
     <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto] xl:grid-cols-[minmax(0,1fr)_auto]">
       <div className="xl:col-span-2">
         <header className="flex items-center gap-2 border-b px-3 py-2">
-          <Button asChild variant="ghost" size="icon-sm" className="md:hidden" aria-label="Back to conversations">
+          <Button asChild variant="ghost" size="icon-sm" className="md:hidden" aria-label={tr("Back to conversations")}>
             <Link to={base}>
               <ArrowLeft />
             </Link>
@@ -427,18 +427,18 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
               <span className="tabular-nums">{c.members.length}</span>
             </Button>
           )}
-          <Button variant="ghost" size="icon-sm" aria-label="Search this conversation" aria-pressed={side === "search"} onClick={() => (side === "search" ? patch({ panel: null }) : open("search"))}>
+          <Button variant="ghost" size="icon-sm" aria-label={tr("Search this conversation")} aria-pressed={side === "search"} onClick={() => (side === "search" ? patch({ panel: null }) : open("search"))}>
             <Search />
           </Button>
           {c && meet && !c.archived && (
-            <Button asChild variant="ghost" size="icon-sm" aria-label="Call" title="Start or join this conversation's call">
+            <Button asChild variant="ghost" size="icon-sm" aria-label={tr("Call")} title={tr("Start or join this conversation's call")}>
               {/* The call opens in a window of its own, which outlives this page (docs/plan/apps-ui.md §12.6). */}
               <a href={`/meet/channel/${id}`} onClick={(e) => openCall(e, `/meet/channel/${id}`)}>
                 <Video />
               </a>
             </Button>
           )}
-          <Button variant="ghost" size="icon-sm" aria-label="Details and notifications" aria-pressed={side === "details"} onClick={() => (side === "details" ? patch({ panel: null }) : open(direct ? "personal" : "general"))}>
+          <Button variant="ghost" size="icon-sm" aria-label={tr("Details and notifications")} aria-pressed={side === "details"} onClick={() => (side === "details" ? patch({ panel: null }) : open(direct ? "personal" : "general"))}>
             <Info />
           </Button>
         </header>
@@ -446,7 +446,7 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
           <div role="status" className="flex items-center gap-2 border-b bg-muted px-3 py-1.5 text-sm">
             <span className="min-w-0 flex-1">{feed.error ? "That message could not be found." : "Showing the messages around the one you picked."}</span>
             <Button size="xs" variant="outline" onClick={() => patch({ m: null })}>
-              Back to the latest
+              {tr("Back to the latest")}
             </Button>
           </div>
         )}
@@ -478,8 +478,8 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
           <Composer channel={id} people={mentionable} placeholder={`Message ${direct ? view.title : `#${view.name}`}`} onSent={target ? () => patch({ m: null }) : undefined} />
         ) : state.state === "join" ? (
           <div className="flex items-center gap-3 text-sm">
-            <span className="flex-1 text-muted-foreground">You are reading a public channel. Join it to post and to hear of new messages.</span>
-            <Button onClick={() => void join()}>Join channel</Button>
+            <span className="flex-1 text-muted-foreground">{tr("You are reading a public channel. Join it to post and to hear of new messages.")}</span>
+            <Button onClick={() => void join()}>{tr("Join channel")}</Button>
           </div>
         ) : (
           <p className="text-sm text-muted-foreground">{state.why}</p>
@@ -589,7 +589,7 @@ function MessageList(p: {
         className="relative min-h-0 overflow-y-auto px-3 py-2"
         role="log"
         aria-live="polite"
-        aria-label="Messages"
+        aria-label={tr("Messages")}
         tabIndex={-1}
       >
         {p.hasMore && (
@@ -646,7 +646,7 @@ function MessageList(p: {
             if (el) el.scrollTop = el.scrollHeight;
           }}
         >
-          <ChevronDown aria-hidden="true" /> New messages
+          <ChevronDown aria-hidden="true" /> {tr("New messages")}
         </Button>
       )}
     </div>
@@ -694,7 +694,7 @@ function MessageRow({
     const url = `${location.origin}/open/ChatMessage/${m.id}`;
     try {
       await navigator.clipboard.writeText(url);
-      toast("Link copied");
+      toast(tr("Link copied"));
     } catch {
       toast(`Copy this link: ${url}`);
     }
@@ -733,7 +733,7 @@ function MessageRow({
           </div>
         )}
         {m.deleted ? (
-          <p className="text-sm text-muted-foreground italic">This message was deleted.</p>
+          <p className="text-sm text-muted-foreground italic">{tr("This message was deleted.")}</p>
         ) : editing ? (
           <EditBox m={m} onDone={() => setEditing(false)} />
         ) : (
@@ -744,7 +744,7 @@ function MessageRow({
         )}
         {((m.edited_at && !m.deleted) || (onThread && (m.reply_count ?? 0) > 0)) && (
           <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs">
-            {m.edited_at && !m.deleted && <span className="text-muted-foreground">(edited)</span>}
+            {m.edited_at && !m.deleted && <span className="text-muted-foreground">{tr("(edited)")}</span>}
             {onThread && (m.reply_count ?? 0) > 0 && (
               <button type="button" className="font-medium text-primary hover:underline" onClick={() => onThread(m.id)}>
                 {m.reply_count} {m.reply_count === 1 ? "reply" : "replies"}
@@ -757,24 +757,24 @@ function MessageRow({
       {!m.deleted && !editing && (
         <div className="absolute -top-3 end-1 z-10 hidden gap-0.5 rounded-md border bg-background p-0.5 shadow-sm group-focus-within:flex group-hover:flex">
           {onThread && (
-            <Button variant="ghost" size="icon-sm" aria-label="Reply in thread" title="Reply in thread" onClick={() => onThread(m.id)}>
+            <Button variant="ghost" size="icon-sm" aria-label={tr("Reply in thread")} title={tr("Reply in thread")} onClick={() => onThread(m.id)}>
               <MessagesSquare />
             </Button>
           )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon-sm" aria-label="More actions" title="More actions">
+              <Button variant="ghost" size="icon-sm" aria-label={tr("More actions")} title={tr("More actions")}>
                 <MoreHorizontal />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              {mine && <DropdownMenuItem onSelect={() => setEditing(true)}>Edit</DropdownMenuItem>}
-              {onUnread && <DropdownMenuItem onSelect={() => onUnread(m)}>Mark as unread from here</DropdownMenuItem>}
-              <DropdownMenuItem onSelect={() => void link()}>Copy link</DropdownMenuItem>
+              {mine && <DropdownMenuItem onSelect={() => setEditing(true)}>{tr("Edit")}</DropdownMenuItem>}
+              {onUnread && <DropdownMenuItem onSelect={() => onUnread(m)}>{tr("Mark as unread from here")}</DropdownMenuItem>}
+              <DropdownMenuItem onSelect={() => void link()}>{tr("Copy link")}</DropdownMenuItem>
               {canDelete && (
                 <>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem onSelect={() => void remove()}>Delete</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => void remove()}>{tr("Delete")}</DropdownMenuItem>
                 </>
               )}
             </DropdownMenuContent>
@@ -789,7 +789,7 @@ function MessageRow({
 function Attachments({ files }: { files: Attachment[] }) {
   if (!files.length) return null;
   return (
-    <ul className="mt-1 flex flex-wrap gap-2" aria-label="Attachments">
+    <ul className="mt-1 flex flex-wrap gap-2" aria-label={tr("Attachments")}>
       {files.map((a) => (
         <li key={a.id} className="min-w-0 max-w-full">
           {a.content_type?.startsWith("image/") ? <AttachedImage a={a} /> : <FileChip a={a} />}
@@ -867,21 +867,21 @@ function EditBox({ m, onDone }: { m: Message; onDone: () => void }) {
             void save();
           }
         }}
-        aria-label="Edit message"
+        aria-label={tr("Edit message")}
         aria-invalid={!!failed || undefined}
         className="min-h-16"
       />
       {failed && (
         <p role="alert" className="text-xs text-destructive">
-          Not saved: {failed}
+          {tr("Not saved: {failed}", { failed })}
         </p>
       )}
       <div className="flex gap-2">
         <Button size="sm" onClick={() => void save()} disabled={busy || !body.trim()}>
-          Save
+          {tr("Save")}
         </Button>
         <Button size="sm" variant="ghost" onClick={onDone}>
-          Cancel
+          {tr("Cancel")}
         </Button>
       </div>
     </div>
@@ -924,10 +924,10 @@ function Thread({
   const list = useMemo(() => timeline([first.data ? [first.data] : [], rows]), [first.data, rows]);
   const marks = rows.length && first.data ? { [timeline([rows])[0]!.id]: `${rows.length} ${rows.length === 1 ? "reply" : "replies"}` } : undefined;
   return (
-    <aside className={cn(SIDE_PANEL, "grid-rows-[auto_minmax(0,1fr)_auto]")} aria-label="Thread" onKeyDown={(e) => e.key === "Escape" && onClose()}>
+    <aside className={cn(SIDE_PANEL, "grid-rows-[auto_minmax(0,1fr)_auto]")} aria-label={tr("Thread")} onKeyDown={(e) => e.key === "Escape" && onClose()}>
       <header className="flex items-center gap-2 border-b px-3 py-2">
-        <h3 className="flex-1 font-semibold">Thread</h3>
-        <Button variant="ghost" size="icon-sm" aria-label="Close thread" onClick={onClose}>
+        <h3 className="flex-1 font-semibold">{tr("Thread")}</h3>
+        <Button variant="ghost" size="icon-sm" aria-label={tr("Close thread")} onClick={onClose}>
           <X />
         </Button>
       </header>
@@ -949,10 +949,10 @@ function Thread({
       />
       <div className="border-t p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         {allowed.state === "ok" ? (
-          <Composer channel={channel} parent={root} people={mentionable} placeholder="Reply in thread" autoFocus={!highlight} />
+          <Composer channel={channel} parent={root} people={mentionable} placeholder={tr("Reply in thread")} autoFocus={!highlight} />
         ) : allowed.state === "join" ? (
           <Button className="w-full" onClick={onJoin}>
-            Join the channel to reply
+            {tr("Join the channel to reply")}
           </Button>
         ) : (
           <p className="text-sm text-muted-foreground">{allowed.why}</p>
@@ -994,11 +994,11 @@ function NewChannel({ onClose }: { onClose: () => void }) {
       <DialogContent>
         <form onSubmit={submit} className="grid gap-4">
           <DialogHeader>
-            <DialogTitle>New channel</DialogTitle>
-            <DialogDescription>Public channels are open to everyone who uses chat; private ones only to their members.</DialogDescription>
+            <DialogTitle>{tr("New channel")}</DialogTitle>
+            <DialogDescription>{tr("Public channels are open to everyone who uses chat; private ones only to their members.")}</DialogDescription>
           </DialogHeader>
           <div className="grid gap-1.5">
-            <Label htmlFor="ch-name">Name</Label>
+            <Label htmlFor="ch-name">{tr("Name")}</Label>
             <Input id="ch-name" required autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="sales-team" aria-invalid={!!failed || undefined} />
             {failed && (
               <p role="alert" className="text-xs text-destructive">
@@ -1007,11 +1007,11 @@ function NewChannel({ onClose }: { onClose: () => void }) {
             )}
           </div>
           <div className="grid gap-1.5">
-            <Label htmlFor="ch-topic">Topic (optional)</Label>
+            <Label htmlFor="ch-topic">{tr("Topic (optional)")}</Label>
             <Input id="ch-topic" value={topic} onChange={(e) => setTopic(e.target.value)} />
           </div>
           <fieldset className="flex gap-4 text-sm">
-            <legend className="mb-1 text-sm font-medium">Who can find it</legend>
+            <legend className="mb-1 text-sm font-medium">{tr("Who can find it")}</legend>
             {(["Public", "Private"] as const).map((t) => (
               <label key={t} className="flex items-center gap-2">
                 <input type="radio" name="ch-type" checked={type === t} onChange={() => setType(t)} /> {t}
@@ -1019,7 +1019,7 @@ function NewChannel({ onClose }: { onClose: () => void }) {
             ))}
           </fieldset>
           <fieldset className="grid max-h-48 gap-1 overflow-y-auto text-sm">
-            <legend className="mb-1 font-medium">Members</legend>
+            <legend className="mb-1 font-medium">{tr("Members")}</legend>
             {people
               .filter((p) => p.email.toLowerCase() !== me)
               .map((p) => (
@@ -1035,10 +1035,10 @@ function NewChannel({ onClose }: { onClose: () => void }) {
           </fieldset>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>
-              Cancel
+              {tr("Cancel")}
             </Button>
             <Button type="submit" disabled={busy || !name.trim()}>
-              Create
+              {tr("Create")}
             </Button>
           </DialogFooter>
         </form>
@@ -1067,8 +1067,8 @@ function NewDirect({ onClose }: { onClose: () => void }) {
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>New direct message</DialogTitle>
-          <DialogDescription>Pick the person to talk to. They are told of each message.</DialogDescription>
+          <DialogTitle>{tr("New direct message")}</DialogTitle>
+          <DialogDescription>{tr("Pick the person to talk to. They are told of each message.")}</DialogDescription>
         </DialogHeader>
         <PeoplePicker people={people.filter((p) => p.email.toLowerCase() !== me)} onPick={(p) => void open(p)} onClose={onClose} />
       </DialogContent>
@@ -1087,10 +1087,10 @@ export function ChatMessagePage() {
   }, [q.data, base, navigate]);
   if (q.error)
     return (
-      <EmptyState title="That message is not available" icon="chat">
-        <p className="text-sm text-muted-foreground">It was deleted, or it is in a conversation you cannot read.</p>
+      <EmptyState title={tr("That message is not available")} icon="chat">
+        <p className="text-sm text-muted-foreground">{tr("It was deleted, or it is in a conversation you cannot read.")}</p>
         <Link className="text-primary underline" to={base}>
-          Go to Chat
+          {tr("Go to Chat")}
         </Link>
       </EmptyState>
     );

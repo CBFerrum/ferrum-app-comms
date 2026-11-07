@@ -8,7 +8,7 @@ import { Archive, ArrowLeft, ChevronDown, ChevronRight, Forward, FolderInput, Ma
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Label, Skeleton } from "@ferrum/kit/primitives";
 import { can, LinkInput, useMetaIndex } from "@ferrum/records";
-import { api, download, errorMessage, formatDateTime, relativeTime } from "@ferrum/client";
+import { api, download, errorMessage, formatDateTime, relativeTime, t as tr } from "@ferrum/client";
 import { cn, confirmDialog, ErrorState, toast } from "@ferrum/kit";
 import {
   MAIL,
@@ -105,7 +105,7 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
   };
   // The list is shown again at once; the change goes to the mail server meanwhile, and a refusal says so.
   const move = (to: Mailbox | undefined, label: string, keywords: Record<string, boolean | null> = {}) => {
-    if (!to) return toast("This mailbox has no such folder.", "error");
+    if (!to) return toast(tr("This mailbox has no such folder."), "error");
     const patch: Record<string, unknown> = { mailboxIds: { [to.id]: true } };
     for (const [k, v] of Object.entries(keywords)) patch[`keywords/${k}`] = v;
     p.onBack();
@@ -116,7 +116,7 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
     if (!(await confirmDialog({ title: "Delete this conversation for good?", message: "It cannot be recovered.", confirmLabel: "Delete", danger: true }))) return;
     try {
       await jmap([["Email/set", { accountId: p.account, destroy: ids }, "0"]]);
-      toast("Deleted");
+      toast(tr("Deleted"));
       p.onBack();
       await refresh();
     } catch (e) {
@@ -155,61 +155,61 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
 
   if (thread.error) return <ErrorState error={thread.error} onRetry={() => void thread.refetch()} />;
   if (!thread.data) return <Skeleton className="m-4 h-64" />;
-  if (!newest) return <ErrorState title="That message is not here any more" error={new Error("It may have been moved or deleted.")} onRetry={p.onBack} />;
+  if (!newest) return <ErrorState title={tr("That message is not here any more")} error={new Error("It may have been moved or deleted.")} onRetry={p.onBack} />;
   const subject = latest.data?.subject ?? newest.subject;
   const single = messages.length === 1;
   const draftOpen = !!role("drafts") && !!newest.mailboxIds[role("drafts")!.id];
   return (
     <article className="grid h-full min-h-0 grid-rows-[auto_auto_minmax(0,1fr)]" aria-label={subject ?? "Conversation"}>
       <header className="flex flex-wrap items-center gap-1 border-b px-2 py-1.5">
-        <Button variant="ghost" size="icon-sm" className="md:hidden" aria-label="Back to messages" onClick={p.onBack}>
+        <Button variant="ghost" size="icon-sm" className="md:hidden" aria-label={tr("Back to messages")} onClick={p.onBack}>
           <ArrowLeft />
         </Button>
-        <Button variant="ghost" size="sm" disabled={!latest.data} onClick={() => reply("reply")} title="Reply (r)">
-          <Reply aria-hidden="true" /> Reply
+        <Button variant="ghost" size="sm" disabled={!latest.data} onClick={() => reply("reply")} title={tr("Reply (r)")}>
+          <Reply aria-hidden="true" /> {tr("Reply")}
         </Button>
-        <Button variant="ghost" size="sm" disabled={!latest.data} onClick={() => reply("replyAll")} title="Reply to all (a)">
-          <ReplyAll aria-hidden="true" /> Reply all
+        <Button variant="ghost" size="sm" disabled={!latest.data} onClick={() => reply("replyAll")} title={tr("Reply to all (a)")}>
+          <ReplyAll aria-hidden="true" /> {tr("Reply all")}
         </Button>
-        <Button variant="ghost" size="sm" disabled={!latest.data} onClick={() => reply("forward")} title="Forward (f)">
-          <Forward aria-hidden="true" /> Forward
+        <Button variant="ghost" size="sm" disabled={!latest.data} onClick={() => reply("forward")} title={tr("Forward (f)")}>
+          <Forward aria-hidden="true" /> {tr("Forward")}
         </Button>
         <span className="flex-1" />
-        <Button variant="ghost" size="icon-sm" aria-label={starred ? "Remove the star" : "Star"} aria-pressed={starred} title="Star (s)" onClick={star}>
+        <Button variant="ghost" size="icon-sm" aria-label={starred ? "Remove the star" : "Star"} aria-pressed={starred} title={tr("Star (s)")} onClick={star}>
           <Star className={cn(starred && "fill-warning text-warning")} />
         </Button>
         {role("archive") && !inBox("archive") && (
-          <Button variant="ghost" size="icon-sm" aria-label="Archive" title="Archive (e)" onClick={() => move(role("archive"), "Archived")}>
+          <Button variant="ghost" size="icon-sm" aria-label={tr("Archive")} title={tr("Archive (e)")} onClick={() => move(role("archive"), "Archived")}>
             <Archive />
           </Button>
         )}
         {junk ? (
-          <Button variant="ghost" size="sm" title="Not spam: back to the inbox, and the filter learns" onClick={spam}>
-            <ShieldCheck aria-hidden="true" /> Not spam
+          <Button variant="ghost" size="sm" title={tr("Not spam: back to the inbox, and the filter learns")} onClick={spam}>
+            <ShieldCheck aria-hidden="true" /> {tr("Not spam")}
           </Button>
         ) : (
-          <Button variant="ghost" size="icon-sm" aria-label="Spam" title="Spam (!): to Junk, and the filter learns" onClick={spam}>
+          <Button variant="ghost" size="icon-sm" aria-label={tr("Spam")} title={tr("Spam (!): to Junk, and the filter learns")} onClick={spam}>
             <ShieldAlert />
           </Button>
         )}
-        <Button variant="ghost" size="icon-sm" aria-label="Mark as unread" title="Mark as unread (Shift+U)" onClick={unreadAgain}>
+        <Button variant="ghost" size="icon-sm" aria-label={tr("Mark as unread")} title={tr("Mark as unread (Shift+U)")} onClick={unreadAgain}>
           <MailOpen />
         </Button>
         {comms && can(comms.permissions, "create") && latest.data && (
-          <Button variant="ghost" size="icon-sm" aria-label="File to a record" title="File to a record" onClick={() => setFiling(true)}>
+          <Button variant="ghost" size="icon-sm" aria-label={tr("File to a record")} title={tr("File to a record")} onClick={() => setFiling(true)}>
             <FolderInput />
           </Button>
         )}
-        <Button variant="ghost" size="icon-sm" aria-label={p.folder === role("trash")?.id ? "Delete for good" : "Delete"} title="Delete (#)" onClick={() => void remove()}>
+        <Button variant="ghost" size="icon-sm" aria-label={p.folder === role("trash")?.id ? "Delete for good" : "Delete"} title={tr("Delete (#)")} onClick={() => void remove()}>
           <Trash2 />
         </Button>
       </header>
       <div className="border-b px-4 py-2">
         <h2 className="text-lg font-semibold break-words">{subject || "(no subject)"}</h2>
-        {!single && <p className="text-xs text-muted-foreground">{messagesIn(messages.length)} in this conversation</p>}
+        {!single && <p className="text-xs text-muted-foreground">{messagesIn(messages.length)} {tr("in this conversation")}</p>}
         {draftOpen && latest.data && (
           <Button size="sm" variant="outline" className="mt-1" onClick={() => p.onDraft(asDraft(latest.data!, newest.id))}>
-            Continue writing this draft
+            {tr("Continue writing this draft")}
           </Button>
         )}
       </div>
@@ -252,11 +252,11 @@ function Card({ account, summary, open, fill, onToggle, me, onDraft }: { account
       <div>
         <button type="button" onClick={onToggle} aria-expanded={open} className="flex w-full items-center gap-2 px-4 py-2 text-start hover:bg-accent/50 pointer-coarse:min-h-11">
           {open ? <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" /> : <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />}
-          {unread && <span className="size-2 shrink-0 rounded-full bg-primary" role="img" aria-label="Unread" />}
+          {unread && <span className="size-2 shrink-0 rounded-full bg-primary" role="img" aria-label={tr("Unread")} />}
           <span className={cn("shrink-0 text-sm", unread ? "font-semibold" : "font-medium")}>{mine ? "You" : from || "(unknown sender)"}</span>
           {!open && <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">{summary.preview}</span>}
           {open && <span className="flex-1" />}
-          {summary.hasAttachment && <Paperclip className="size-3.5 shrink-0 text-muted-foreground" aria-label="Has attachments" />}
+          {summary.hasAttachment && <Paperclip className="size-3.5 shrink-0 text-muted-foreground" aria-label={tr("Has attachments")} />}
           <time className="shrink-0 text-xs text-muted-foreground" dateTime={summary.receivedAt} title={formatDateTime(summary.receivedAt)}>
             {relativeTime(summary.receivedAt)}
           </time>
@@ -268,31 +268,31 @@ function Card({ account, summary, open, fill, onToggle, me, onDraft }: { account
                 <p className="text-sm">
                   {m.from?.[0]?.name && <span className="text-muted-foreground">&lt;{m.from[0].email}&gt; </span>}
                   <span className="text-xs text-muted-foreground">
-                    To {addressList(m.to) || "—"}
+                    {tr("To")} {addressList(m.to) || "—"}
                     {m.cc?.length ? ` · Cc ${addressList(m.cc)}` : ""} · {formatDateTime(m.receivedAt)}
                   </span>
                 </p>
                 <div className="flex flex-wrap gap-1">
                   <Button variant="outline" size="xs" onClick={() => onDraft({ kind: "reply", original: m })}>
-                    <Reply aria-hidden="true" /> Reply
+                    <Reply aria-hidden="true" /> {tr("Reply")}
                   </Button>
                   <Button variant="outline" size="xs" onClick={() => onDraft({ kind: "replyAll", original: m })}>
-                    <ReplyAll aria-hidden="true" /> Reply all
+                    <ReplyAll aria-hidden="true" /> {tr("Reply all")}
                   </Button>
                   <Button variant="outline" size="xs" onClick={() => onDraft({ kind: "forward", original: m })}>
-                    <Forward aria-hidden="true" /> Forward
+                    <Forward aria-hidden="true" /> {tr("Forward")}
                   </Button>
                 </div>
                 {m.remote_images > 0 && !images && (
                   <p className="flex items-center gap-2 text-xs text-muted-foreground">
-                    {m.remote_images === 1 ? "1 remote image is hidden" : `${m.remote_images} remote images are hidden`} to protect your privacy.
+                    {m.remote_images === 1 ? "1 remote image is hidden" : `${m.remote_images} remote images are hidden`} {tr("to protect your privacy.")}
                     <Button variant="link" size="xs" className="h-auto p-0" onClick={() => setImages(true)}>
-                      Show images
+                      {tr("Show images")}
                     </Button>
                   </p>
                 )}
                 {m.attachments.length > 0 && (
-                  <ul className="flex flex-wrap gap-2 pt-1" aria-label="Attachments">
+                  <ul className="flex flex-wrap gap-2 pt-1" aria-label={tr("Attachments")}>
                     {m.attachments.map((a) => (
                       <li key={a.blobId}>
                         <Button
@@ -313,9 +313,9 @@ function Card({ account, summary, open, fill, onToggle, me, onDraft }: { account
               </>
             ) : msg.error ? (
               <p role="alert" className="text-sm text-destructive">
-                This message could not be loaded: {errorMessage(msg.error)}{" "}
+                {tr("This message could not be loaded:")} {errorMessage(msg.error)}{" "}
                 <Button variant="link" size="xs" className="h-auto p-0" onClick={() => void msg.refetch()}>
-                  Try again
+                  {tr("Try again")}
                 </Button>
               </p>
             ) : (
@@ -353,7 +353,7 @@ export function FileDialog({ account, email, onClose }: { account: string; email
     setProblem(null);
     try {
       await api.post(`${MAIL}/file`, { account, email: email.id, entity, record });
-      toast("Filed: the record's timeline shows it.");
+      toast(tr("Filed: the record's timeline shows it."));
       onClose();
     } catch (err) {
       setProblem(errorMessage(err));
@@ -366,13 +366,13 @@ export function FileDialog({ account, email, onClose }: { account: string; email
       <DialogContent>
         <form onSubmit={submit} className="grid gap-4">
           <DialogHeader>
-            <DialogTitle>File to a record</DialogTitle>
+            <DialogTitle>{tr("File to a record")}</DialogTitle>
             <DialogDescription>
-              "{email.subject || "(no subject)"}" goes onto the record's timeline with its attachments, for everyone who can see the record.
+              "{email.subject || "(no subject)"}{tr("\" goes onto the record's timeline with its attachments, for everyone who can see the record.")}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-1.5">
-            <Label htmlFor="file-entity">Kind of record</Label>
+            <Label htmlFor="file-entity">{tr("Kind of record")}</Label>
             <select
               id="file-entity"
               className="h-9 rounded-md border bg-background px-2 text-sm"
@@ -382,7 +382,7 @@ export function FileDialog({ account, email, onClose }: { account: string; email
                 setRecord(null);
               }}
             >
-              <option value="">Choose…</option>
+              <option value="">{tr("Choose…")}</option>
               {entities.map((e) => (
                 <option key={e.name} value={e.name}>
                   {e.label}
@@ -392,21 +392,21 @@ export function FileDialog({ account, email, onClose }: { account: string; email
           </div>
           {entity && (
             <div className="grid gap-1.5">
-              <Label htmlFor="file-record">Record</Label>
+              <Label htmlFor="file-record">{tr("Record")}</Label>
               <LinkInput key={entity} id="file-record" to={entity} value={record} onChange={(id) => setRecord(id)} />
             </div>
           )}
           {problem && (
             <p role="alert" className="text-sm text-destructive">
-              Not filed: {problem}
+              {tr("Not filed: {problem}", { problem })}
             </p>
           )}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>
-              Cancel
+              {tr("Cancel")}
             </Button>
             <Button type="submit" disabled={!entity || !record || busy}>
-              File
+              {tr("File")}
             </Button>
           </DialogFooter>
         </form>

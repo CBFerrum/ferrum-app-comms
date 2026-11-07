@@ -7,7 +7,7 @@ import { useState, type FormEvent } from "react";
 import { Link } from "react-router";
 import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Input, Skeleton } from "@ferrum/kit/primitives";
 import { ErrorState, useDebounced } from "@ferrum/kit";
-import { api, relativeTime } from "@ferrum/client";
+import { api, relativeTime, t } from "@ferrum/client";
 import { usePeople } from "@ferrum/records";
 import { CHAT, showMentions, snippet, type Message } from "./lib/chat";
 
@@ -19,7 +19,7 @@ function Hit({ m, term, people }: { m: Message; term: string; people: Parameters
   return (
     <>
       <span className="font-medium">{m.sender_name || m.sender}</span> <span className="text-xs text-muted-foreground">{relativeTime(m.posted_at)}</span>
-      {m.parent && <span className="ms-1 text-xs text-muted-foreground">in a thread</span>}
+      {m.parent && <span className="ms-1 text-xs text-muted-foreground">{t("in a thread")}</span>}
       <span className="mt-0.5 line-clamp-2 block text-muted-foreground">
         {s.before}
         {s.hit && <mark className="rounded-sm bg-warning-soft px-0.5 text-foreground">{s.hit}</mark>}
@@ -43,21 +43,21 @@ export function ChannelSearch({ channel, onPick, onClose }: { channel: string; o
   return (
     <aside
       className="fixed inset-y-0 end-0 z-40 grid w-full grid-rows-[auto_auto_minmax(0,1fr)] border-s bg-background shadow-xl sm:w-[420px] xl:static xl:z-auto xl:row-span-2 xl:row-start-2 xl:w-[360px] xl:shadow-none"
-      aria-label="Search this conversation"
+      aria-label={t("Search this conversation")}
       onKeyDown={(e) => e.key === "Escape" && onClose()}
     >
       <header className="flex items-center gap-2 border-b px-3 py-2">
-        <h3 className="flex-1 font-semibold">Search this conversation</h3>
-        <Button variant="ghost" size="icon-sm" aria-label="Close search" onClick={onClose}>
+        <h3 className="flex-1 font-semibold">{t("Search this conversation")}</h3>
+        <Button variant="ghost" size="icon-sm" aria-label={t("Close search")} onClick={onClose}>
           <X />
         </Button>
       </header>
       <div className="relative border-b p-2">
         <Search className="pointer-events-none absolute top-4.5 start-4 size-4 text-muted-foreground" aria-hidden="true" />
-        <Input autoFocus className="ps-8" type="search" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="Words in a message" aria-label="Search this conversation" />
+        <Input autoFocus className="ps-8" type="search" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={t("Words in a message")} aria-label={t("Search this conversation")} />
       </div>
       <ul className="min-h-0 overflow-y-auto p-2" aria-live="polite" aria-busy={results.isFetching}>
-        {!ready && <li className="px-1 py-4 text-sm text-muted-foreground">Type at least {LEAST} letters. Messages in this conversation that contain them are listed here, newest first.</li>}
+        {!ready && <li className="px-1 py-4 text-sm text-muted-foreground">{t("Type at least {LEAST} letters. Messages in this conversation that contain them are listed here, newest first.", { LEAST })}</li>}
         {ready && results.isFetching && !results.data && <Skeleton className="h-16" />}
         {results.error && (
           <li>
@@ -71,7 +71,7 @@ export function ChannelSearch({ channel, onPick, onClose }: { channel: string; o
             </button>
           </li>
         ))}
-        {results.data && !results.data.messages.length && <li className="px-1 py-4 text-sm text-muted-foreground">No message here contains “{term}”.</li>}
+        {results.data && !results.data.messages.length && <li className="px-1 py-4 text-sm text-muted-foreground">{t("No message here contains “{term}”.", { term })}</li>}
       </ul>
     </aside>
   );
@@ -95,13 +95,13 @@ export function SearchDialog({ base, onClose }: { base: string; onClose: () => v
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Search messages</DialogTitle>
-          <DialogDescription>In your conversations and in public channels.</DialogDescription>
+          <DialogTitle>{t("Search messages")}</DialogTitle>
+          <DialogDescription>{t("In your conversations and in public channels.")}</DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="flex gap-2">
-          <Input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder={`At least ${LEAST} letters`} aria-label="Search text" />
+          <Input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder={`At least ${LEAST} letters`} aria-label={t("Search text")} />
           <Button type="submit" disabled={q.trim().length < LEAST}>
-            Search
+            {t("Search")}
           </Button>
         </form>
         <ul className="grid max-h-80 gap-2 overflow-y-auto" aria-live="polite">
@@ -118,7 +118,7 @@ export function SearchDialog({ base, onClose }: { base: string; onClose: () => v
               </Link>
             </li>
           ))}
-          {results.data && !results.data.messages.length && <li className="text-sm text-muted-foreground">Nothing found.</li>}
+          {results.data && !results.data.messages.length && <li className="text-sm text-muted-foreground">{t("Nothing found.")}</li>}
         </ul>
       </DialogContent>
     </Dialog>

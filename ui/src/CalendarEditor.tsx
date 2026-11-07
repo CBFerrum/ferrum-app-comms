@@ -9,7 +9,7 @@ import { useMemo, useState, type FormEvent, type MouseEvent } from "react";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router";
 import { Badge, Button, Input, Label, Skeleton, Textarea } from "@ferrum/kit/primitives";
 import { Alert, confirmDialog, EmptyState, ErrorState, PageLoading, toast, useShellTitle } from "@ferrum/kit";
-import { api, docPath, errorMessage } from "@ferrum/client";
+import { api, docPath, errorMessage, t } from "@ferrum/client";
 import { useMe, usePeople } from "@ferrum/records";
 import { matchPeople, type Person } from "./lib/chat";
 import {
@@ -67,10 +67,10 @@ export function EventPage() {
   if (event === "new") return me ? <Editor key="new" me={me} params={params} /> : <PageLoading />;
   if (doc.error) {
     return (
-      <EmptyState title="That event is not available" icon="calendar">
-        <p className="text-sm text-muted-foreground">It was deleted, or it is not on your calendar.</p>
+      <EmptyState title={t("That event is not available")} icon="calendar">
+        <p className="text-sm text-muted-foreground">{t("It was deleted, or it is not on your calendar.")}</p>
         <Link className="text-primary underline" to="/calendar">
-          Go to Calendar
+          {t("Go to Calendar")}
         </Link>
       </EmptyState>
     );
@@ -229,7 +229,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
     try {
       await api.del(docPath("CalendarEvent", doc.id));
       void qc.invalidateQueries({ queryKey: ["calendar"] });
-      toast("Event deleted");
+      toast(t("Event deleted"));
       navigate("/calendar");
     } catch (err) {
       setProblem(errorMessage(err));
@@ -244,7 +244,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
     <form onSubmit={save} className="mx-auto grid max-w-5xl gap-6 p-4 lg:grid-cols-[minmax(0,32rem)_minmax(0,1fr)]">
       <div className="grid content-start gap-4">
         <div className="flex items-center gap-2">
-          <Button asChild variant="ghost" size="icon-sm" aria-label="Back to Calendar">
+          <Button asChild variant="ghost" size="icon-sm" aria-label={t("Back to Calendar")}>
             <Link to="/calendar">
               <ArrowLeft />
             </Link>
@@ -258,11 +258,11 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
         )}
         {doc?.status === "Cancelled" && (
           <Alert tone="warning">
-            <span>This event is cancelled. Guests were told. Saving changes does not bring it back.</span>
+            <span>{t("This event is cancelled. Guests were told. Saving changes does not bring it back.")}</span>
           </Alert>
         )}
         <div className="grid gap-1.5">
-          <Label htmlFor="ev-subject">Title</Label>
+          <Label htmlFor="ev-subject">{t("Title")}</Label>
           <Input id="ev-subject" autoFocus={!existing} value={subject} maxLength={200} onChange={(e) => setSubject(e.target.value)} />
         </div>
         <label className="flex items-center gap-2 text-sm">
@@ -283,7 +283,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
               }
             }}
           />{" "}
-          All day
+          {t("All day")}
         </label>
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="grid gap-1.5">
@@ -307,36 +307,36 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
         {clash.length > 0 && when && (
           <p role="status" className="rounded-md border border-warning bg-warning-soft px-3 py-2 text-sm">
             {clash.map((who) => `${nameOf(who)} (${(others[who] ?? []).filter((b) => Date.parse(b.start) < when.ends.getTime() && Date.parse(b.end) > when.starts.getTime()).map(stretch).join(", ")})`).join(" and ")}{" "}
-            {clash.length === 1 ? "is" : "are"} busy then. The times that suit everyone are on the right.
+            {clash.length === 1 ? "is" : "are"} {t("busy then. The times that suit everyone are on the right.")}
           </p>
         )}
-        <p className="-mt-2 text-xs text-muted-foreground">Times are in your time zone, {Intl.DateTimeFormat().resolvedOptions().timeZone}. Guests see them in theirs.</p>
+        <p className="-mt-2 text-xs text-muted-foreground">{t("Times are in your time zone, {timeZone}. Guests see them in theirs.", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone })}</p>
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="grid gap-1.5">
-            <Label htmlFor="ev-repeat">Repeats</Label>
+            <Label htmlFor="ev-repeat">{t("Repeats")}</Label>
             <select id="ev-repeat" className="h-9 rounded-md border bg-background px-2 text-sm" value={repeat} onChange={(e) => setRepeat(e.target.value as Repeat)}>
               {REPEATS.map((r) => (
                 <option key={r.value} value={r.value}>
                   {r.label}
                 </option>
               ))}
-              {repeat === "custom" && <option value="custom">Custom (kept as it is)</option>}
+              {repeat === "custom" && <option value="custom">{t("Custom (kept as it is)")}</option>}
             </select>
           </div>
           {repeat !== "none" && repeat !== "custom" && (
             <div className="grid gap-1.5">
-              <Label htmlFor="ev-until">Until (optional)</Label>
+              <Label htmlFor="ev-until">{t("Until (optional)")}</Label>
               <Input id="ev-until" type="date" value={until} onChange={(e) => setUntil(e.target.value)} />
             </div>
           )}
         </div>
-        {repeat !== "none" && existing && <p className="-mt-2 text-xs text-muted-foreground">Changes apply to every time it repeats.</p>}
+        {repeat !== "none" && existing && <p className="-mt-2 text-xs text-muted-foreground">{t("Changes apply to every time it repeats.")}</p>}
         <fieldset className="grid gap-2">
-          <legend className="mb-1 text-sm font-medium">Guests</legend>
+          <legend className="mb-1 text-sm font-medium">{t("Guests")}</legend>
           {guests.length > 0 && (
             <>
               <p className="text-xs text-muted-foreground">{replies ? `So far: ${replies}.` : `${guests.length} invited. Colleagues are told in Ferrum, others by email.`}</p>
-              <ul className="flex flex-wrap gap-1.5" aria-label="Guests">
+              <ul className="flex flex-wrap gap-1.5" aria-label={t("Guests")}>
                 {guests.map((g) => (
                   <li key={g}>
                     <Badge variant="secondary" className="h-7 gap-1.5 pl-2.5">
@@ -355,48 +355,48 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
           <GuestInput people={people} taken={[me, ...guests]} typed={typed} setTyped={setTyped} add={addGuests} />
         </fieldset>
         <div className="grid gap-1.5">
-          <Label htmlFor="ev-where">Where</Label>
+          <Label htmlFor="ev-where">{t("Where")}</Label>
           <Input id="ev-where" value={location} maxLength={200} onChange={(e) => setLocation(e.target.value)} />
         </div>
         {meet ? (
           <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={call} disabled={!!link && !hasCall} onChange={(e) => setCall(e.target.checked)} /> Add a video meeting
+            <input type="checkbox" checked={call} disabled={!!link && !hasCall} onChange={(e) => setCall(e.target.checked)} /> {t("Add a video meeting")}
           </label>
         ) : hasCall ? (
-          <p className="text-sm text-muted-foreground">It has a video meeting, but meetings are not set up on this server, so nobody can join it.</p>
+          <p className="text-sm text-muted-foreground">{t("It has a video meeting, but meetings are not set up on this server, so nobody can join it.")}</p>
         ) : null}
         {link && !hasCall && (
           <p className="break-all text-sm">
-            Meeting link: <a className="text-primary underline" href={link} target="_blank" rel="noopener noreferrer">{link}</a>
+            {t("Meeting link:")} <a className="text-primary underline" href={link} target="_blank" rel="noopener noreferrer">{link}</a>
           </p>
         )}
         <div className="grid gap-1.5">
-          <Label htmlFor="ev-notes">Notes</Label>
+          <Label htmlFor="ev-notes">{t("Notes")}</Label>
           <Textarea id="ev-notes" rows={4} value={description} onChange={(e) => setDescription(e.target.value)} />
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="grid gap-1.5">
-            <Label htmlFor="ev-remind">Reminder</Label>
+            <Label htmlFor="ev-remind">{t("Reminder")}</Label>
             <select
               id="ev-remind"
               className="h-9 rounded-md border bg-background px-2 text-sm"
               value={String(reminder)}
               onChange={(e) => setReminder(e.target.value === "none" || e.target.value === "custom" ? e.target.value : Number(e.target.value))}
             >
-              <option value="none">None</option>
+              <option value="none">{t("None")}</option>
               {REMINDERS.map((r) => (
                 <option key={r.minutes} value={r.minutes}>
                   {r.label}
                 </option>
               ))}
-              {reminder === "custom" && <option value="custom">Several (kept as they are)</option>}
+              {reminder === "custom" && <option value="custom">{t("Several (kept as they are)")}</option>}
             </select>
           </div>
           <div className="grid gap-1.5">
-            <Label htmlFor="ev-visible">Who sees it</Label>
+            <Label htmlFor="ev-visible">{t("Who sees it")}</Label>
             <select id="ev-visible" className="h-9 rounded-md border bg-background px-2 text-sm" value={visibility} onChange={(e) => setVisibility(e.target.value)}>
-              <option value="Private">Only you and your guests (others see busy time)</option>
-              <option value="Public">Everyone in the workspace</option>
+              <option value="Private">{t("Only you and your guests (others see busy time)")}</option>
+              <option value="Public">{t("Everyone in the workspace")}</option>
             </select>
           </div>
         </div>
@@ -405,7 +405,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
             {busy ? "Saving…" : existing ? "Save" : guests.length ? "Save and invite" : "Save"}
           </Button>
           <Button asChild variant="outline">
-            <Link to="/calendar">Cancel</Link>
+            <Link to="/calendar">{t("Cancel")}</Link>
           </Button>
           <span className="flex-1" />
           {doc && (
@@ -414,19 +414,19 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
                 {doc.status === "Cancelled" ? "Bring it back" : "Cancel the event"}
               </Button>
               <Button type="button" variant="ghost" onClick={() => void remove()}>
-                Delete
+                {t("Delete")}
               </Button>
               <Button asChild variant="link" size="sm">
-                <a href={`/data/e/CalendarEvent/${doc.id}`}>More options</a>
+                <a href={`/data/e/CalendarEvent/${doc.id}`}>{t("More options")}</a>
               </Button>
             </>
           )}
         </div>
       </div>
-      <aside className="grid content-start gap-3" aria-label="Find a time">
-        <h2 className="font-semibold">Find a time</h2>
+      <aside className="grid content-start gap-3" aria-label={t("Find a time")}>
+        <h2 className="font-semibold">{t("Find a time")}</h2>
         {allDay ? (
-          <p className="text-sm text-muted-foreground">An all-day event has no time to find.</p>
+          <p className="text-sm text-muted-foreground">{t("An all-day event has no time to find.")}</p>
         ) : (
           <FindTime day={day} insiders={insiders} outsiders={guests.filter((g) => !colleague(g))} names={names} me={me} busy={others} loading={week.isLoading} error={week.error} retry={() => void week.refetch()} when={when} suggestions={suggestions} onPick={set} onDay={(d) => set(new Date(d.getFullYear(), d.getMonth(), d.getDate(), when?.starts.getHours() ?? 9, when?.starts.getMinutes() ?? 0))} />
         )}
@@ -441,14 +441,14 @@ function GuestInput({ people, taken, typed, setTyped, add }: { people: Person[];
   return (
     <div className="relative grid gap-1.5">
       <Label htmlFor="ev-guest" className="sr-only">
-        Add a guest
+        {t("Add a guest")}
       </Label>
       <div className="flex gap-2">
         <Input
           id="ev-guest"
           value={typed}
           autoComplete="off"
-          placeholder="Add a colleague by name, or anyone by email"
+          placeholder={t("Add a colleague by name, or anyone by email")}
           onChange={(e) => setTyped(e.target.value)}
           onKeyDown={(e) => {
             if ((e.key === "Enter" || e.key === ",") && typed.trim()) {
@@ -458,12 +458,12 @@ function GuestInput({ people, taken, typed, setTyped, add }: { people: Person[];
             }
           }}
         />
-        <Button type="button" variant="outline" size="icon" aria-label="Add guest" disabled={!typed.trim()} onClick={() => add(choices[0] && !typed.includes("@") ? choices[0].email : typed)}>
+        <Button type="button" variant="outline" size="icon" aria-label={t("Add guest")} disabled={!typed.trim()} onClick={() => add(choices[0] && !typed.includes("@") ? choices[0].email : typed)}>
           <Plus />
         </Button>
       </div>
       {choices.length > 0 && (
-        <ul className="rounded-md border bg-popover p-1 shadow-sm" aria-label="People to invite">
+        <ul className="rounded-md border bg-popover p-1 shadow-sm" aria-label={t("People to invite")}>
           {choices.map((p) => (
             <li key={p.id}>
               <button type="button" className="flex w-full items-baseline gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent pointer-coarse:min-h-11" onClick={() => add(p.email)}>
@@ -508,18 +508,18 @@ function FindTime(p: {
   return (
     <div className="grid gap-3 text-sm">
       <div className="flex items-center gap-2">
-        <Button type="button" variant="outline" size="icon-sm" aria-label="Previous day" onClick={() => step(-1)}>
+        <Button type="button" variant="outline" size="icon-sm" aria-label={t("Previous day")} onClick={() => step(-1)}>
           <ArrowLeft />
         </Button>
         <span className="flex-1 text-center font-medium">{dayWord(p.day)}</span>
-        <Button type="button" variant="outline" size="icon-sm" aria-label="Next day" onClick={() => step(1)}>
+        <Button type="button" variant="outline" size="icon-sm" aria-label={t("Next day")} onClick={() => step(1)}>
           <ArrowLeft className="rotate-180" />
         </Button>
       </div>
       {p.loading ? (
         <Skeleton className="h-24" />
       ) : p.error ? (
-        <ErrorState error={p.error} onRetry={p.retry} title="Their calendars could not be read" />
+        <ErrorState error={p.error} onRetry={p.retry} title={t("Their calendars could not be read")} />
       ) : (
         <div className="grid gap-1">
           <div className="relative ml-24 h-4 text-[10px] text-muted-foreground" aria-hidden="true">
@@ -553,19 +553,19 @@ function FindTime(p: {
                 <span className="w-22 shrink-0 truncate text-xs" title={who}>
                   {who}
                 </span>
-                <span className="text-xs">Outside your workspace: when they are free is not known.</span>
+                <span className="text-xs">{t("Outside your workspace: when they are free is not known.")}</span>
               </div>
             ))}
           </div>
-          <p className="text-xs text-muted-foreground">Grey is busy time (never what it is). Click a row to move the event there.</p>
+          <p className="text-xs text-muted-foreground">{t("Grey is busy time (never what it is). Click a row to move the event there.")}</p>
         </div>
       )}
       <div className="grid gap-1.5">
-        <h3 className="font-medium">Times that suit {p.insiders.length > 1 ? "everyone" : "you"}</h3>
+        <h3 className="font-medium">{t("Times that suit")} {p.insiders.length > 1 ? "everyone" : "you"}</h3>
         {p.suggestions.length === 0 && !p.loading ? (
-          <p className="text-muted-foreground">No time in the next week (working days, 9 to 6) suits {p.insiders.length > 1 ? "everyone" : "you"} for this long. Try a shorter event.</p>
+          <p className="text-muted-foreground">{t("No time in the next week (working days, 9 to 6) suits")} {p.insiders.length > 1 ? "everyone" : "you"} {t("for this long. Try a shorter event.")}</p>
         ) : (
-          <ul className="flex flex-wrap gap-1.5" aria-label="Suggested times">
+          <ul className="flex flex-wrap gap-1.5" aria-label={t("Suggested times")}>
             {p.suggestions.map((s) => (
               <li key={s.getTime()}>
                 <Button type="button" size="sm" variant={p.when && s.getTime() === p.when.starts.getTime() ? "secondary" : "outline"} onClick={() => p.onPick(s)}>
