@@ -1,3 +1,4 @@
+import { t } from "@ferrum/client";
 // The health of the workspace's mail domain (Comms' `/api/app/comms/domain`, for managers): which
 // DNS records mail needs, which are published, and what to do about the rest.
 
@@ -45,9 +46,9 @@ export const STATUS: Record<Status, string> = { ok: "OK", missing: "Missing", di
 export function headline(h: Pick<Health, "summary">): string {
   const s = h.summary;
   if (!s || !s.total) return "There is nothing to check yet.";
-  const passing = s.ok === s.total ? `All ${s.total} checks pass.` : `${s.ok} of ${s.total} checks pass.`;
+  const passing = s.ok === s.total ? t("All {total} checks pass.", { total: s.total }) : t("{ok} of {total} checks pass.", { ok: s.ok, total: s.total });
   if (s.required_wrong === 0) return passing;
-  return `${passing} ${s.required_wrong === 1 ? "One record" : `${s.required_wrong} records`} that mail needs ${s.required_wrong === 1 ? "is" : "are"} missing or wrong, so mail from this domain is likely to land in spam.`;
+  return (s.required_wrong === 1 ? t("{passing} One record that mail needs is missing or wrong, so mail from this domain is likely to land in spam.", { passing }) : t("{passing} {count} records that mail needs are missing or wrong, so mail from this domain is likely to land in spam.", { passing, count: s.required_wrong }));
 }
 
 /** The checks to list: all, or those that are not right (what could not be checked included). */

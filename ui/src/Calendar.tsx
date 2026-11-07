@@ -470,9 +470,9 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit }: { o: Occurrence; on
       setNote("");
       onChanged();
       void qc.invalidateQueries({ queryKey: ["calendar", "detail", o.event] });
-      toast(`Replied: ${answerWord(r).toLowerCase()}. ${by ? `${by} is told.` : ""}`.trim());
+      toast(`Replied: ${answerWord(r).toLowerCase()}. ${by ? t("{by} is told.", { by }) : ""}`.trim());
     } catch (e) {
-      setProblem(`Your answer was not sent: ${errorMessage(e)}`);
+      setProblem(t("Your answer was not sent: {e}", { e: errorMessage(e) }));
     } finally {
       setBusy(false);
     }

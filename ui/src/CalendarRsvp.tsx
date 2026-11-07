@@ -63,7 +63,7 @@ export function RsvpPage() {
       await api.post(at, { token: link, response: choice, note: note.trim() });
       setSent(choice);
     } catch (err) {
-      setProblem(`Your answer was not sent: ${errorMessage(err)}`);
+      setProblem(t("Your answer was not sent: {err}", { err: errorMessage(err) }));
     } finally {
       setBusy(false);
     }
