@@ -8,7 +8,7 @@ import { ArrowLeft, Copy, Download, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router";
 import { Button, Skeleton } from "@ferrum/kit/primitives";
-import { cn, EmptyState, ErrorState, toast, useShellTitle } from "@ferrum/kit";
+import { cn, EmptyState, ErrorState, toast, useShellTitle, placed } from "@ferrum/kit";
 import { ApiError, api, formatDateTime, relativeTime, saveBlob, t, isolate } from "@ferrum/client";
 import { DOMAIN, STATUS, headline, shown, zoneName, type Check, type Health } from "./lib/domain";
 
@@ -79,8 +79,7 @@ function Report({ h, only, setOnly, fetching, again }: { h: Health; only: boolea
         <p className="text-sm text-muted-foreground">
           {h.hosted ? (
             <>
-              {h.mailboxes ?? 0} {h.mailboxes === 1 ? t("mailbox") : t("mailboxes")} {t("and")} {h.shared ?? 0} {t("shared")} {h.shared === 1 ? t("mailbox") : t("mailboxes")}
-              {h.synced_at ? t(", last brought in step with your people {value}", { value: relativeTime(h.synced_at) }) : t(", not brought in step with your people yet")}.
+              {placed(t("{p1} {p2} and {p3} shared {p4}{p5}"), { p1: h.mailboxes ?? 0, p2: h.mailboxes === 1 ? t("mailbox") : t("mailboxes"), p3: h.shared ?? 0, p4: h.shared === 1 ? t("mailbox") : t("mailboxes"), p5: h.synced_at ? t(", last brought in step with your people {value}", { value: relativeTime(h.synced_at) }) : t(", not brought in step with your people yet") })}.
             </>
           ) : (
             t("Hosted mail is not set up on this server.")
@@ -99,7 +98,7 @@ function Report({ h, only, setOnly, fetching, again }: { h: Health; only: boolea
         <Button onClick={again} disabled={fetching}>
           <RefreshCw className={cn(fetching && "motion-safe:animate-spin")} aria-hidden="true" /> {fetching ? t("Checking…") : t("Check again")}
         </Button>
-        {h.checked_at && <span className="text-xs text-muted-foreground">{t("Last checked")} {isolate(formatDateTime(h.checked_at))}{t(". DNS changes can take a few hours to show.")}</span>}
+        {h.checked_at && <span className="text-xs text-muted-foreground">{placed(t("Last checked {p1}. DNS changes can take a few hours to show."), { p1: isolate(formatDateTime(h.checked_at)) })}</span>}
         <span className="flex-1" />
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={only} onChange={(e) => setOnly(e.target.checked)} /> {t("Only what is not right")}

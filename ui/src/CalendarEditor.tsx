@@ -8,8 +8,8 @@ import { ArrowLeft, Plus, X } from "lucide-react";
 import { useMemo, useState, type FormEvent, type MouseEvent } from "react";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router";
 import { Badge, Button, Input, Label, Skeleton, Textarea } from "@ferrum/kit/primitives";
-import { Alert, confirmDialog, EmptyState, ErrorState, PageLoading, toast, useShellTitle } from "@ferrum/kit";
-import { api, docPath, errorMessage, t, isolate } from "@ferrum/client";
+import { Alert, confirmDialog, EmptyState, ErrorState, PageLoading, toast, useShellTitle, placed } from "@ferrum/kit";
+import { api, currentLanguage, docPath, errorMessage, t, isolate } from "@ferrum/client";
 import { useMe, usePeople } from "@ferrum/records";
 import { matchPeople, type Person } from "./lib/chat";
 import {
@@ -166,9 +166,9 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
   };
 
   const mistakes: string[] = [];
-  if (!subject.trim()) mistakes.push("Give the event a title.");
-  if (!when) mistakes.push("Check the dates.");
-  else if (when.ends <= when.starts) mistakes.push("The event must end after it starts.");
+  if (!subject.trim()) mistakes.push(t("Give the event a title."));
+  if (!when) mistakes.push(t("Check the dates."));
+  else if (when.ends <= when.starts) mistakes.push(t("The event must end after it starts."));
 
   const save = async (e?: FormEvent) => {
     e?.preventDefault();
@@ -237,7 +237,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
   };
 
   const clash = when && !allDay ? clashes(others, when.starts, when.ends) : [];
-  const nameOf = (email: string) => (email === me ? "You" : names[email] || email);
+  const nameOf = (email: string) => (email === me ? t("You") : names[email] || email);
   const suggestions = useMemo(() => (allDay || !week.data ? [] : suggestSlots(week.data, { from: new Date(Math.max(Date.now(), day.getTime())), days: 8, minutes })), [allDay, week.data, minutes, day]);
 
   return (
@@ -306,8 +306,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
         </div>
         {clash.length > 0 && when && (
           <p role="status" className="rounded-md border border-warning bg-warning-soft px-3 py-2 text-sm">
-            {isolate(clash.map((who) => `${nameOf(who)} (${(others[who] ?? []).filter((b) => Date.parse(b.start) < when.ends.getTime() && Date.parse(b.end) > when.starts.getTime()).map(stretch).join(", ")})`).join(" and "))}{isolate(" ")}
-            {clash.length === 1 ? t("is") : t("are")} {t("busy then. The times that suit everyone are on the right.")}
+            {((who: string) => (clash.length === 1 ? t("{who} is busy then. The times that suit everyone are on the right.", { who }) : t("{who} are busy then. The times that suit everyone are on the right.", { who })))(new Intl.ListFormat(currentLanguage(), { type: "conjunction" }).format(clash.map((who) => t("{name} ({times})", { name: nameOf(who), times: (others[who] ?? []).filter((b) => Date.parse(b.start) < when.ends.getTime() && Date.parse(b.end) > when.starts.getTime()).map(stretch).join(", ") }))))}
           </p>
         )}
         <p className="-mt-2 text-xs text-muted-foreground">{t("Times are in your time zone, {timeZone}. Guests see them in theirs.", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone })}</p>
@@ -498,7 +497,7 @@ function FindTime(p: {
   const base = new Date(p.day.getFullYear(), p.day.getMonth(), p.day.getDate(), FROM).getTime();
   const shade = p.when ? { left: Math.max(0, ((p.when.starts.getTime() - base) / span) * 100), width: Math.min(100, ((p.when.ends.getTime() - p.when.starts.getTime()) / span) * 100) } : null;
   const step = (n: number) => p.onDay(new Date(p.day.getFullYear(), p.day.getMonth(), p.day.getDate() + n));
-  const label = (email: string) => (email === p.me ? "You" : p.names[email] || email);
+  const label = (email: string) => (email === p.me ? t("You") : p.names[email] || email);
   const pick = (e: MouseEvent<HTMLElement>) => {
     const box = e.currentTarget.getBoundingClientRect();
     const minutes = Math.round((((e.clientX - box.left) / box.width) * (TO - FROM) * 60) / 30) * 30;
@@ -561,9 +560,9 @@ function FindTime(p: {
         </div>
       )}
       <div className="grid gap-1.5">
-        <h3 className="font-medium">{t("Times that suit")} {p.insiders.length > 1 ? t("everyone") : t("you")}</h3>
+        <h3 className="font-medium">{(p.insiders.length > 1 ? t("Times that suit everyone") : t("Times that suit you"))}</h3>
         {p.suggestions.length === 0 && !p.loading ? (
-          <p className="text-muted-foreground">{t("No time in the next week (working days, 9 to 6) suits")} {p.insiders.length > 1 ? t("everyone") : t("you")} {t("for this long. Try a shorter event.")}</p>
+          <p className="text-muted-foreground">{placed(t("No time in the next week (working days, 9 to 6) suits {p1} for this long. Try a shorter event."), { p1: p.insiders.length > 1 ? t("everyone") : t("you") })}</p>
         ) : (
           <ul className="flex flex-wrap gap-1.5" aria-label={t("Suggested times")}>
             {p.suggestions.map((s) => (

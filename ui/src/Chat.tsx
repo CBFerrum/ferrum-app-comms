@@ -422,7 +422,7 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
             {c?.topic && <p className="truncate text-xs text-muted-foreground">{isolate(c.topic)}</p>}
           </div>
           {c && !direct && (
-            <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => open("members")} aria-label={tr("{length} {value}: see who is in", { length: c.members.length, value: c.members.length === 1 ? "member" : "members" })}>
+            <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => open("members")} aria-label={(c.members.length === 1 ? tr("{length} member: see who is in", { length: c.members.length }) : tr("{length} members: see who is in", { length: c.members.length }))}>
               <Users aria-hidden="true" />
               <span className="tabular-nums">{c.members.length}</span>
             </Button>
@@ -468,7 +468,7 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
         focus={target ? (found?.parent ?? found?.id ?? target) : undefined}
         start={divider ?? undefined}
         onBottom={setAtBottom}
-        empty={state.state === "owners" ? "No posts yet." : "No messages yet. Say hello."}
+        empty={state.state === "owners" ? tr("No posts yet.") : tr("No messages yet. Say hello.")}
         className="row-start-2"
       />
       <div className="row-start-3 border-t p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
@@ -714,7 +714,7 @@ function MessageRow({
         toMe && "border-l-2 border-primary bg-primary/5",
         picked && "bg-warning-soft ring-1 ring-warning",
       )}
-      aria-label={tr("{name} at {value}{value2}", { name, value: time(m.posted_at), value2: toMe ? ", mentions you" : "" })}
+      aria-label={(toMe ? tr("{name} at {value}, mentions you", { name, value: time(m.posted_at) }) : tr("{name} at {value}", { name, value: time(m.posted_at) }))}
     >
       <div className="w-8 shrink-0">
         {!compact && (
@@ -945,7 +945,7 @@ function Thread({
         onUnread={onUnread}
         marks={marks}
         focus={highlight ?? undefined}
-        empty="This thread has no messages."
+        empty={tr("This thread has no messages.")}
       />
       <div className="border-t p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         {allowed.state === "ok" ? (

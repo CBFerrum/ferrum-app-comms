@@ -542,7 +542,7 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit }: { o: Occurrence; on
                   </Button>
                 ))}
               </div>
-              <Textarea value={note} rows={2} maxLength={500} placeholder={t("A note for {value} (sent with your next answer)", { value: by || "the organizer" })} aria-label={t("A note with your answer")} onChange={(e) => setNote(e.target.value)} />
+              <Textarea value={note} rows={2} maxLength={500} placeholder={t("A note for {value} (sent with your next answer)", { value: by || t("the organizer") })} aria-label={t("A note with your answer")} onChange={(e) => setNote(e.target.value)} />
               {problem && (
                 <p role="alert" className="text-xs text-destructive">
                   {isolate(problem)}

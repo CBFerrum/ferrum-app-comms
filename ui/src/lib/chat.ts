@@ -192,18 +192,18 @@ export type Posting = { state: "ok" } | { state: "join" } | { state: "archived";
 /** Whether the person may post in the channel, as a new post or as a reply in a thread, and if
  *  not, what to tell them. */
 export function posting(c: Pick<ChannelSummary, "archived" | "role" | "post_policy">, reply = false): Posting {
-  if (c.archived) return { state: "archived", why: "This channel is archived. Nobody can post in it." };
+  if (c.archived) return { state: "archived", why: t("This channel is archived. Nobody can post in it.") };
   if (!c.role) return { state: "join" };
   if (c.post_policy === "Owners" && c.role !== "Owner" && !reply) {
-    return { state: "owners", why: "Only the channel's owners start posts here. You can reply in a thread." };
+    return { state: "owners", why: t("Only the channel's owners start posts here. You can reply in a thread.") };
   }
   return { state: "ok" };
 }
 
 /** Who reads and who posts, in a sentence for the channel's details. */
 export function accessText(c: Pick<ChannelSummary, "type" | "post_policy" | "archived">): string {
-  if (c.type === "Direct") return "Only the two of you can read this conversation.";
-  const reads = c.type === "Private" ? "Only its members can read it." : "Anyone in the workspace can read it and join.";
+  if (c.type === "Direct") return t("Only the two of you can read this conversation.");
+  const reads = c.type === "Private" ? t("Only its members can read it.") : t("Anyone in the workspace can read it and join.");
   if (c.archived) return t("{reads} It is archived, so nobody can post.", { reads });
   return `${reads} ${c.post_policy === "Owners" ? "Only its owners start posts; members reply in threads." : "Every member can post."}`;
 }

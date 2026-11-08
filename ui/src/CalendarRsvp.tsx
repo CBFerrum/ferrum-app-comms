@@ -7,7 +7,7 @@ import { CalendarDays, MapPin } from "lucide-react";
 import { useState } from "react";
 import { useParams, useSearchParams } from "react-router";
 import { Button, Skeleton, Textarea } from "@ferrum/kit/primitives";
-import { cn, EmptyState, useShellTitle } from "@ferrum/kit";
+import { cn, EmptyState, useShellTitle, placed } from "@ferrum/kit";
 import { api, errorMessage, t, isolate } from "@ferrum/client";
 import { answerWord } from "./lib/calendar";
 
@@ -56,7 +56,7 @@ export function RsvpPage() {
   const e = info.data;
   const before = ANSWERS.find((a) => a === e.response) ?? null;
   const send = async () => {
-    if (!choice) return setProblem("Choose Yes, Maybe or No first.");
+    if (!choice) return setProblem(t("Choose Yes, Maybe or No first."));
     setBusy(true);
     setProblem(null);
     try {
@@ -71,7 +71,7 @@ export function RsvpPage() {
   return (
     <div className="mx-auto grid max-w-md gap-4 p-4 py-8">
       <header className="grid gap-1">
-        <p className="text-sm text-muted-foreground">{t("{organizer} invited", { organizer: e.organizer })} {e.guest.name || e.guest.email} {t("to")}</p>
+        <p className="text-sm text-muted-foreground">{placed(t("{organizer} invited {p1} to"), { organizer: e.organizer, p1: e.guest.name || e.guest.email })}</p>
         <h1 className={cn("text-xl font-semibold", e.cancelled && "line-through")}>{e.subject || t("(no title)")}</h1>
         <p className="flex items-start gap-2 text-sm">
           <CalendarDays className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" /> {isolate(e.when)}
@@ -90,7 +90,7 @@ export function RsvpPage() {
       ) : sent ? (
         <div role="status" className="grid gap-3 rounded-lg border bg-card p-4">
           <p className="font-medium">{t("Thank you. Your answer is")} {isolate(answerWord(sent))}.</p>
-          <p className="text-sm text-muted-foreground">{t("{organizer} has been told", { organizer: e.organizer })}{note.trim() ? t(", with your note") : ""}{t(". You can change your answer any time with this link.")}</p>
+          <p className="text-sm text-muted-foreground">{placed(t("{organizer} has been told{p1}. You can change your answer any time with this link."), { organizer: e.organizer, p1: note.trim() ? t(", with your note") : "" })}</p>
           <Button variant="outline" className="justify-self-start" onClick={() => setSent(null)}>
             {t("Change my answer")}
           </Button>

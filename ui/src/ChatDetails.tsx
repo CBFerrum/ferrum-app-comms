@@ -33,7 +33,7 @@ export function ChannelDetails({ id, tab, onTab, onClose }: { id: string; tab: D
     <aside className={SIDE_PANEL} aria-label={tr("Channel details")} onKeyDown={(e) => e.key === "Escape" && onClose()}>
       <header className="flex items-center gap-2 border-b px-3 py-2">
         <div className="min-w-0 flex-1">
-          <h3 className="font-semibold">{direct ? tr("Conversation") : tr("Channel")} {tr("details")}</h3>
+          <h3 className="font-semibold">{(direct ? tr("Conversation details") : tr("Channel details"))}</h3>
           {c && <p className="truncate text-xs text-muted-foreground">{c.title || c.name}</p>}
         </div>
         <Button variant="ghost" size="icon-sm" aria-label={tr("Close details")} onClick={onClose}>
@@ -103,7 +103,7 @@ function General({ c }: { c: Channel }) {
       confirmLabel: on ? tr("Archive") : tr("Bring back"),
       danger: on,
     });
-    if (ok) await save("archived", { archived: on }, on ? "Archived" : "Brought back");
+    if (ok) await save("archived", { archived: on }, on ? "Archived" : tr("Brought back"));
   };
   const type = async (to: "Public" | "Private") => {
     if (to === c.type) return;
@@ -112,7 +112,7 @@ function General({ c }: { c: Channel }) {
       message: to === "Private" ? tr("Only its members will be able to find and read it.") : tr("Anyone in the workspace will be able to find, read and join it."),
       confirmLabel: to === "Private" ? tr("Make private") : tr("Make public"),
     });
-    if (ok) await save("type", { type: to }, "Updated");
+    if (ok) await save("type", { type: to }, tr("Updated"));
   };
   const problemFor = (field: string) =>
     problem?.field === field ? (
@@ -133,7 +133,7 @@ function General({ c }: { c: Channel }) {
             disabled={busy}
             aria-invalid={problem?.field === "name" || undefined}
             onChange={(e) => setName(e.target.value)}
-            onBlur={() => name.trim() && name.trim() !== c.name && void save("name", { name: name.trim() }, "Renamed")}
+            onBlur={() => name.trim() && name.trim() !== c.name && void save("name", { name: name.trim() }, tr("Renamed"))}
           />
         ) : (
           <p>#{isolate(c.name)}</p>
@@ -178,7 +178,7 @@ function General({ c }: { c: Channel }) {
             className="h-9 rounded-md border bg-background px-2 text-sm"
             value={c.post_policy === "Owners" ? "Owners" : "Members"}
             disabled={busy}
-            onChange={(e) => void save("post_policy", { post_policy: e.target.value }, "Updated")}
+            onChange={(e) => void save("post_policy", { post_policy: e.target.value }, tr("Updated"))}
           >
             <option value="Members">{tr("Every member")}</option>
             <option value="Owners">{tr("Only owners start posts (members reply in threads)")}</option>
@@ -258,7 +258,7 @@ function Personal({ c }: { c: Channel }) {
         ))}
         {c.notify_level && c.notify_level !== usual && (
           <Button variant="link" size="xs" className="justify-self-start p-0" onClick={() => void set(null)}>
-            {tr("Back to the usual for")} {direct ? tr("a direct message") : tr("a channel")}
+            {(direct ? tr("Back to the usual for a direct message") : tr("Back to the usual for a channel"))}
           </Button>
         )}
       </fieldset>
@@ -304,7 +304,7 @@ function Members({ c }: { c: Channel }) {
     void change({ add: [email] }, (ms) => [...ms, { email, full_name: p?.full_name ?? null, role: "Member" }]);
   };
   const remove = async (m: Member) => {
-    const ok = await confirmDialog({ title: tr("Remove {value}?", { value: m.full_name || m.email }), message: tr("They will no longer be in #{name}{value}.", { name: c.name, value: c.type === "Private" ? " or able to read it" : "" }), confirmLabel: tr("Remove"), danger: true });
+    const ok = await confirmDialog({ title: tr("Remove {value}?", { value: m.full_name || m.email }), message: tr("They will no longer be in #{name}{value}.", { name: c.name, value: c.type === "Private" ? tr(" or able to read it") : "" }), confirmLabel: tr("Remove"), danger: true });
     if (ok) void change({ remove: [m.email] }, (ms) => ms.filter((x) => x.email !== m.email));
   };
   const role = (m: Member, to: "Owner" | "Member") =>
@@ -359,7 +359,7 @@ function Members({ c }: { c: Channel }) {
                   {you && <span className="font-normal text-muted-foreground"> {tr("(you)")}</span>}
                 </span>
                 {(m.full_name || m.active) && (
-                  <span className="block truncate text-xs text-muted-foreground">{isolate([m.active && "Active now", m.full_name && m.email].filter(Boolean).join(" · "))}</span>
+                  <span className="block truncate text-xs text-muted-foreground">{isolate([m.active && tr("Active now"), m.full_name && m.email].filter(Boolean).join(" · "))}</span>
                 )}
               </span>
               {m.role === "Owner" && <Badge variant="secondary">{tr("Owner")}</Badge>}
