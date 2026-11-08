@@ -93,7 +93,7 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
     try {
       const r = await jmap([["Email/set", { accountId: p.account, update: Object.fromEntries(ids.map((i) => [i, patch])) }, "0"]]);
       const failed = Object.values((r["0"].notUpdated as Record<string, { type?: string; description?: string }> | undefined) ?? {})[0];
-      if (failed) throw new Error(refusal(failed, "The mail server refused the change."));
+      if (failed) throw new Error(refusal(failed, tr("The mail server refused the change.")));
       if (done) toast(done);
       await refresh();
       return true;
@@ -112,7 +112,7 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
     void update(patch, label);
   };
   const remove = async () => {
-    if (p.folder !== role("trash")?.id) return move(role("trash"), "Moved to Trash");
+    if (p.folder !== role("trash")?.id) return move(role("trash"), tr("Moved to Trash"));
     if (!(await confirmDialog({ title: tr("Delete this conversation for good?"), message: tr("It cannot be recovered."), confirmLabel: tr("Delete"), danger: true }))) return;
     try {
       await jmap([["Email/set", { accountId: p.account, destroy: ids }, "0"]]);
@@ -125,9 +125,9 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
   };
   const junk = p.folder === role("junk")?.id;
   const reply = (kind: "reply" | "replyAll" | "forward") => latest.data && p.onDraft({ kind, original: latest.data });
-  const star = () => void update({ "keywords/$flagged": starred ? null : true }, starred ? "Star removed" : "Starred");
-  const unreadAgain = () => void update({ "keywords/$seen": null }, "Marked as unread").then((ok) => ok && p.onBack());
-  const spam = () => (junk ? move(role("inbox"), "Moved to the inbox", { $junk: null, $notjunk: true }) : move(role("junk"), "Moved to Junk", { $junk: true, $notjunk: null }));
+  const star = () => void update({ "keywords/$flagged": starred ? null : true }, starred ? tr("Star removed") : "Starred");
+  const unreadAgain = () => void update({ "keywords/$seen": null }, tr("Marked as unread")).then((ok) => ok && p.onBack());
+  const spam = () => (junk ? move(role("inbox"), tr("Moved to the inbox"), { $junk: null, $notjunk: true }) : move(role("junk"), tr("Moved to Junk"), { $junk: true, $notjunk: null }));
 
   // The keys of the list work on the conversation too (not while typing, or in a dialog).
   const keys = useRef<(k: NonNullable<ReturnType<typeof keyAction>>) => void>(() => undefined);
@@ -155,7 +155,7 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
 
   if (thread.error) return <ErrorState error={thread.error} onRetry={() => void thread.refetch()} />;
   if (!thread.data) return <Skeleton className="m-4 h-64" />;
-  if (!newest) return <ErrorState title={tr("That message is not here any more")} error={new Error("It may have been moved or deleted.")} onRetry={p.onBack} />;
+  if (!newest) return <ErrorState title={tr("That message is not here any more")} error={new Error(tr("It may have been moved or deleted."))} onRetry={p.onBack} />;
   const subject = latest.data?.subject ?? newest.subject;
   const single = messages.length === 1;
   const draftOpen = !!role("drafts") && !!newest.mailboxIds[role("drafts")!.id];
@@ -248,7 +248,7 @@ function Card({ account, summary, open, fill, onToggle, me, onDraft }: { account
   const from = addressLabel(summary.from?.[0]);
   const mine = !!summary.from?.some((a) => a.email.toLowerCase() === me.toLowerCase());
   return (
-    <section className={cn(fill ? "grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)]" : "border-b")} aria-label={tr("{value} on {value2}", { value: mine ? "You" : from, value2: formatDateTime(summary.receivedAt) })}>
+    <section className={cn(fill ? "grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)]" : "border-b")} aria-label={tr("{value} on {value2}", { value: mine ? tr("You") : from, value2: formatDateTime(summary.receivedAt) })}>
       <div>
         <button type="button" onClick={onToggle} aria-expanded={open} className="flex w-full items-center gap-2 px-4 py-2 text-start hover:bg-accent/50 pointer-coarse:min-h-11">
           {open ? <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" /> : <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />}
@@ -285,7 +285,7 @@ function Card({ account, summary, open, fill, onToggle, me, onDraft }: { account
                 </div>
                 {m.remote_images > 0 && !images && (
                   <p className="flex items-center gap-2 text-xs text-muted-foreground">
-                    {m.remote_images === 1 ? tr("1 remote image is hidden") : tr("{remote_images} remote images are hidden", { remote_images: m.remote_images })} {tr("to protect your privacy.")}
+                    {(m.remote_images === 1 ? tr("1 remote image is hidden to protect your privacy.") : tr("{remote_images} remote images are hidden to protect your privacy.", { remote_images: m.remote_images }))}
                     <Button variant="link" size="xs" className="h-auto p-0" onClick={() => setImages(true)}>
                       {tr("Show images")}
                     </Button>

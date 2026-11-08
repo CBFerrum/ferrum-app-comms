@@ -137,14 +137,14 @@ export function Compose({
       return true;
     }
     if (!who || !drafts) {
-      setStatus({ state: "failed", message: drafts ? "The mailbox has no address to write as." : "The mailbox has no Drafts folder." });
+      setStatus({ state: "failed", message: drafts ? t("The mailbox has no address to write as.") : t("The mailbox has no Drafts folder.") });
       return false;
     }
     setStatus({ state: "saving" });
     try {
       const r = await jmap([["Email/set", { accountId: account, create: { d: draftEmail(f, who, drafts.id, thread) } }, "0"]]);
       const made = (r["0"].created as Record<string, { id: string }> | undefined)?.d;
-      if (!made) throw new Refused(refusal((r["0"].notCreated as Record<string, { type?: string; description?: string }> | undefined)?.d, "The mail server did not take the draft."));
+      if (!made) throw new Refused(refusal((r["0"].notCreated as Record<string, { type?: string; description?: string }> | undefined)?.d, t("The mail server did not take the draft.")));
       const old = draftId.current;
       draftId.current = made.id;
       kept.current = at;
@@ -256,8 +256,8 @@ export function Compose({
     setProblem(null);
     setAsking(null);
     if (bad.length) return setProblem(t("Not an email address: {bad}. Fix it, or take it out, and send again.", { bad: bad.join(", ") }));
-    if (!fields.to.length && !fields.cc.length && !fields.bcc.length) return setProblem("Add at least one recipient.");
-    if (!drafts || !sent || !identity) return setProblem("The mailbox has no Drafts or Sent folder, or no address to send as. Nothing was sent.");
+    if (!fields.to.length && !fields.cc.length && !fields.bcc.length) return setProblem(t("Add at least one recipient."));
+    if (!drafts || !sent || !identity) return setProblem(t("The mailbox has no Drafts or Sent folder, or no address to send as. Nothing was sent."));
     if (!subject.trim() && !anyway) return setAsking("subject");
     clearTimeout(timer.current);
     await queue.current;
@@ -290,7 +290,7 @@ export function Compose({
           void refresh();
         }
         if (made) setStatus({ state: "saved", at: new Date() });
-        throw new Refused(`${refusal(refused, "The mail server refused to send it.")}${made ? " The message is saved in Drafts." : ""}`);
+        throw new Refused(`${refusal(refused, t("The mail server refused to send it."))}${made ? " The message is saved in Drafts." : ""}`);
       }
       if (draftId.current) await jmap([["Email/set", { accountId: account, destroy: [draftId.current] }, "0"]]).catch(() => undefined);
       dropDraft(account, key);
@@ -304,7 +304,7 @@ export function Compose({
       setProblem(
         err instanceof Refused || why.startsWith("The mail server refused it")
           ? t("Not sent. {why} Your message is still here.", { why })
-          : `Not sent: ${why}. The mail server may not have been reached; look in Sent before sending it again. Your message is still here, and kept in this browser.`,
+          : t("Not sent: {why}. The mail server may not have been reached; look in Sent before sending it again. Your message is still here, and kept in this browser.", { why }),
       );
     } finally {
       setBusy(false);
@@ -542,7 +542,7 @@ function RecipientField({
         onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
         onKeyDown={onKey}
         onBlur={() => setLeft(true)}
-        placeholder="name@example.com, …"
+        placeholder={t("name@example.com, …")}
         autoComplete="off"
         role="combobox"
         aria-expanded={choices.length > 0}

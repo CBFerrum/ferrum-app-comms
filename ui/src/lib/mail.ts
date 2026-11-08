@@ -257,8 +257,8 @@ export type MailKey = "next" | "previous" | "open" | "back" | "reply" | "replyAl
 export const SHORTCUTS: { keys: string[]; action: MailKey; label: string }[] = [
   { keys: ["j"], action: "next", get label() { return tr("Next conversation"); } },
   { keys: ["k"], action: "previous", get label() { return tr("Previous conversation"); } },
-  { keys: ["Enter", "o"], action: "open", get label() { return tr("Open the conversation"); } },
-  { keys: ["u", "Esc"], action: "back", get label() { return tr("Back to the list"); } },
+  { get keys() { return [tr("Enter"), "o"]; }, action: "open", get label() { return tr("Open the conversation"); } },
+  { get keys() { return ["u", tr("Esc")]; }, action: "back", get label() { return tr("Back to the list"); } },
   { keys: ["r"], action: "reply", get label() { return tr("Reply"); } },
   { keys: ["a"], action: "replyAll", get label() { return tr("Reply to all"); } },
   { keys: ["f"], action: "forward", get label() { return tr("Forward"); } },
@@ -364,19 +364,19 @@ export function draftEmail(f: Fields, from: { name?: string | null; email: strin
 }
 
 const PROBLEMS: Record<string, string> = {
-  overQuota: "Your mailbox is full. Delete some mail and try again.",
-  tooLarge: "The message is too large for the mail server. Remove an attachment or two.",
-  invalidEmail: "The mail server could not accept the message. Check the addresses and the subject.",
-  tooManyRecipients: "There are too many recipients for one message.",
-  noRecipients: "The message has no recipients.",
-  forbiddenFrom: "The mail server does not let you send as that address.",
-  forbiddenMailFrom: "The mail server does not let you send as that address.",
-  forbiddenToSend: "Your mailbox is not allowed to send mail.",
-  rateLimit: "You have sent a lot of mail in a short time. Wait a little and try again.",
+  get overQuota() { return tr("Your mailbox is full. Delete some mail and try again."); },
+  get tooLarge() { return tr("The message is too large for the mail server. Remove an attachment or two."); },
+  get invalidEmail() { return tr("The mail server could not accept the message. Check the addresses and the subject."); },
+  get tooManyRecipients() { return tr("There are too many recipients for one message."); },
+  get noRecipients() { return tr("The message has no recipients."); },
+  get forbiddenFrom() { return tr("The mail server does not let you send as that address."); },
+  get forbiddenMailFrom() { return tr("The mail server does not let you send as that address."); },
+  get forbiddenToSend() { return tr("Your mailbox is not allowed to send mail."); },
+  get rateLimit() { return tr("You have sent a lot of mail in a short time. Wait a little and try again."); },
 };
 
 /** The mail server's refusal of a creation (`notCreated`) in plain words. */
-export function refusal(err: { type?: string; description?: string; properties?: string[] } | undefined, fallback = "The mail server refused it."): string {
+export function refusal(err: { type?: string; description?: string; properties?: string[] } | undefined, fallback = tr("The mail server refused it.")): string {
   if (!err) return fallback;
   if (err.type && PROBLEMS[err.type]) return PROBLEMS[err.type]!;
   if (err.type === "invalidProperties" && err.properties?.length) return tr("The mail server did not accept the message ({value}).", { value: err.properties.join(", ") });

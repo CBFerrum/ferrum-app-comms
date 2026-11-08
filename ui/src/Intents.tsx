@@ -8,7 +8,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useId, useState } from "react";
 import { Route, Routes } from "react-router";
-import { api, docPath, errorMessage, shell, type IntentRequest, t, isolate } from "@ferrum/client";
+import { api, currentLanguage, docPath, errorMessage, shell, type IntentRequest, t, isolate } from "@ferrum/client";
 import { EmptyState, Spinner, toast } from "@ferrum/kit";
 import { Button, Input, Label, Textarea } from "@ferrum/kit/primitives";
 import { useMe, usePeople } from "@ferrum/records";
@@ -109,7 +109,7 @@ export function ScheduleIntentPage() {
   if (error) return <EmptyState title={t("Nothing to schedule")}>{isolate(error)}</EmptyState>;
   if (!req || !form) return <Spinner label={t("Opening Calendar")} />;
   const set = (patch: Partial<typeof form>) => setForm({ ...form, ...patch });
-  const names = (list: string[]) => list.map((e) => (e === me ? "You" : people.find((p) => p.email.toLowerCase() === e)?.full_name || e));
+  const names = (list: string[]) => list.map((e) => (e === me ? t("You") : people.find((p) => p.email.toLowerCase() === e)?.full_name || e));
   const clash = free.data && span?.starts && span.ends ? clashes(free.data, span.starts, span.ends) : [];
   const minutes = span?.starts && span.ends ? Math.max(15, Math.round((span.ends.getTime() - span.starts.getTime()) / 60_000)) : 30;
   const better = clash.length && free.data && span?.starts ? suggestSlots(free.data, { from: new Date(Math.max(Date.now(), span.starts.getTime() - 3_600_000)), days: 8, minutes, limit: 3 }) : [];
@@ -164,7 +164,7 @@ export function ScheduleIntentPage() {
       {clash.length > 0 && span?.starts && span.ends && (
         <div role="status" className="grid gap-1.5 rounded-md border border-warning bg-warning-soft px-3 py-2 text-sm">
           <span>
-            {isolate(names(clash).join(" and "))} {clash.length === 1 ? t("is") : t("are")} {t("busy (")}{isolate(clash.map((c) => (free.data?.[c] ?? []).filter((b) => Date.parse(b.start) < span.ends!.getTime() && Date.parse(b.end) > span.starts!.getTime()).map(stretch).join(", ")).join("; "))}{t(") then.")}
+            {((who: string, times: string) => (clash.length === 1 ? t("{who} is busy ({times}) then.", { who, times }) : t("{who} are busy ({times}) then.", { who, times })))(new Intl.ListFormat(currentLanguage(), { type: "conjunction" }).format(names(clash)), clash.map((c) => (free.data?.[c] ?? []).filter((b) => Date.parse(b.start) < span.ends!.getTime() && Date.parse(b.end) > span.starts!.getTime()).map(stretch).join(", ")).join("; "))}
           </span>
           {better.length > 0 && (
             <span className="flex flex-wrap items-center gap-1.5">
@@ -180,7 +180,7 @@ export function ScheduleIntentPage() {
       )}
       <div className="grid gap-1.5">
         <Label htmlFor={`${ids}-a`}>{t("Guests")}</Label>
-        <Input id={`${ids}-a`} value={form.attendees} placeholder="ana@acme.example, …" onChange={(e) => set({ attendees: e.target.value })} />
+        <Input id={`${ids}-a`} value={form.attendees} placeholder={t("ana@acme.example, …")} onChange={(e) => set({ attendees: e.target.value })} />
       </div>
       <div className="grid gap-1.5">
         <Label htmlFor={`${ids}-l`}>{t("Where")}</Label>

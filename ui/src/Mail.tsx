@@ -87,7 +87,7 @@ export function MailPage({ compose = false }: { compose?: boolean }) {
   if (session.isLoading) return <Skeleton className="m-4 h-64" />;
   if (session.error) return <MailUnavailable error={session.error} onRetry={() => void session.refetch()} />;
   const primary = mailAccount(session.data);
-  if (!session.data || !primary) return <ErrorState error={new Error("The mail server offers no mail account.")} />;
+  if (!session.data || !primary) return <ErrorState error={new Error(tr("The mail server offers no mail account."))} />;
   return <Mailroom session={session.data} primary={primary} compose={compose} />;
 }
 
@@ -335,7 +335,7 @@ function MessageList(p: {
     try {
       const r = await jmap([["Email/set", { accountId: p.account, update: Object.fromEntries(row.folderIds.map((i) => [i, patch])) }, "0"]]);
       const failed = Object.values((r["0"].notUpdated as Record<string, { type?: string; description?: string }> | undefined) ?? {})[0];
-      if (failed) throw new Error(refusal(failed, "The mail server refused the change."));
+      if (failed) throw new Error(refusal(failed, tr("The mail server refused the change.")));
       toast(done);
     } catch (e) {
       toast(errorMessage(e), "error");
@@ -469,10 +469,10 @@ function MessageList(p: {
           </li>
         )}
         {!list.isLoading && !list.error && !rows.length && (
-          <li className="p-6 text-center text-sm text-muted-foreground">{search ? tr("Nothing in {value} matches “{search}”.", { value: p.mailbox?.name ?? "this folder", search }) : p.mailbox?.role === "drafts" ? tr("No drafts. A message you start and leave is kept here.") : tr("No messages here.")}</li>
+          <li className="p-6 text-center text-sm text-muted-foreground">{search ? tr("Nothing in {value} matches “{search}”.", { value: p.mailbox?.name ?? tr("this folder"), search }) : p.mailbox?.role === "drafts" ? tr("No drafts. A message you start and leave is kept here.") : tr("No messages here.")}</li>
         )}
         {rows.map((m, i) => {
-          const sender = outgoing ? tr("To: {value}", { value: addressList(m.to) || "(no recipients)" }) : addressList(m.from) || tr("(unknown sender)");
+          const sender = outgoing ? tr("To: {value}", { value: addressList(m.to) || tr("(no recipients)") }) : addressList(m.from) || tr("(unknown sender)");
           const starred = !!m.keywords?.$flagged;
           return (
             <li key={m.id}>

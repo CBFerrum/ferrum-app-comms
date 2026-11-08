@@ -40,12 +40,12 @@ export interface Health {
 }
 
 /** What a status says, in a word or two. */
-export const STATUS: Record<Status, string> = { ok: "OK", missing: "Missing", differs: "Differs", unknown: "Could not check" };
+export const STATUS: Record<Status, string> = { get ok() { return t("OK"); }, get missing() { return t("Missing"); }, get differs() { return t("Differs"); }, get unknown() { return t("Could not check"); } };
 
 /** The one sentence at the top: how many checks pass, and whether what mail needs is wrong. */
 export function headline(h: Pick<Health, "summary">): string {
   const s = h.summary;
-  if (!s || !s.total) return "There is nothing to check yet.";
+  if (!s || !s.total) return t("There is nothing to check yet.");
   const passing = s.ok === s.total ? t("All {total} checks pass.", { total: s.total }) : t("{ok} of {total} checks pass.", { ok: s.ok, total: s.total });
   if (s.required_wrong === 0) return passing;
   return (s.required_wrong === 1 ? t("{passing} One record that mail needs is missing or wrong, so mail from this domain is likely to land in spam.", { passing }) : t("{passing} {count} records that mail needs are missing or wrong, so mail from this domain is likely to land in spam.", { passing, count: s.required_wrong }));

@@ -103,7 +103,7 @@ export function MeetPage() {
         <h1 className="min-w-0 flex-1 truncate font-semibold">{pass.data?.title ?? tr("Meeting")}</h1>
         <span ref={setTools} className="contents" />
         {meetKind === "room" && pass.data && <GuestLink room={id} initial={pass.data.guest_path ?? null} />}
-        <Button variant="outline" size="sm" aria-label={tr("Copy the meeting link")} onClick={() => void copy(meetLink(meetKind, id), "Meeting link")}>
+        <Button variant="outline" size="sm" aria-label={tr("Copy the meeting link")} onClick={() => void copy(meetLink(meetKind, id), tr("Meeting link"))}>
           <Copy /> <span className="hidden sm:inline">{tr("Copy link")}</span>
         </Button>
       </header>
@@ -145,7 +145,7 @@ function useWakeLock(on: boolean) {
 /** A connection problem as a person would put it. */
 const plain = (message: string) =>
   /signal|websocket|connect|fetch|timeout|timed out|network/i.test(message)
-    ? "Could not reach the meeting server. Check your connection; if it keeps failing, the meeting server may be down, and an administrator should look."
+    ? tr("Could not reach the meeting server. Check your connection; if it keeps failing, the meeting server may be down, and an administrator should look.")
     : message;
 
 /** Tells the room it is connected (clears an earlier problem). */
@@ -228,7 +228,7 @@ function Stage({
           onValidate={() => true}
           onSubmit={setChoices}
           onError={(e) => toast(e.message, "error")}
-          joinLabel="Join now"
+          joinLabel={tr("Join now")}
         />
       </div>
     );
@@ -413,7 +413,7 @@ function GuestLink({ room, initial }: { room: string; initial: string | null }) 
         ? await api.post<{ guest_path: string | null }>(`${MEET}/room/${room}/guest-link`)
         : await api.del<{ guest_path: string | null }>(`${MEET}/room/${room}/guest-link`);
       setPath(r.guest_path);
-      if (r.guest_path) await copy(`${location.origin}${r.guest_path}`, "Guest link");
+      if (r.guest_path) await copy(`${location.origin}${r.guest_path}`, tr("Guest link"));
       else toast(tr("The guest link no longer works"));
     } catch (e) {
       toast(errorMessage(e), "error");
@@ -429,7 +429,7 @@ function GuestLink({ room, initial }: { room: string; initial: string | null }) 
     );
   return (
     <>
-      <Button variant="outline" size="sm" aria-label={tr("Copy the guest link")} onClick={() => void copy(`${location.origin}${path}`, "Guest link")}>
+      <Button variant="outline" size="sm" aria-label={tr("Copy the guest link")} onClick={() => void copy(`${location.origin}${path}`, tr("Guest link"))}>
         <UserPlus /> <span className="hidden sm:inline">{tr("Copy guest link")}</span>
       </Button>
       <Button variant="ghost" size="sm" disabled={busy} aria-label={tr("Turn off the guest link")} onClick={() => void change(false)}>

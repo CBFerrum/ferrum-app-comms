@@ -14,7 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ferrum/kit/primitives
 import { Textarea } from "@ferrum/kit/primitives";
 import { errorMessage, formatDateTime, t, isolate } from "@ferrum/client";
 import { can, useMetaIndex } from "@ferrum/records";
-import { confirmDialog, toast } from "@ferrum/kit";
+import { confirmDialog, toast, placed } from "@ferrum/kit";
 import { jmap } from "./lib/mail";
 
 interface Vacation {
@@ -99,7 +99,7 @@ function VacationForm({ account }: { account: string }) {
       };
       const r = await jmap([["VacationResponse/set", { accountId: account, update: { singleton: patch } }, "0"]]);
       const failed = (r["0"].notUpdated as Record<string, { description?: string }> | undefined)?.singleton;
-      if (failed) throw new Error(failed.description ?? "The mail server refused the change.");
+      if (failed) throw new Error(failed.description ?? t("The mail server refused the change."));
       toast(form.isEnabled ? t("Your vacation reply is on.") : t("Your vacation reply is off."));
     } catch (err) {
       toast(errorMessage(err), "error");
@@ -153,7 +153,7 @@ function AppPasswords({ account, me, servers }: { account: string; me: string; s
     try {
       const r = await jmap([["x:AppPassword/set", { accountId: account, create: { p: { description: description.trim() } } }, "0"]]);
       const created = (r["0"].created as Record<string, { secret?: string }> | undefined)?.p;
-      if (!created?.secret) throw new Error(String((r["0"].notCreated as Record<string, { description?: string }> | undefined)?.p?.description ?? "The mail server refused it."));
+      if (!created?.secret) throw new Error(String((r["0"].notCreated as Record<string, { description?: string }> | undefined)?.p?.description ?? t("The mail server refused it.")));
       setMade({ description: description.trim(), secret: created.secret });
       setDescription("");
       void qc.invalidateQueries({ queryKey: key });
@@ -175,7 +175,7 @@ function AppPasswords({ account, me, servers }: { account: string; me: string; s
   return (
     <div className="grid gap-3 pt-2 text-sm">
       <p className="text-muted-foreground">
-        {t("Mail programs (Outlook, Apple Mail, Thunderbird, phones) sign in with your address")} <strong className="text-foreground">{isolate(me)}</strong> {t("and an app password made here, one per program.")}
+        {placed(t("Mail programs (Outlook, Apple Mail, Thunderbird, phones) sign in with your address {p1} and an app password made here, one per program."), { p1: <strong className="text-foreground">{isolate(me)}</strong> })}
       </p>
       {servers && (
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-md border p-3">

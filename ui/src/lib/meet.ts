@@ -84,8 +84,8 @@ export function openCall(e: { preventDefault(): void; metaKey?: boolean; ctrlKey
 
 /** What stands between this browser and a camera or microphone, in words; none if nothing does. */
 export function mediaProblem(env: { secure: boolean; devices: boolean } = { secure: typeof isSecureContext === "boolean" ? isSecureContext : true, devices: typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia }): string | null {
-  if (!env.secure) return "This page was not opened over a secure connection (https), so your browser will not let it use the camera or the microphone. You can still join and listen, and watch others.";
-  if (!env.devices) return "This browser cannot use a camera or a microphone. You can still join and listen, and watch others.";
+  if (!env.secure) return t("This page was not opened over a secure connection (https), so your browser will not let it use the camera or the microphone. You can still join and listen, and watch others.");
+  if (!env.devices) return t("This browser cannot use a camera or a microphone. You can still join and listen, and watch others.");
   return null;
 }
 
@@ -110,15 +110,15 @@ export function recordingWords(r: Pick<Recording, "status" | "ended_at" | "locat
   if (r.error) return `Failed: ${r.error}`;
   switch (r.status) {
     case "EGRESS_STARTING":
-      return "Starting";
+      return t("Starting");
     case "EGRESS_ACTIVE":
-      return "Recording";
+      return t("Recording");
     case "EGRESS_ENDING":
-      return "Finishing the file";
+      return t("Finishing the file");
     case "EGRESS_COMPLETE":
-      return r.location ? t("Saved at {location}", { location: r.location }) : "Saved";
+      return r.location ? t("Saved at {location}", { location: r.location }) : t("Saved");
     case "EGRESS_LIMIT_REACHED":
-      return "Stopped at the server's limit";
+      return t("Stopped at the server's limit");
     default:
       return r.ended_at ? "Ended" : r.status;
   }
