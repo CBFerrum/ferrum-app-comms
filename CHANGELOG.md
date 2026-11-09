@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.11.0
+
+Mail asks the platform's one decision about contacting someone when it sends, not only when it was queued (Ferrum's closure review, FEO-015).
+
+- A communication has a Purpose: Transactional (the default: a reply, a receipt, a confirmation) or Marketing (Campaigns marks its mail so).
+- When an email goes out, each recipient is asked as they stand then: marketing goes to no one who withdrew their consent to it in any app; nothing goes to anyone whose processing is restricted. They are left out; with no one left, the email is Withheld, saying who and why. A withheld email can be retried, and is asked again.
+
 ## 0.10.13
 
 The reports it defines in code (their titles and parameters) have names in Arabic and Hindi too, with its models' and manifest's (300 each in ui/src/locales/names). Translated by the model, to be reviewed by native speakers.

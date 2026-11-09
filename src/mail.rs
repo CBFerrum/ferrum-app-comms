@@ -14,6 +14,7 @@ use crate::template;
 use crate::util::{self, File, id, int, s};
 use async_trait::async_trait;
 use ferrum_kernel::outbox::Event;
+use ferrum_kernel::retention::Purpose;
 use ferrum_kernel::{Access, Action, Ctx, Doc, DocHook, Error, EventSink, FieldError, HookCtx, Kernel, Result, Tx, notify};
 use lettre::message::header::{ContentType, HeaderName, HeaderValue};
 use lettre::message::{Attachment, Mailbox, MultiPart, SinglePart};
@@ -435,8 +436,9 @@ impl DocHook for CommunicationHook {
         if name != "retry" {
             return Ok(None);
         }
-        if s(doc, "status") != Some("Failed") {
-            return Err(Error::invalid("only failed emails can be retried"));
+        // A withheld one is asked again when it goes: it is sent only to whom it may go to by then.
+        if !matches!(s(doc, "status"), Some("Failed") | Some("Withheld")) {
+            return Err(Error::invalid("only failed or withheld emails can be retried"));
         }
         let comm = util::doc_id(doc)?;
         let mut values = Doc::new();
@@ -581,7 +583,31 @@ pub async fn deliver(k: &Kernel, tenant: Uuid, comm: Uuid) -> Result<Option<Stri
     .fetch_optional(&mut *tx)
     .await?;
     tx.commit().await?;
-    let Some(doc) = row.map(util::obj) else { return Ok(None) };
+    let Some(mut doc) = row.map(util::obj) else { return Ok(None) };
+    // Asked as it goes (FEO-015): marketing to no one who withdrew their consent to it, nothing to
+    // anyone whose processing is restricted. They are left out; with no one left, it is withheld.
+    let purpose = if s(&doc, "purpose") == Some("Marketing") { Purpose::Marketing } else { Purpose::Transactional };
+    let mut withheld: Vec<String> = Vec::new();
+    {
+        let mut tx = k.db.tenant_tx(tenant).await?;
+        for field in ["recipients", "cc", "bcc"] {
+            let Ok(list) = mailboxes(s(&doc, field)) else { continue };
+            let mut kept = Vec::new();
+            for m in list {
+                let address = m.email.to_string();
+                if k.may_contact_for(&mut tx, tenant, &address, purpose).await? {
+                    kept.push(m.to_string());
+                } else {
+                    withheld.push(address);
+                }
+            }
+            doc.insert(field.into(), if kept.is_empty() { Value::Null } else { json!(kept.join(", ")) });
+        }
+        tx.commit().await?;
+    }
+    if !withheld.is_empty() && ["recipients", "cc", "bcc"].iter().all(|f| s(&doc, f).is_none()) {
+        return withhold(k, tenant, &doc, &withheld).await.map(Some);
+    }
     let mut tx = k.db.tenant_tx(tenant).await?;
     let settings = util::settings(&mut tx, tenant).await?;
     let account = match id(&doc, "email_account") {
@@ -646,6 +672,24 @@ async fn send_doc(k: &Kernel, doc: &Doc, account: Option<&Account>, files: Vec<F
             Ok(())
         }
     }
+}
+
+/// A communication none of whose recipients may be contacted for it: withheld, saying who and why.
+async fn withhold(k: &Kernel, tenant: Uuid, doc: &Doc, who: &[String]) -> Result<String> {
+    let comm = util::doc_id(doc)?;
+    let why = format!("not sent: {} may not be contacted for it (consent to marketing withdrawn, or processing restricted)", who.join(", "));
+    let mut tx = k.db.tenant_tx(tenant).await?;
+    sqlx::query(
+        "update e_communication set status = 'Withheld', error = $3, next_attempt_at = null, version = version + 1, updated_at = now() \
+         where tenant_id = $1 and id = $2 and status = 'Sending'",
+    )
+    .bind(tenant)
+    .bind(comm)
+    .bind(&why)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok("Withheld".into())
 }
 
 async fn record(
