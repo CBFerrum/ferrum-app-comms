@@ -751,6 +751,39 @@ async fn scenario() {
     assert_eq!(fallback.0.lock().unwrap().iter().map(|m| m.0.as_str()).collect::<Vec<_>>(), vec!["a@globex.test", "b@globex.test"]);
     k.update(mgr, "EmailAccount", account_id, obj(json!({"default_outgoing": true})), None).await.unwrap();
 
+    // ───────────── consent, asked as each message goes (FEO-015) ─────────────
+    // Marketing to Pat and to Bo, and a notice to Pat, wait; Pat withdraws their consent to marketing.
+    let queue = |to: &'static str, subject: &'static str, purpose: &'static str| {
+        let k = k.clone();
+        let alice = alice.clone();
+        async move {
+            let d = k
+                .insert(
+                    &alice,
+                    "Communication",
+                    obj(json!({"channel": "Email", "direction": "Sent", "recipients": to, "subject": subject, "content": "<p>x</p>", "purpose": purpose})),
+                )
+                .await
+                .unwrap();
+            uid(&Value::Object(d))
+        }
+    };
+    let offer_pat = queue("pat@globex.test", "Spring offer", "Marketing").await;
+    let offer_both = queue("pat@globex.test, bo@globex.test", "Summer offer", "Marketing").await;
+    let notice_pat = queue("pat@globex.test", "Your order shipped", "Transactional").await;
+    k.record_consent(mgr, "pat@globex.test", ferrum_kernel::retention::Purpose::Marketing, false, "Unsubscribed from a newsletter").await.expect("withdrawn");
+    t.drain().await;
+    let pat_offer = t.comm(offer_pat).await;
+    assert_eq!(pat_offer["status"], json!("Withheld"), "{pat_offer:?}");
+    assert!(pat_offer["error"].as_str().is_some_and(|e| e.contains("pat@globex.test")), "says who");
+    assert_eq!(t.comm(offer_both).await["status"], json!("Sent"), "to Bo, leaving Pat out");
+    assert_eq!(t.comm(notice_pat).await["status"], json!("Sent"), "a transactional message does not ask");
+    // Their consent again, and the withheld offer retried: it goes.
+    k.record_consent(mgr, "pat@globex.test", ferrum_kernel::retention::Purpose::Marketing, true, "Subscribed again").await.unwrap();
+    k.run_action(mgr, "Communication", offer_pat, "retry", json!({})).await.expect("retried");
+    t.drain().await;
+    assert_eq!(t.comm(offer_pat).await["status"], json!("Sent"));
+
     // ───────────── IMAP polling with a fake mailbox ─────────────
     let inline = |uid: u32, mid: &str, body: &str| {
         (uid, format!("From: Partner <p@partner.test>\r\nTo: sales@acme.test\r\nSubject: =?UTF-8?Q?Gr=C3=BC=C3=9Fe_{uid}?=\r\nMessage-ID: <{mid}>\r\nMIME-Version: 1.0\r\n\
@@ -1387,9 +1420,10 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     let totals = &activity["totals"];
     // Sent: the quote, Bob's reply, the retried follow-up, the one left to maintenance, the
     // server-mailer one, the invitation and its cancellation, and Pat's invitation, its update with
-    // her meeting link and her cancellation; received: the reply, Jane, the auto-reply and two
-    // polled mails; failed: the bounce.
-    assert_eq!((totals["sent"].clone(), totals["received"].clone(), totals["failed"].clone()), (json!(10), json!(5), json!(1)), "{activity}");
+    // her meeting link and her cancellation, and with consent: the summer offer to Bo, the notice to Pat
+    // and the offer retried once Pat consented again; received: the reply, Jane, the auto-reply and two
+    // polled mails; failed: the bounce (a withheld email is neither).
+    assert_eq!((totals["sent"].clone(), totals["received"].clone(), totals["failed"].clone()), (json!(13), json!(5), json!(1)), "{activity}");
     let letters = report(mgr, "newsletter_performance").await.unwrap();
     assert_eq!(
         (letters["rows"][0]["sent"].clone(), letters["rows"][0]["unsubscribed"].clone(), letters["rows"][0]["unsubscribe_rate"].clone()),

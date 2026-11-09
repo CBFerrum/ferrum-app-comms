@@ -105,7 +105,10 @@
     - {name: subject, type: data, max_length: 998, in_list: true}
     - {name: channel, type: select, options: [Email, SMS, Chat, Phone, Note, Meeting], default: Email, required: true, in_list: true, in_filter: true}
     - {name: direction, type: select, options: [Sent, Received], default: Sent, required: true, in_list: true, in_filter: true}
-    - {name: status, type: select, options: [Queued, Sending, Sent, Failed, Received], read_only: true, in_list: true, in_filter: true}
+    - {name: status, type: select, options: [Queued, Sending, Sent, Failed, Received, Withheld], read_only: true, in_list: true, in_filter: true,
+       description: "Withheld: not sent, as its recipients may not be contacted for it (consent to marketing withdrawn, processing restricted), asked as it went"}
+    - {name: purpose, type: select, options: [Transactional, Marketing], default: Transactional, in_filter: true,
+       description: "Marketing is not sent to anyone who withdrew their consent to it; a transactional message (a reply, a receipt) does not ask. Nothing goes to someone whose processing is restricted"}
     - {name: communication_date, type: datetime, label: Date, in_list: true}
     - {name: email_account, type: link, to: EmailAccount, in_filter: true, description: "Blank = the default outgoing account"}
     - {name: sender, type: data, read_only: true}
@@ -132,7 +135,7 @@
     - {name: ics, type: text, read_only: true, hidden: true, no_copy: true}
   indexes: [[reference_entity, reference_id], [status, next_attempt_at], [communication_date]]
   actions:
-    - {name: retry, label: Retry Sending, permission: write, condition: "doc.status == 'Failed'"}
+    - {name: retry, label: Retry Sending, permission: write, condition: "doc.status == 'Failed' || doc.status == 'Withheld'"}
   form:
     - {label: Message, fields: [channel, direction, status, communication_date, email_account, sender, sender_name, recipients, cc, bcc, subject, content, text_content, attachments]}
     - {label: Linked To, fields: [reference_entity, reference_id, reply_to, seen]}
