@@ -71,7 +71,7 @@ CalDAV and CardDAV for Apple Calendar, Thunderbird, DAVx⁵ and Outlook.
 <td width="50%" valign="top">
 
 ### 🎥 Video meetings
-A call in any channel or event on your own LiveKit server; guests join by link. Captions people give their own voices, kept as the meeting's transcript, and recordings through LiveKit Egress.
+A call in any channel or event on your own LiveKit server; guests join by link. Captions people give their own voices, kept as the meeting's transcript (in each speaker's personal-data copy, and gone with their erasure), and recordings through LiveKit Egress.
 
 </td>
 <td width="50%" valign="top">
@@ -298,6 +298,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.12.0** | What meetings keep of a person (their own captions) is in their personal-data copy, goes with their erasure, and again when a restore replays it. |
 | **0.11.0** | Mail asks, as it sends, whether each recipient may be contacted for it: marketing stops where consent ends, nothing goes under a restriction. |
 | **0.10.13** | Its reports' names in Arabic and Hindi. |
 | **0.10.12** | Its names in Arabic and Hindi; the last English sentences translated. |
