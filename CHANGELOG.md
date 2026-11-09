@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.0
+
+What meetings keep of a person is part of their personal-data requests (Ferrum's closure review, FEO-016). The captions someone gave of their own voice, kept as meetings' transcripts in Comms' own table, are in their copy (Administration → Personal data, under the apps), go with their erasure, and go again when a restore replays the erasure. The meeting keeps everyone else's words. Needs Ferrum 937a494 or later (`privacy::PersonalHeld`).
+
 ## 0.11.0
 
 Mail asks the platform's one decision about contacting someone when it sends, not only when it was queued (Ferrum's closure review, FEO-015).

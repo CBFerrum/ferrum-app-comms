@@ -152,6 +152,37 @@ async fn admit(k: &Kernel, ctx: &Ctx, kind: &str, id: Uuid) -> Result<(String, O
 
 // ───────────────────────────── transcripts ─────────────────────────────
 
+/// What meetings keep of a person in Comms' own table (FEO-016): the captions they gave of their own
+/// voice. They are in the person's copy, go with their erasure, and go again when a restore replays
+/// it. The meeting keeps everyone else's words.
+pub struct Transcripts;
+
+#[async_trait::async_trait]
+impl ferrum_kernel::privacy::PersonalHeld for Transcripts {
+    fn app(&self) -> &'static str {
+        "comms"
+    }
+
+    async fn report(&self, tx: &mut Tx, tenant: Uuid, account: Option<Uuid>, _emails: &[String]) -> Result<Vec<Value>> {
+        let Some(account) = account else { return Ok(vec![]) };
+        let said: Vec<Value> = sqlx::query_scalar(
+            "select jsonb_build_object('meeting', room, 'text', text, 'said_at', said_at) from comms_transcript \
+             where tenant_id = $1 and speaker = $2 order by said_at, segment limit 10000",
+        )
+        .bind(tenant)
+        .bind(account)
+        .fetch_all(&mut **tx)
+        .await?;
+        Ok(if said.is_empty() { vec![] } else { vec![json!({"what": "What they said in meetings, as their own captions", "segments": said})] })
+    }
+
+    async fn erase(&self, tx: &mut Tx, tenant: Uuid, account: Option<Uuid>, _emails: &[String], _reason: &str) -> Result<u64> {
+        let Some(account) = account else { return Ok(0) };
+        let gone = sqlx::query("delete from comms_transcript where tenant_id = $1 and speaker = $2").bind(tenant).bind(account).execute(&mut **tx).await?;
+        Ok(gone.rows_affected())
+    }
+}
+
 /// `POST /meet/{kind}/{id}/transcript {segment, text}`: what this person said, as their own browser
 /// heard it. A segment is theirs: saying it again replaces its words, and nobody else's.
 async fn said(k: &Kernel, ctx: &Ctx, kind: &str, id: Uuid, body: Map<String, Value>) -> Result<Value> {
