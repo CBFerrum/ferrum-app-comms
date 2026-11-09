@@ -54,6 +54,7 @@ pub fn register(hooks: &mut HookRegistry) {
         .register("EmailGroupMember", Arc::new(groups::GroupMemberHook))
         .add_event_sink(Arc::new(mail::MailSink))
         .add_site("comms", Arc::new(site::CommsSite));
+    hooks.add_personal_held(Arc::new(meet::Transcripts));
 }
 
 /// This package's reports.
