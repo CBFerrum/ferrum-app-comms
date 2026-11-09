@@ -1439,6 +1439,17 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
 
     calendar_apps(&t, &users).await;
     hosted_mail(&t, &admin, &users, &imap).await;
+
+    // What meetings keep of a person, in Comms' own table: in their copy, and gone with their erasure,
+    // the meeting keeping the others' words (FEO-016).
+    let copy = t.k.personal_data(&admin, "bob@acme.test").await.unwrap();
+    let kept = copy["apps"].as_array().unwrap().iter().find(|a| a["app"] == json!("comms")).expect("Comms says what it keeps").clone();
+    assert_eq!(kept["held"]["segments"][0]["text"], json!("Shall we start now?"), "{copy}");
+    let done = t.k.erase_personal_data(&admin, "bob@acme.test", "Request 9").await.unwrap();
+    assert_eq!(done["apps"], json!([{"app": "comms", "erased": 1}]), "{done}");
+    let heard = t.ok(alice, "GET", &format!("/meet/channel/{deals_id}/transcript"), &[], Value::Null).await["segments"].clone();
+    let names: Vec<&str> = heard.as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["Alice Rao"], "the meeting keeps the others' words");
 }
 
 /// A calendar and contacts app's session (CalDAV and CardDAV under `/dav`): discovery, an event
