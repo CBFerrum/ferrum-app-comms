@@ -14,7 +14,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ferrum/kit/primitives
 import { Textarea } from "@ferrum/kit/primitives";
 import { errorMessage, formatDateTime, t, isolate } from "@ferrum/client";
 import { can, useMetaIndex } from "@ferrum/records";
-import { confirmDialog, toast, placed } from "@ferrum/kit";
+import { confirmDialog, FormSkeleton, toast, placed } from "@ferrum/kit";
+import { Failure } from "./States";
 import { jmap } from "./lib/mail";
 
 interface Vacation {
@@ -84,8 +85,8 @@ function VacationForm({ account }: { account: string }) {
   useEffect(() => {
     if (q.data && !form) setForm(q.data);
   }, [q.data, form]);
-  if (q.error) return <p className="text-sm text-destructive">{isolate(errorMessage(q.error))}</p>;
-  if (!form) return <Skeleton className="h-40" />;
+  if (q.error) return <Failure error={q.error} onRetry={() => void q.refetch()} />;
+  if (!form) return <FormSkeleton fields={4} />;
   const save = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
@@ -186,7 +187,7 @@ function AppPasswords({ account, me, servers }: { account: string; me: string; s
         </dl>
       )}
       {made && (
-        <div className="grid gap-1 rounded-md border border-primary/40 bg-primary/5 p-3" role="status">
+        <div className="grid gap-1 rounded-md border border-primary bg-primary-soft p-3" role="status">
           <span>
             {t("App password for")} <strong>{isolate(made.description)}</strong>{t(". Copy it now: it is not shown again.")}
           </span>
@@ -202,7 +203,7 @@ function AppPasswords({ account, me, servers }: { account: string; me: string; s
           {t("Make one")}
         </Button>
       </form>
-      {list.isLoading && <Skeleton className="h-16" />}
+      {list.isLoading && <Skeleton className="h-(--control-h)" />}
       {!!list.error && <p className="text-destructive">{isolate(errorMessage(list.error))}</p>}
       <ul className="grid gap-1" aria-label={t("App passwords")}>
         {list.data?.map((a) => (

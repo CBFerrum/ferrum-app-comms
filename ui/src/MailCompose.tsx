@@ -7,7 +7,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { FolderOpen, Paperclip, Send, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { Badge, Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Input, Label, Textarea } from "@ferrum/kit/primitives";
-import { Alert, cn, toast, useCanIntent } from "@ferrum/kit";
+import { Alert, cn, SaveStatus, toast, useCanIntent } from "@ferrum/kit";
 import { errorMessage, fetchBlob, newKey, request, shell } from "@ferrum/client";
 import { formatDateTime, t, isolate } from "@ferrum/client";
 import { usePeople } from "@ferrum/records";
@@ -312,14 +312,6 @@ export function Compose({
   };
 
   const title = { new: t("New message"), reply: t("Reply"), replyAll: t("Reply to all"), forward: t("Forward") }[draft.kind];
-  const status_ =
-    status.state === "saving"
-      ? t("Saving the draft…")
-      : status.state === "saved"
-        ? t("Draft saved {value}", { value: status.at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) })
-        : status.state === "failed"
-          ? null
-          : "";
   return (
     <Dialog open onOpenChange={(o) => !o && void close()}>
       <DialogContent
@@ -407,7 +399,7 @@ export function Compose({
           {(identities.data?.length ?? 0) > 1 && (
             <div className="grid gap-1.5">
               <Label htmlFor="mail-from">{t("From")}</Label>
-              <select id="mail-from" className="h-9 rounded-md border bg-background px-2 text-sm" value={identity?.id ?? ""} onChange={(e) => setFromId(e.target.value)}>
+              <select id="mail-from" className="h-(--control-h) rounded-md border border-input bg-card px-2 text-sm" value={identity?.id ?? ""} onChange={(e) => setFromId(e.target.value)}>
                 {identities.data?.map((i) => (
                   <option key={i.id} value={i.id}>
                     {i.name ? `${i.name} <${i.email}>` : i.email}
@@ -448,7 +440,7 @@ export function Compose({
             {files.map((f) => (
               <Badge key={f.blobId} variant="secondary" className="gap-1">
                 {isolate(f.name)} <span className="text-muted-foreground">{isolate(sizeLabel(f.size))}</span>
-                <button type="button" aria-label={t("Remove {name}", { name: f.name })} onClick={() => setFiles((x) => x.filter((y) => y.blobId !== f.blobId))}>
+                <button type="button" className="grid size-5 place-items-center rounded-sm hover:bg-accent" aria-label={t("Remove {name}", { name: f.name })} onClick={() => setFiles((x) => x.filter((y) => y.blobId !== f.blobId))}>
                   <X className="size-3" />
                 </button>
               </Badge>
@@ -456,8 +448,11 @@ export function Compose({
           </div>
           </fieldset>
           <DialogFooter className="items-center sm:justify-between">
-            <span className="text-xs text-muted-foreground sm:me-auto" role="status" aria-live="polite">
-              {isolate(status_ ?? "")}
+            <span className="sm:me-auto">
+              {status.state === "saving" && <SaveStatus state="saving" />}
+              {status.state === "saved" && <SaveStatus state="saved" at={status.at} />}
+              {/* Not on the server, but kept in this browser (the warning above says so). */}
+              {status.state === "failed" && <SaveStatus state="local" />}
             </span>
             <Button type="button" variant="outline" onClick={() => void discard()} disabled={busy}>
               {t("Discard")}

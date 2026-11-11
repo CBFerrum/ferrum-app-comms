@@ -11,7 +11,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { Badge, Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Input, Skeleton } from "@ferrum/kit/primitives";
 import { api, errorMessage, relativeTime, t as tr, isolate } from "@ferrum/client";
-import { cn, confirmDialog, ErrorState, toast, useDebounced } from "@ferrum/kit";
+import { cn, confirmDialog, ListSkeleton, ReaderSkeleton, StatePanel, toast, useDebounced } from "@ferrum/kit";
+import { Failure } from "./States";
 import { Compose } from "./MailCompose";
 import { asDraft, Conversation } from "./MailReader";
 import { MailSettings } from "./MailSettings";
@@ -49,21 +50,20 @@ const LIST_PROPERTIES = ["id", "threadId", "mailboxIds", "keywords", "from", "to
 /** Why someone has no mail here: no mailbox, a locked one, or the mail server is unavailable. */
 export function MailUnavailable({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
   const status = (error as { status?: number }).status;
-  if (status === 404 || status === 403)
+  // A locked mailbox is a refusal; no mailbox at all is a first-use empty page; neither is a breakage.
+  if (status === 403)
     return (
-      <div className="grid h-[60vh] place-items-center p-6 text-center">
-        <div className="grid max-w-md gap-2">
-          <Mail className="mx-auto size-8 text-muted-foreground" aria-hidden="true" />
-          <h1 className="text-lg font-semibold">{status === 403 ? tr("Your mailbox is locked") : tr("You have no mailbox here")}</h1>
-          <p className="text-sm text-muted-foreground">
-            {status === 403
-              ? tr("An administrator deactivated it or your address left the workspace's mail domain. Your mail is kept.")
-              : tr("Mailboxes come with hosted mail: an administrator sets the workspace's mail domain, and everyone whose address is in it gets one.")}
-          </p>
-        </div>
-      </div>
+      <StatePanel kind="denied" className="h-[60vh]" title={tr("Your mailbox is locked")}>
+        {tr("An administrator deactivated it or your address left the workspace's mail domain. Your mail is kept.")}
+      </StatePanel>
     );
-  return <ErrorState error={error} onRetry={onRetry} />;
+  if (status === 404)
+    return (
+      <StatePanel kind="empty" className="h-[60vh]" title={tr("You have no mailbox here")}>
+        {tr("Mailboxes come with hosted mail: an administrator sets the workspace's mail domain, and everyone whose address is in it gets one.")}
+      </StatePanel>
+    );
+  return <Failure error={error} onRetry={onRetry} />;
 }
 
 /** An account's folders, kept fresh. */
@@ -84,10 +84,17 @@ export function useMailboxes(account: string | undefined) {
 /** `/mail/…`; `/mail/compose` (the bar's Create menu) opens with a new message. */
 export function MailPage({ compose = false }: { compose?: boolean }) {
   const session = useMailSession();
-  if (session.isLoading) return <Skeleton className="m-4 h-64" />;
+  if (session.isLoading)
+    return (
+      <div data-fullbleed className="grid h-[calc(100dvh-var(--ferrum-bar-height,48px))] min-h-0 md:grid-cols-[200px_340px_minmax(0,1fr)]">
+        <div className="hidden border-e md:block" />
+        <ListSkeleton className="min-h-0 overflow-hidden border-e" rows={8} />
+        <ReaderSkeleton className="hidden md:block" />
+      </div>
+    );
   if (session.error) return <MailUnavailable error={session.error} onRetry={() => void session.refetch()} />;
   const primary = mailAccount(session.data);
-  if (!session.data || !primary) return <ErrorState error={new Error(tr("The mail server offers no mail account."))} />;
+  if (!session.data || !primary) return <Failure error={new Error(tr("The mail server offers no mail account."))} />;
   return <Mailroom session={session.data} primary={primary} compose={compose} />;
 }
 
@@ -142,7 +149,7 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
   };
   const onOpen = (id: string) => (folder?.role === "drafts" ? void openDraft(id) : open(current!, id));
 
-  if (boxes.error) return <ErrorState error={boxes.error} onRetry={() => void boxes.refetch()} />;
+  if (boxes.error) return <Failure error={boxes.error} onRetry={() => void boxes.refetch()} />;
   return (
     <div data-fullbleed className="grid h-[calc(100dvh-var(--ferrum-bar-height,48px))] min-h-0 md:grid-cols-[200px_340px_minmax(0,1fr)]">
       <aside className="hidden min-h-0 flex-col gap-2 border-e p-2 md:flex" aria-label={tr("Folders")}>
@@ -167,7 +174,13 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
           </ul>
         )}
         <nav className="min-h-0 flex-1 overflow-y-auto" aria-label={tr("Folders of the mailbox")}>
-          {boxes.isLoading && <Skeleton className="h-40" />}
+          {boxes.isLoading && (
+            <div className="grid gap-1" role="status" aria-label={tr("Loading…")}>
+              {Array.from({ length: 6 }, (_, i) => (
+                <Skeleton key={i} className="h-8" />
+              ))}
+            </div>
+          )}
           <ul className="grid gap-0.5">
             {boxes.data?.map((b) => (
               <li key={b.id}>
@@ -401,7 +414,7 @@ function MessageList(p: {
     <div className="flex h-full min-h-0 flex-col">
       {p.accounts.length > 1 && (
         <div className="border-b p-2 md:hidden">
-          <select className="h-9 w-full rounded-md border bg-background px-2 text-sm" aria-label={tr("Mailbox")} value={p.account} onChange={(e) => p.onAccount(e.target.value)}>
+          <select className="h-(--control-h) w-full rounded-md border border-input bg-card px-2 text-sm" aria-label={tr("Mailbox")} value={p.account} onChange={(e) => p.onAccount(e.target.value)}>
             {p.accounts.map(([id, a]) => (
               <option key={id} value={id}>
                 {a.isPersonal ? a.name : tr("{name} (shared)", { name: a.name })}
@@ -411,7 +424,7 @@ function MessageList(p: {
         </div>
       )}
       <div className="flex items-center gap-2 border-b p-2">
-        <select className="h-9 rounded-md border bg-background px-2 text-sm md:hidden" aria-label={tr("Folder")} value={p.mailboxId} onChange={(e) => p.onFolder(e.target.value)}>
+        <select className="h-(--control-h) rounded-md border border-input bg-card px-2 text-sm md:hidden" aria-label={tr("Folder")} value={p.mailboxId} onChange={(e) => p.onFolder(e.target.value)}>
           {p.boxes.map((b) => (
             <option key={b.id} value={b.id}>
               {isolate(b.name)}
@@ -423,10 +436,10 @@ function MessageList(p: {
           <Search className="pointer-events-none absolute top-2.5 start-2 size-4 text-muted-foreground" aria-hidden="true" />
           <Input ref={searchBox} className="ps-8" type="search" placeholder={tr("Search {value}", { value: p.mailbox?.name ?? "mail" })} aria-label={tr("Search mail")} value={typed} onChange={(e) => setTyped(e.target.value)} />
         </div>
-        <Button size="icon-sm" variant="outline" className="md:hidden" aria-label={tr("Write")} onClick={p.onWrite}>
+        <Button size="icon" variant="outline" className="md:hidden" aria-label={tr("Write")} onClick={p.onWrite}>
           <Pencil />
         </Button>
-        <Button size="icon-sm" variant="ghost" className="md:hidden" aria-label={tr("Mail settings")} onClick={p.onSettings}>
+        <Button size="icon" variant="ghost" className="md:hidden" aria-label={tr("Mail settings")} onClick={p.onSettings}>
           <Settings />
         </Button>
       </div>
@@ -462,14 +475,26 @@ function MessageList(p: {
         </div>
       ))}
       <ul className="min-h-0 flex-1 overflow-y-auto" aria-busy={list.isLoading}>
-        {list.isLoading && <Skeleton className="m-2 h-32" />}
+        {list.isLoading && (
+          <li>
+            <ListSkeleton rows={8} />
+          </li>
+        )}
         {!!list.error && (
           <li>
-            <ErrorState error={list.error} onRetry={() => void list.refetch()} title={tr("This folder could not be listed")} />
+            <Failure error={list.error} onRetry={() => void list.refetch()} title={tr("This folder could not be listed")} />
           </li>
         )}
         {!list.isLoading && !list.error && !rows.length && (
-          <li className="p-6 text-center text-sm text-muted-foreground">{search ? tr("Nothing in {value} matches “{search}”.", { value: p.mailbox?.name ?? tr("this folder"), search }) : p.mailbox?.role === "drafts" ? tr("No drafts. A message you start and leave is kept here.") : tr("No messages here.")}</li>
+          <li>
+            {search ? (
+              <StatePanel kind="no-matches" onClear={() => setTyped("")}>
+                {tr("Nothing in {value} matches “{search}”.", { value: p.mailbox?.name ?? tr("this folder"), search })}
+              </StatePanel>
+            ) : (
+              <StatePanel kind="empty">{p.mailbox?.role === "drafts" ? tr("No drafts. A message you start and leave is kept here.") : tr("No messages here.")}</StatePanel>
+            )}
+          </li>
         )}
         {rows.map((m, i) => {
           const sender = outgoing ? tr("To: {value}", { value: addressList(m.to) || tr("(no recipients)") }) : addressList(m.from) || tr("(unknown sender)");
@@ -486,9 +511,10 @@ function MessageList(p: {
                 }}
                 aria-current={m.id === p.active ? "true" : undefined}
                 className={cn(
-                  "grid w-full gap-0.5 border-b px-3 py-2 text-left text-sm hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none",
-                  m.id === p.active && "bg-accent",
-                  i === at && m.id !== p.active && "bg-accent/50",
+                  // Open = tinted with an accent edge; the keyboard's place and the pointer = grey; unread = dot and weight; starred = its own mark.
+                  "grid w-full grid-cols-[minmax(0,1fr)] gap-0.5 border-b border-s-[3px] border-s-transparent px-3 py-2 text-start text-sm hover:bg-accent focus-visible:-outline-offset-2",
+                  i === at && "bg-accent/50",
+                  m.id === p.active && "border-s-primary bg-primary-soft hover:bg-primary-soft",
                 )}
               >
                 <span className="flex items-center gap-2">

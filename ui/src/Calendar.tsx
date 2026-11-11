@@ -16,8 +16,9 @@ import { api, docPath, errorMessage, t, isolate } from "@ferrum/client";
 import { meetLink, meetPath, openCall, useMeetAvailable } from "./lib/meet";
 import { answerWord, byDay, CALENDAR, isoDay, monthGrid, movable, moved, placeDay, safeColor, safeLink, sameTimeOn, tally, weekOf, type Guest, type Occurrence } from "./lib/calendar";
 import { useLiveEntity } from "@ferrum/kit";
-import { cn } from "@ferrum/kit";
-import { ErrorState, toast } from "@ferrum/kit";
+import { Failure } from "./States";
+import { cn, ListSkeleton, StatePanel } from "@ferrum/kit";
+import { toast } from "@ferrum/kit";
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const timeOf = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -163,9 +164,9 @@ export function CalendarPage() {
         <Button variant="outline" size="icon-sm" aria-label={t("Next {unit}", { unit })} onClick={() => step(1)}>
           <ChevronRight />
         </Button>
-        <div className="flex rounded-md border p-0.5" role="group" aria-label={t("View")}>
+        <div className="flex h-8 items-center rounded-md border p-0.5" role="group" aria-label={t("View")}>
           {(["month", "week"] as const).map((v) => (
-            <Button key={v} size="sm" variant={view === v ? "secondary" : "ghost"} aria-pressed={view === v} className="h-7 capitalize" onClick={() => setView(v)}>
+            <Button key={v} size="xs" variant="ghost" aria-pressed={view === v} className={cn("capitalize", view === v && "bg-primary-soft text-primary hover:bg-primary-soft")} onClick={() => setView(v)}>
               {isolate(v)}
             </Button>
           ))}
@@ -177,7 +178,7 @@ export function CalendarPage() {
         </Button>
       </header>
       {events.error ? (
-        <ErrorState error={events.error} onRetry={() => void events.refetch()} />
+        <Failure error={events.error} onRetry={() => void events.refetch()} />
       ) : (
         <>
           {view === "week" ? (
@@ -231,8 +232,8 @@ export function CalendarPage() {
           )}
           {/* Agenda: phones. */}
           <div className="grid gap-3 md:hidden">
-            {events.isLoading && <Skeleton className="h-32" />}
-            {!events.isLoading && !agenda.length && <p className="text-sm text-muted-foreground">{t("Nothing this {unit}.", { unit })}</p>}
+            {events.isLoading && <ListSkeleton rows={4} />}
+            {!events.isLoading && !agenda.length && <StatePanel kind="empty">{t("Nothing this {unit}.", { unit })}</StatePanel>}
             {agenda.map((d) => {
               const key = isoDay(d);
               return (
@@ -281,7 +282,7 @@ function WeekGrid({
     scroller.current?.scrollTo({ top: 7.5 * HOUR });
   }, []);
   const allDay = useMemo(() => byDay(list.filter((o) => o.all_day)), [list]);
-  const cols = "grid grid-cols-[3rem_repeat(7,minmax(0,1fr))]";
+  const cols = "grid grid-cols-[3.5rem_repeat(7,minmax(0,1fr))]";
   /** The time under the pointer in a day's column, less `before` minutes, to `step` minutes. */
   const timeAt = (day: Date, e: DragEvent<HTMLElement> | MouseEvent<HTMLElement>, step: number, before = 0) => {
     const y = e.clientY - e.currentTarget.getBoundingClientRect().top;
@@ -300,7 +301,7 @@ function WeekGrid({
         ))}
       </div>
       <div className={cn(cols, "border-b")}>
-        <div className="px-1 py-1.5 text-[10px] text-muted-foreground">{t("All day")}</div>
+        <div className="px-1 py-1.5 text-xs text-muted-foreground">{t("All day")}</div>
         {week.map((d) =>
           loading ? (
             <div key={isoDay(d)} className="border-l p-1">
@@ -328,7 +329,7 @@ function WeekGrid({
         <div className={cols} style={{ height: 24 * HOUR }}>
           <div className="relative" aria-hidden="true">
             {Array.from({ length: 23 }, (_, h) => (
-              <span key={h} className="absolute right-1 -translate-y-1/2 text-[10px] text-muted-foreground tabular-nums" style={{ top: (h + 1) * HOUR }}>
+              <span key={h} className="absolute right-1 -translate-y-1/2 text-xs text-muted-foreground tabular-nums" style={{ top: (h + 1) * HOUR }}>
                 {isolate(new Date(2000, 0, 1, h + 1).toLocaleTimeString([], { hour: "numeric" }))}
               </span>
             ))}
@@ -365,7 +366,7 @@ function WeekGrid({
                       onClick={() => onOpen(p.o)}
                       title={movable(p.o) ? t("Drag to move") : undefined}
                       className={cn(
-                        "absolute overflow-hidden rounded-sm border-l-4 bg-accent px-1 text-left text-xs leading-tight hover:brightness-95 focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none",
+                        "absolute overflow-hidden rounded-sm border-l-4 bg-accent px-1 text-left text-xs leading-tight hover:brightness-95 focus-visible:-outline-offset-2",
                         movable(p.o) && "cursor-grab active:cursor-grabbing",
                         cancelled && "text-muted-foreground line-through",
                       )}
@@ -407,7 +408,7 @@ function OccurrenceChip({ o, onOpen, large }: { o: Occurrence; onOpen: () => voi
       }}
       title={drag ? t("Drag to another day to move") : undefined}
       className={cn(
-        "flex w-full min-w-0 items-center gap-1.5 rounded px-1 text-left hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none",
+        "flex w-full min-w-0 items-center gap-1.5 rounded px-1 text-left hover:bg-accent focus-visible:-outline-offset-2",
         large ? "border p-2 text-sm pointer-coarse:min-h-11" : "text-xs",
         drag && "cursor-grab active:cursor-grabbing",
         (cancelled || declined) && "text-muted-foreground line-through",

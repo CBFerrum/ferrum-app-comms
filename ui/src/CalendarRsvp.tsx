@@ -6,8 +6,9 @@ import { useQuery } from "@tanstack/react-query";
 import { CalendarDays, MapPin } from "lucide-react";
 import { useState } from "react";
 import { useParams, useSearchParams } from "react-router";
-import { Button, Skeleton, Textarea } from "@ferrum/kit/primitives";
-import { cn, EmptyState, useShellTitle, placed } from "@ferrum/kit";
+import { Button, Textarea } from "@ferrum/kit/primitives";
+import { cn, EmptyState, FormSkeleton, useShellTitle, placed } from "@ferrum/kit";
+import { Failure } from "./States";
 import { api, errorMessage, t, isolate } from "@ferrum/client";
 import { answerWord } from "./lib/calendar";
 
@@ -42,10 +43,13 @@ export function RsvpPage() {
   if (info.isLoading) {
     return (
       <div className="mx-auto max-w-md p-4">
-        <Skeleton className="h-64" />
+        <FormSkeleton fields={3} />
       </div>
     );
   }
+  // A link that does not answer is not a link that does not work: only a refusal means the latter.
+  const status = (info.error as { status?: number } | null)?.status;
+  if (info.error && (status === 0 || (status ?? 0) >= 500)) return <Failure error={info.error} onRetry={() => void info.refetch()} />;
   if (info.error || !info.data) {
     return (
       <EmptyState title={t("This link does not work any more")} icon="calendar">

@@ -36,7 +36,8 @@ import { CHAT } from "./lib/chat";
 import { MEET, mediaProblem, meetLink, notSetUp, useMeetAvailable, useMeetRecordings, type MeetKind, type MeetPass } from "./lib/meet";
 import { CallTools } from "./CallTools";
 import { useMe } from "@ferrum/records";
-import { Alert, EmptyState, ErrorState, toast } from "@ferrum/kit";
+import { Alert, FormSkeleton, StatePanel, toast } from "@ferrum/kit";
+import { Failure } from "./States";
 import { goBack } from "@ferrum/kit";
 
 const KINDS: MeetKind[] = ["channel", "event", "room"];
@@ -56,14 +57,19 @@ const copy = async (link: string, what: string) => {
 /** Where meetings are not set up there is no call to join, and the page says so. */
 function NotSetUp({ onBack }: { onBack?: () => void }) {
   return (
-    <EmptyState title={tr("Video meetings are not set up on this server")} icon="video">
-      <p className="max-w-md text-center text-sm text-muted-foreground">{tr("Nobody can join a call here yet. An administrator can turn meetings on: see “Meetings” in Ferrum's operations guide.")}</p>
-      {onBack && (
-        <Button variant="outline" onClick={onBack}>
-          {tr("Back")}
-        </Button>
-      )}
-    </EmptyState>
+    <StatePanel
+      kind="empty"
+      title={tr("Video meetings are not set up on this server")}
+      action={
+        onBack && (
+          <Button variant="outline" onClick={onBack}>
+            {tr("Back")}
+          </Button>
+        )
+      }
+    >
+      {tr("Nobody can join a call here yet. An administrator can turn meetings on: see “Meetings” in Ferrum's operations guide.")}
+    </StatePanel>
   );
 }
 
@@ -90,11 +96,11 @@ export function MeetPage() {
   const meetKind = kind as MeetKind;
   // A call in its own window (opened from Chat or Calendar) closes it when done.
   const leave = () => (shell().host === "companion" ? window.close() : goBack(navigate, home(meetKind, id)));
-  if (!valid) return <EmptyState title={tr("Meeting not found")} />;
-  if (available.isLoading) return <Skeleton className="m-6 h-64" />;
+  if (!valid) return <StatePanel kind="empty" title={tr("Meeting not found")} />;
+  if (available.isLoading) return <StatePanel kind="loading" />;
   if (!available.data) return <NotSetUp onBack={leave} />;
   if (pass.error) {
-    return notSetUp(errorMessage(pass.error)) ? <NotSetUp onBack={leave} /> : <ErrorState title={tr("You can't join this meeting")} error={pass.error} onRetry={() => void pass.refetch()} />;
+    return notSetUp(errorMessage(pass.error)) ? <NotSetUp onBack={leave} /> : <Failure title={tr("You can't join this meeting")} error={pass.error} onRetry={() => void pass.refetch()} />;
   }
   return (
     <div data-fullbleed className="grid h-[calc(100dvh-var(--ferrum-bar-height,48px))] min-h-0 grid-rows-[auto_minmax(0,1fr)]">
@@ -456,10 +462,10 @@ export function MeetHomePage() {
       setBusy(false);
     }
   };
-  if (available.isLoading) return <Skeleton className="mx-auto mt-10 h-48 max-w-md" />;
+  if (available.isLoading) return <FormSkeleton fields={2} className="mx-auto max-w-md px-4 py-10" />;
   if (!available.data) return <NotSetUp />;
   return (
-    <div className="mx-auto grid max-w-md gap-4 py-10">
+    <div className="mx-auto grid max-w-md gap-4 px-4 py-10">
       <h1 className="text-xl font-semibold">{tr("Meet")}</h1>
       <p className="text-muted-foreground">
         {tr("Start a meeting now and share its link with people in your workspace. Chat channels have their own calls, and calendar events their own meetings.")}

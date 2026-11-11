@@ -5,8 +5,9 @@ import { useQuery } from "@tanstack/react-query";
 import { Search, X } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router";
-import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Input, Skeleton } from "@ferrum/kit/primitives";
-import { ErrorState, useDebounced } from "@ferrum/kit";
+import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Input } from "@ferrum/kit/primitives";
+import { ListSkeleton, StatePanel, useDebounced } from "@ferrum/kit";
+import { Failure } from "./States";
 import { api, relativeTime, t, isolate } from "@ferrum/client";
 import { usePeople } from "@ferrum/records";
 import { CHAT, showMentions, snippet, type Message } from "./lib/chat";
@@ -58,10 +59,14 @@ export function ChannelSearch({ channel, onPick, onClose }: { channel: string; o
       </div>
       <ul className="min-h-0 overflow-y-auto p-2" aria-live="polite" aria-busy={results.isFetching}>
         {!ready && <li className="px-1 py-4 text-sm text-muted-foreground">{t("Type at least {LEAST} letters. Messages in this conversation that contain them are listed here, newest first.", { LEAST })}</li>}
-        {ready && results.isFetching && !results.data && <Skeleton className="h-16" />}
+        {ready && results.isFetching && !results.data && (
+          <li>
+            <ListSkeleton rows={3} />
+          </li>
+        )}
         {results.error && (
           <li>
-            <ErrorState error={results.error} onRetry={() => void results.refetch()} />
+            <Failure error={results.error} onRetry={() => void results.refetch()} />
           </li>
         )}
         {results.data?.messages.map((m) => (
@@ -71,7 +76,13 @@ export function ChannelSearch({ channel, onPick, onClose }: { channel: string; o
             </button>
           </li>
         ))}
-        {results.data && !results.data.messages.length && <li className="px-1 py-4 text-sm text-muted-foreground">{t("No message here contains “{term}”.", { term })}</li>}
+        {results.data && !results.data.messages.length && (
+          <li>
+            <StatePanel kind="no-matches" onClear={() => setTyped("")}>
+              {t("No message here contains “{term}”.", { term })}
+            </StatePanel>
+          </li>
+        )}
       </ul>
     </aside>
   );
@@ -105,10 +116,14 @@ export function SearchDialog({ base, onClose }: { base: string; onClose: () => v
           </Button>
         </form>
         <ul className="grid max-h-80 gap-2 overflow-y-auto" aria-live="polite">
-          {results.isFetching && <Skeleton className="h-16" />}
+          {results.isFetching && (
+            <li>
+              <ListSkeleton rows={2} />
+            </li>
+          )}
           {results.error && (
             <li>
-              <ErrorState error={results.error} onRetry={() => void results.refetch()} />
+              <Failure error={results.error} onRetry={() => void results.refetch()} />
             </li>
           )}
           {results.data?.messages.map((m) => (
@@ -118,7 +133,19 @@ export function SearchDialog({ base, onClose }: { base: string; onClose: () => v
               </Link>
             </li>
           ))}
-          {results.data && !results.data.messages.length && <li className="text-sm text-muted-foreground">{t("Nothing found.")}</li>}
+          {results.data && !results.data.messages.length && (
+            <li>
+              <StatePanel
+                kind="no-matches"
+                onClear={() => {
+                  setQ("");
+                  setTerm("");
+                }}
+              >
+                {t("Nothing found.")}
+              </StatePanel>
+            </li>
+          )}
         </ul>
       </DialogContent>
     </Dialog>
