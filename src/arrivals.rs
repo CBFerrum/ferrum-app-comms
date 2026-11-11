@@ -212,7 +212,7 @@ pub(crate) struct Look {
     pub woke: usize,
 }
 
-fn mailbox_with<'a>(boxes: &'a [Value], f: impl Fn(&Value) -> bool) -> Option<&'a str> {
+fn mailbox_with(boxes: &[Value], f: impl Fn(&Value) -> bool) -> Option<&str> {
     boxes.iter().find(|b| f(b)).and_then(|b| b["id"].as_str())
 }
 
@@ -220,7 +220,7 @@ fn error_type(answer: &Value) -> Option<&str> {
     (answer[0] == "error").then(|| answer[1]["type"].as_str().unwrap_or("serverFail"))
 }
 
-fn answer<'a>(answers: &'a [Value], i: usize) -> std::result::Result<&'a Value, Refusal> {
+fn answer(answers: &[Value], i: usize) -> std::result::Result<&Value, Refusal> {
     let a = answers.get(i).ok_or_else(|| Refusal::Failed("too few answers".into()))?;
     match error_type(a) {
         Some(t) => Err(Refusal::Failed(format!("{} refused: {t}", a[0]))),

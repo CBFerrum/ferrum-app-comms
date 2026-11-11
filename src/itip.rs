@@ -7,6 +7,11 @@
 //! * a CANCEL from the organiser of an event the owner keeps in their calendar (one they took from
 //!   an invitation) cancels it, or the one occurrence it names.
 //!
+//! The sender is taken from the From header only when the mail server vouches for it ([`origin`]):
+//! mail that came in from outside must have passed DMARC, or carry a DKIM signature that passed for
+//! the From domain; mail submitted on this server by a signed-in account is its own proof. A CANCEL
+//! must also come from the organiser recorded when the event was taken from the invitation.
+//!
 //! COUNTER (a guest proposing another time) is not applied: the calendar has no proposals; the
 //! message stays in the Inbox for the organiser to read. A REQUEST is answered from the message.
 
@@ -44,7 +49,8 @@ pub(crate) fn read(text: &str) -> Option<Itip> {
         match name.as_str() {
             "BEGIN" => depth.push(value.trim().to_ascii_uppercase()),
             "END" => {
-                if depth.pop().as_deref() == Some("VEVENT") && !out.uid.is_empty() {
+                let ended = depth.pop();
+                if ended.as_deref() == Some("VEVENT") && !out.uid.is_empty() {
                     break;
                 }
             }
@@ -77,6 +83,10 @@ pub(crate) enum Applied {
     Refused,
     /// Not something the calendar takes from mail (COUNTER, REQUEST, an answer it has no word for).
     Unsupported,
+    /// From outside, and the mail server could not authenticate the From domain.
+    Unverified,
+    /// A CANCEL for an event taken from an invitation before Ferrum recorded its organiser.
+    NoOrganizer,
 }
 
 impl Applied {
@@ -87,6 +97,8 @@ impl Applied {
             Applied::NotInCalendar => "none",
             Applied::Refused => "refused",
             Applied::Unsupported => "unsupported",
+            Applied::Unverified => "unverified",
+            Applied::NoOrganizer => "no-organizer",
         }
     }
 }
@@ -150,8 +162,12 @@ pub(crate) async fn apply(k: &Kernel, tenant: Uuid, me: &str, from: &str, text: 
         }
         "CANCEL" => {
             // Only an event taken from an invitation (owned here, with the organiser's UID), and only
-            // its organiser cancels it.
-            if it.organizer.as_deref() != Some(from) || ferrum_event(&it.uid).is_some() {
+            // the organiser recorded then cancels it.
+            if ferrum_event(&it.uid).is_some() {
+                return Ok(Applied::Refused);
+            }
+            let Some(organizer) = s(&doc, "organizer").map(str::to_lowercase) else { return Ok(Applied::NoOrganizer) };
+            if organizer != from || it.organizer.as_deref() != Some(from) {
                 return Ok(Applied::Refused);
             }
             match cancel_patch(&doc, &it, text) {
@@ -191,7 +207,9 @@ fn cancel_patch(doc: &Doc, it: &Itip, text: &str) -> Option<Doc> {
 /// calendar part, or marked already, is left alone.
 pub(crate) async fn from_message(k: &Kernel, tenant: Uuid, mail: &dyn Mail, account: &str, email: &str, me: &str) -> Result<Applied> {
     let got = mail
-        .call(json!([["Email/get", {"accountId": account, "ids": [email], "properties": ["from", "keywords", "attachments"], "bodyProperties": ["type", "blobId", "size"]}, "0"]]))
+        .call(json!([["Email/get", {"accountId": account, "ids": [email],
+            "properties": ["from", "keywords", "attachments", "header:Authentication-Results:asRaw:all", "header:Received:asRaw:all"],
+            "bodyProperties": ["type", "blobId", "size"]}, "0"]]))
         .await?;
     let m = &got[0][1]["list"][0];
     if m.is_null() {
@@ -203,12 +221,81 @@ pub(crate) async fn from_message(k: &Kernel, tenant: Uuid, mail: &dyn Mail, acco
     let from = m["from"][0]["email"].as_str().unwrap_or_default().to_lowercase();
     let part = m["attachments"].as_array().into_iter().flatten().find(|p| is_calendar(p["type"].as_str().unwrap_or_default()));
     let Some(blob) = part.and_then(|p| p["blobId"].as_str()) else { return Ok(Applied::Unsupported) };
+    let headers = |name: &str| m[name].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect::<Vec<_>>();
+    if origin(&headers("header:Received:asRaw:all"), &headers("header:Authentication-Results:asRaw:all"), &from) == Origin::Unverified {
+        return Ok(Applied::Unverified);
+    }
     let raw = mail.download(account, blob, MAX_ICS).await?;
     let outcome = apply(k, tenant, me, &from, &String::from_utf8_lossy(&raw)).await?;
-    if outcome != Applied::NotInCalendar {
+    // Marked only when applied: a refused one is judged again (the card then says why).
+    if matches!(outcome, Applied::Updated | Applied::Same) {
         mail.call(json!([["Email/set", {"accountId": account, "update": {email: {format!("keywords/{APPLIED}"): true}}}, "0"]])).await?;
     }
     Ok(outcome)
+}
+
+/// Whether the mail server vouches for a message's From address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Origin {
+    /// Not received over SMTP from elsewhere: submitted on this server by a signed-in account (JMAP,
+    /// or authenticated SMTP), or imported by the mailbox's owner.
+    Local,
+    /// From outside, with the From domain authenticated (DMARC pass, or an aligned DKIM pass).
+    Verified,
+    Unverified,
+}
+
+/// Where a message came from, by the headers the mail server wrote on top (`received` and `auth` as
+/// in the message, topmost first). Mail that arrives by SMTP gets a `Received` line from this
+/// server first: "with ESMTPA"/"ESMTPSA" when the sender signed in to it, otherwise it came from
+/// another server and this server's own `Authentication-Results` (the topmost) decides. A message
+/// without a `Received` line never crossed SMTP into this server.
+// ponytail: relies on the mail server adding Received and Authentication-Results (Stalwart's default).
+pub(crate) fn origin(received: &[String], auth: &[String], from: &str) -> Origin {
+    let Some(top) = received.first() else { return Origin::Local };
+    let top = top.to_ascii_lowercase();
+    if [" with esmtpa", " with esmtpsa", " with lmtpa", " with lmtpsa"].iter().any(|w| top.contains(&format!("{w};")) || top.contains(&format!("{w} "))) {
+        return Origin::Local;
+    }
+    let domain = from.rsplit_once('@').map(|(_, d)| d.trim().to_ascii_lowercase()).unwrap_or_default();
+    match auth.first() {
+        Some(a) if !domain.is_empty() && authenticated(a, &domain) => Origin::Verified,
+        _ => Origin::Unverified,
+    }
+}
+
+/// Whether an `Authentication-Results` header (RFC 8601) says `domain` was authenticated: DMARC
+/// passed for it, or a DKIM signature of it (or of the organisational domain it is under) passed.
+pub(crate) fn authenticated(header: &str, domain: &str) -> bool {
+    // Comments in parentheses say nothing that counts.
+    let mut plain = String::new();
+    let mut depth = 0usize;
+    for c in header.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => plain.push(c),
+            _ => {}
+        }
+    }
+    let aligned = |d: &str| {
+        let d = d.trim().trim_end_matches('.').to_ascii_lowercase();
+        !d.is_empty() && d.contains('.') && (d == domain || domain.ends_with(&format!(".{d}")) || d.ends_with(&format!(".{domain}")))
+    };
+    // The first part is the server's name; each result after it is `method=result prop=value ...`.
+    plain.split(';').skip(1).any(|r| {
+        let words: Vec<&str> = r.split_whitespace().collect();
+        let Some((method, result)) = words.first().and_then(|w| w.split_once('=')) else { return false };
+        let prop = |name: &str| words.iter().find_map(|w| w.split_once('=').filter(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.trim_matches('"')));
+        if !result.eq_ignore_ascii_case("pass") {
+            return false;
+        }
+        match method.to_ascii_lowercase().as_str() {
+            "dmarc" => prop("header.from").is_none_or(aligned),
+            "dkim" => prop("header.d").or_else(|| prop("header.i").and_then(|i| i.rsplit_once('@').map(|(_, d)| d))).is_some_and(aligned),
+            _ => false,
+        }
+    })
 }
 
 /// A part that is an iCalendar object.
@@ -223,6 +310,36 @@ mod tests {
 
     const REPLY: &str = "BEGIN:VCALENDAR\r\nMETHOD:REPLY\r\nBEGIN:VEVENT\r\nUID:0192-abc@ferrum\r\nORGANIZER:mailto:Ann@Acme.test\r\n\
         ATTENDEE;PARTSTAT=ACCEPTED;CN=\"Bob\":mailto:bob@out.example\r\nATTENDEE;PARTSTAT=DECLINED:mailto:carol@out.exam\r\n ple\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+
+    /// Headers as the live Stalwart 1.0 wrote them (JMAP `header:...:asRaw:all`) on a message injected by
+    /// SMTP from another host claiming to be Omar, a colleague.
+    const FORGED_RECEIVED: &str = " from mx.external.example (unknown [172.17.0.1])\r\n\tby mail.mail-host.test (Stalwart SMTP) with ESMTP id 4B82CA761A05000;\r\n\tWed, 11 Nov 2026 23:07:06 +0000";
+    const FORGED_AUTH: &str = " mail.mail-host.test;\r\n\tspf=none (mail.mail-host.test: no SPF records found for postmaster@mx.external.example) smtp.helo=mx.external.example;\r\n\tspf=none (mail.mail-host.test: no SPF records found for omar.haddad@demo.test) smtp.mailfrom=omar.haddad@demo.test;\r\n\tiprev=permerror (dns record not found) policy.iprev=172.17.0.1;\r\n\tdmarc=none header.from=demo.test policy.dmarc=none";
+
+    #[test]
+    fn only_mail_the_server_vouches_for_changes_the_calendar() {
+        let v = |s: &str| vec![s.to_string()];
+        let omar = "omar.haddad@demo.test";
+        assert_eq!(origin(&v(FORGED_RECEIVED), &v(FORGED_AUTH), omar), Origin::Unverified, "from outside, claiming a colleague, nothing passed");
+        assert_eq!(origin(&[], &[], omar), Origin::Local, "never crossed SMTP: submitted here, or imported by the owner");
+        // Authenticated SMTP to this server is local, whatever else the message carries.
+        let submitted =
+            " from [10.0.0.5] (unknown [10.0.0.5])\r\n\tby mail.mail-host.test (Stalwart SMTP) with ESMTPSA id 4B8;\r\n\tWed, 11 Nov 2026 23:10:00 +0000";
+        assert_eq!(origin(&v(submitted), &[], omar), Origin::Local);
+        // From outside with the From domain authenticated (Stalwart's own form of the header).
+        let pass = " mail.mail-host.test;\r\n\tdkim=pass header.d=customer.example header.s=s1 header.b=AbC;\r\n\tspf=pass smtp.mailfrom=bounce@mailer.example;\r\n\tdmarc=pass header.from=customer.example policy.dmarc=reject";
+        assert_eq!(origin(&v(FORGED_RECEIVED), &v(pass), "ann@customer.example"), Origin::Verified);
+        assert_eq!(origin(&v(FORGED_RECEIVED), &v(pass), "ann@other.example"), Origin::Unverified, "passed, but for another domain");
+        // A DKIM pass aligned with the From domain is enough; SPF alone, or a pass in a comment, is not.
+        assert!(authenticated(" mx;\r\n\tdkim=pass header.d=mail.customer.example", "customer.example"));
+        assert!(authenticated(" mx; dkim=pass header.i=@customer.example", "news.customer.example"));
+        assert!(!authenticated(" mx; dkim=pass header.d=bulk-sender.example; dmarc=fail header.from=customer.example", "customer.example"));
+        assert!(!authenticated(" mx; spf=pass smtp.mailfrom=ann@customer.example", "customer.example"));
+        assert!(!authenticated(" mx; dmarc=none (dmarc=pass header.from=customer.example) header.from=customer.example", "customer.example"));
+        assert!(!authenticated(" dmarc=pass header.from=customer.example", "customer.example"), "the first part is the server's name, not a result");
+        // A forged Authentication-Results lower down does not count: only the server's own, on top.
+        assert_eq!(origin(&v(FORGED_RECEIVED), &[FORGED_AUTH.to_string(), pass.to_string()], "ann@customer.example"), Origin::Unverified);
+    }
 
     #[test]
     fn a_reply_says_who_answered_what_for_which_event() {

@@ -890,6 +890,10 @@ async fn import(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
         let mut doc = event_fields(&e);
         doc.insert("ical_uid".into(), json!(util::cut(&uid, 990)));
         doc.insert("owner".into(), json!(me));
+        // Taken from someone else's invitation: who sent it, the only one whose CANCEL counts (itip.rs).
+        if let Some(o) = e.organizer.as_deref().filter(|o| *o != me) {
+            doc.insert("organizer".into(), json!(o));
+        }
         let result = async {
             let mut tx = k.db.tenant_tx(ctx.tenant).await?;
             let existing: Option<Uuid> = sqlx::query_scalar("select id from e_calendar_event where tenant_id = $1 and owner = $2 and ical_uid = $3")

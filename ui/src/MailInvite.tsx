@@ -145,9 +145,9 @@ export function ReplyCard({ account, emailId, keywords, ics, me }: { account: st
     enabled: !!got?.answers.length,
     staleTime: Infinity,
     retry: false,
-    queryFn: async (): Promise<"updated" | "same" | "none" | "refused" | "unsupported"> => {
+    queryFn: async (): Promise<"updated" | "same" | "none" | "refused" | "unsupported" | "unverified" | "no-organizer"> => {
       if (server) {
-        const r = await api.post<{ result: "updated" | "same" | "none" | "refused" | "unsupported" }>(`${MAIL}/itip`, { account, email: emailId });
+        const r = await api.post<{ result: "updated" | "same" | "none" | "refused" | "unsupported" | "unverified" | "no-organizer" }>(`${MAIL}/itip`, { account, email: emailId });
         if (r.result === "updated") void qc.invalidateQueries({ queryKey: ["calendar"] });
         return r.result === "updated" ? "same" : r.result;
       }
@@ -187,6 +187,8 @@ export function ReplyCard({ account, emailId, keywords, ics, me }: { account: st
               ? t("This event is not in your calendar.")
               : result.data === "refused"
                 ? t("Not applied: the sender is not on this event's guest list.")
+                : result.data === "unverified"
+                  ? t("Not applied: the sender could not be verified.")
                 : result.data === "unsupported"
                   ? t("Your calendar does not take this kind of answer from mail.")
                   : t("Your calendar shows this answer.")}

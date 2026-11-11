@@ -530,6 +530,7 @@
   "Not an email address: {bad}. Fix it, or take it out, and send again.": "ليس عنوان بريد إلكتروني: {bad}. صحّحه أو احذفه، ثم أرسل مجددًا.",
   "Not an email address: {value}": "ليس عنوان بريد إلكتروني: {value}",
   "Not an email address: {value}. Fix it or take it out.": "ليس عنوان بريد إلكتروني: {value}. صحّحه أو احذفه.",
+  "Not applied: the sender could not be verified.": "لم يُطبّق: تعذّر التحقق من المرسل.",
   "Not applied: the sender is not on this event's guest list.": "لم يُطبّق: المرسل ليس في قائمة ضيوف هذا الحدث.",
   "Not filed: {problem}": "لم يُحفظ: {problem}",
   "Not saved to Drive: {e}": "لم يُحفظ في Drive: {e}",
