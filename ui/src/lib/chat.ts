@@ -343,7 +343,10 @@ const IDEOGRAPH = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Scrip
  *  and other punctuation are skipped, and a character is never split (emoji, combining marks). */
 export const initials = (name: string) => {
   const first = (w: string) => graphemes(w).find((g) => LETTER.test(g));
-  const letters = name.split("@")[0]!.split(/[\s.]+/).map(first).filter((g): g is string => !!g);
+  const words = (n: string) => n.split("@")[0]!.split(/[\s.]+/).map(first).filter((g): g is string => !!g);
+  // A bracketed part (a translation, a nickname) does not stand for the person, unless it is all there is.
+  const outside = words(name.replace(/\([^)]*\)|\[[^\]]*\]|（[^）]*）/g, " "));
+  const letters = outside.length ? outside : words(name);
   if (!letters.length) return "";
   if (IDEOGRAPH.test(letters[0]!)) return letters[0]!;
   return (letters.length > 1 ? [letters[0]!, letters[letters.length - 1]!] : letters).map((g) => g.toLocaleUpperCase()).join("");
