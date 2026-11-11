@@ -298,6 +298,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.13.1** | Outgoing mail can carry extra headers (List-Unsubscribe and the other bulk-sender ones), from an allow-list, for apps that send marketing mail. |
 | **0.13.0** | Mail: folders with icons, bulk actions with exact Undo, spam and phishing warnings, a rich-text composer, drafts that cannot be lost, undo and schedule send, search operators, server-side filters, previews, snooze, invitations answered from the message. |
 | **0.12.1** | The redesigned interface: the upgraded design system, shaped loading, told-apart states. |
 | **0.12.0** | What meetings keep of a person (their own captions) is in their personal-data copy, goes with their erasure, and again when a restore replays it. |

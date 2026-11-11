@@ -737,6 +737,38 @@ async fn scenario() {
     t.maintenance(&imap).await;
     assert_eq!(t.comm(waiting).await["status"], json!("Sent"));
     assert_eq!(smtp.count(), mails_before + 2);
+    // ───────────── extra headers: the unsubscribe pair goes out; nothing that could rewrite the mail ─────────────
+    let sys = Ctx::system(tenant, k.registry.schema(tenant).await.unwrap());
+    let bulk = |headers: Value| {
+        obj(
+            json!({"channel": "Email", "direction": "Sent", "purpose": "Marketing", "recipients": "news@globex.test", "subject": "Offer", "content": "<p>Hi</p>", "headers": headers}),
+        )
+    };
+    let unsub = json!({"List-Unsubscribe": "<https://shop.test/u/abc>", "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"});
+    let with_headers = uid(&json!(k.insert(&sys, "Communication", bulk(unsub)).await.expect("a bulk mail with the unsubscribe headers")));
+    t.drain().await;
+    assert_eq!(t.comm(with_headers).await["status"], json!("Sent"));
+    let raw = smtp.mails().last().unwrap().data.clone();
+    assert_eq!(header(&raw, "List-Unsubscribe").as_deref(), Some("<https://shop.test/u/abc>"));
+    assert_eq!(header(&raw, "List-Unsubscribe-Post").as_deref(), Some("List-Unsubscribe=One-Click"));
+    for bad in [
+        json!({"List-Unsubscribe": "<https://x.test/u>\r\nBcc: spy@evil.test"}),
+        json!({"List-Unsubscribe": "<https://x.test/u>\nX-Y: z"}),
+        json!({"Bcc": "spy@evil.test"}),
+        json!({"From": "ceo@acme.test"}),
+        json!({"Subject": "x"}),
+        json!({"Content-Type": "text/plain"}),
+        json!({"X-Ok: x\r\nBcc": "spy@evil.test"}),
+        json!({"List-Id": "a".repeat(1000)}),
+    ] {
+        refused(k.insert(&sys, "Communication", bulk(bad.clone())).await, "invalid");
+    }
+    assert!(
+        k.insert(&sys, "Communication", bulk(json!({"X-Campaign": "spring", "Precedence": "bulk", "Feedback-ID": "c1:acme"}))).await.is_ok(),
+        "X- names and the other bulk headers are allowed"
+    );
+    let by_person = k.insert(alice, "Communication", bulk(json!({"List-Id": "<mine>"}))).await;
+    assert!(by_person.as_ref().map_or(true, |c| c["headers"].is_null()), "a person cannot set headers: {by_person:?}");
     smtp.set_mode(Mode::Permanent);
     let bounced = uid(&t.ok(alice, "POST", "/send", &[], json!({"to": "nobody@globex.test", "subject": "Hello", "content": "Hi"})).await);
     t.drain().await;
@@ -749,6 +781,10 @@ async fn scenario() {
     t.drain().await;
     assert_eq!(t.comm(plain).await["status"], json!("Sent"));
     assert_eq!(fallback.0.lock().unwrap().iter().map(|m| m.0.as_str()).collect::<Vec<_>>(), vec!["a@globex.test", "b@globex.test"]);
+    // The server's mailer cannot carry headers: the mail still goes (and the log says the headers did not).
+    let headed = uid(&json!(k.insert(&sys, "Communication", bulk(json!({"List-Id": "<news.acme.test>"}))).await.unwrap()));
+    t.drain().await;
+    assert_eq!(t.comm(headed).await["status"], json!("Sent"));
     k.update(mgr, "EmailAccount", account_id, obj(json!({"default_outgoing": true})), None).await.unwrap();
 
     // ───────────── consent, asked as each message goes (FEO-015) ─────────────
@@ -1422,8 +1458,10 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     // server-mailer one, the invitation and its cancellation, and Pat's invitation, its update with
     // her meeting link and her cancellation, and with consent: the summer offer to Bo, the notice to Pat
     // and the offer retried once Pat consented again; received: the reply, Jane, the auto-reply and two
-    // polled mails; failed: the bounce (a withheld email is neither).
-    assert_eq!((totals["sent"].clone(), totals["received"].clone(), totals["failed"].clone()), (json!(13), json!(5), json!(1)), "{activity}");
+    // polled mails, and the two bulk mails with headers (one through the account, one the server's mailer);
+    // failed: the bounce and the two bulk mails the header checks left queued when the server refused them
+    // (a withheld email is neither).
+    assert_eq!((totals["sent"].clone(), totals["received"].clone(), totals["failed"].clone()), (json!(15), json!(5), json!(3)), "{activity}");
     let letters = report(mgr, "newsletter_performance").await.unwrap();
     assert_eq!(
         (letters["rows"][0]["sent"].clone(), letters["rows"][0]["unsubscribed"].clone(), letters["rows"][0]["unsubscribe_rate"].clone()),
