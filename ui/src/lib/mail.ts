@@ -217,7 +217,8 @@ export function frameDocument(html: string, images: boolean): string {
 export function sizeLabel(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return tr("{n} KB", { n: Math.round(bytes / 1024) });
-  return tr("{value} MB", { value: (bytes / 1024 / 1024).toFixed(1) });
+  if (bytes < 1024 * 1024 * 1024) return tr("{value} MB", { value: (bytes / 1024 / 1024).toFixed(1) });
+  return tr("{value} GB", { value: +(bytes / 1024 / 1024 / 1024).toFixed(1) });
 }
 
 // ───────────────────────────── conversations ─────────────────────────────
