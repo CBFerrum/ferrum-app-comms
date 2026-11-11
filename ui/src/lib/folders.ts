@@ -10,6 +10,12 @@ export const STARRED = "~starred";
 export const ALL_MAIL = "~all";
 /** Messages held on the mail server until a chosen time (Schedule send): pending submissions, not a mailbox. */
 export const SCHEDULED = "~scheduled";
+/** The largest conversations first, to free space. */
+export const LARGEST = "~largest";
+/** A saved search: `~saved:<id>`. */
+export const SAVED = "~saved:";
+/** The folder snoozed mail waits in (made on first use; one of the person's own to the mail server). */
+export const SNOOZED_NAME = "Snoozed";
 
 const ROLE_NAMES: Record<string, () => string> = {
   inbox: () => tr("Inbox"),
@@ -24,15 +30,17 @@ const ROLE_NAMES: Record<string, () => string> = {
 export const SYSTEM_ROLES = ["inbox", "drafts", "sent", "archive", "junk", "trash"];
 
 /** What the person sees: a system folder by its role, their own folder by its own name. */
-export const folderName = (b: Pick<Mailbox, "name" | "role">) => (b.role && ROLE_NAMES[b.role] ? ROLE_NAMES[b.role]!() : b.name);
+export const folderName = (b: Pick<Mailbox, "name" | "role"> & { parentId?: string | null }) => (b.role && ROLE_NAMES[b.role] ? ROLE_NAMES[b.role]!() : isSnoozed(b) ? tr("Snoozed") : b.name);
 
-export const isVirtual = (id: string | undefined) => id === STARRED || id === ALL_MAIL || id === SCHEDULED;
+export const isVirtual = (id: string | undefined) => id === STARRED || id === ALL_MAIL || id === SCHEDULED || id === LARGEST || !!id?.startsWith(SAVED);
 
 /** A folder that is a query, shaped like a mailbox so the list and its actions treat it alike. */
 export function virtualFolder(id: string): Mailbox | undefined {
   if (id === STARRED) return { id, name: tr("Starred"), role: "starred", sortOrder: 0, totalEmails: 0, unreadEmails: 0 };
   if (id === ALL_MAIL) return { id, name: tr("All mail"), role: "all", sortOrder: 0, totalEmails: 0, unreadEmails: 0 };
   if (id === SCHEDULED) return { id, name: tr("Scheduled"), role: "scheduled", sortOrder: 0, totalEmails: 0, unreadEmails: 0 };
+  if (id === LARGEST) return { id, name: tr("Largest conversations"), role: "largest", sortOrder: 0, totalEmails: 0, unreadEmails: 0 };
+  if (id.startsWith(SAVED)) return { id, name: tr("Search"), role: "saved", sortOrder: 0, totalEmails: 0, unreadEmails: 0 };
   return undefined;
 }
 
@@ -45,8 +53,10 @@ export interface FolderRow {
 }
 
 /** The person's own folders, parents before children, each level by name. */
+export const isSnoozed = (b: Pick<Mailbox, "name" | "role" | "parentId">) => !b.role && !b.parentId && b.name === SNOOZED_NAME;
+
 export function customTree(list: Mailbox[]): FolderRow[] {
-  const mine = list.filter((b) => !b.role);
+  const mine = list.filter((b) => !b.role && !isSnoozed(b));
   const ids = new Set(mine.map((b) => b.id));
   const byName = (a: Mailbox, b: Mailbox) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name);
   const out: FolderRow[] = [];

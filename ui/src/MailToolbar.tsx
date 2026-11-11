@@ -1,12 +1,13 @@
 // The buttons that act on mail: one bar used by the selection toolbar over the list and by the open
 // conversation, the same bar smaller on a row, and the "Move to" menu (a folder filter in a popover).
 
-import { Archive, FolderInput, Inbox, MailOpen, Mail as MailClosed, MoreVertical, ShieldAlert, ShieldCheck, Star, Trash2 } from "lucide-react";
+import { Archive, Download, FolderInput, Inbox, MailOpen, Mail as MailClosed, MoreVertical, ShieldAlert, ShieldCheck, Star, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button, Command, CommandEmpty, CommandInput, CommandItem, CommandList, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, Popover, PopoverContent, PopoverTrigger } from "@ferrum/kit/primitives";
 import { isolate, t as tr } from "@ferrum/client";
 import { cn } from "@ferrum/kit";
 import { FolderIcon } from "./MailFolders";
+import { AlsoFileMenu } from "./MailLabels";
 import { offered, type Verb } from "./lib/actions";
 import { folderName, moveTargets } from "./lib/folders";
 import type { Mailbox } from "./lib/mail";
@@ -75,6 +76,12 @@ export interface BarProps {
   compact?: boolean;
   /** Compact only: "Select all" in the menu. */
   onSelectAll?: () => void;
+  /** "Also file under…" (adds a folder); with its popover's state. */
+  onLabel?: (to: Mailbox) => void;
+  labelOpen?: boolean;
+  onLabelOpen?: (o: boolean) => void;
+  /** Save what is selected as an .mbox file. */
+  onExport?: () => void;
 }
 
 /** Archive, Delete, Spam or Not spam, Mark read or unread, Star, Move to; in Trash and Spam also Move to Inbox and Delete forever. */
@@ -90,6 +97,8 @@ export function ActionBar(p: BarProps) {
       { label: p.anyUnread ? tr("Mark as read") : tr("Mark as unread"), run: () => p.onVerb(p.anyUnread ? "read" : "unread") },
       { label: p.allStarred ? tr("Remove the star") : tr("Star"), run: () => p.onVerb(p.allStarred ? "unstar" : "star") },
       ...(o.move ? [{ label: tr("Move to…"), run: () => setTimeout(() => p.onMoveOpen(true)) }] : []),
+      ...(p.onLabel && p.onLabelOpen ? [{ label: tr("Also file under…"), run: () => setTimeout(() => p.onLabelOpen!(true)) }] : []),
+      ...(p.onExport ? [{ label: tr("Export as .mbox"), run: p.onExport }] : []),
       ...(p.onSelectAll ? [{ label: tr("Select all"), run: p.onSelectAll }] : []),
     ];
     return (
@@ -119,6 +128,11 @@ export function ActionBar(p: BarProps) {
           </DropdownMenuContent>
         </DropdownMenu>
         {o.move && <MoveMenu quiet boxes={p.boxes} current={p.folderId} onPick={p.onMove} open={p.moveOpen} onOpenChange={p.onMoveOpen} />}
+        {p.onLabel && p.onLabelOpen && (
+          <span className="pointer-events-none w-0 overflow-hidden opacity-0" aria-hidden="true">
+            <AlsoFileMenu boxes={p.boxes} inIds={{}} onPick={p.onLabel} open={!!p.labelOpen} onOpenChange={p.onLabelOpen} />
+          </span>
+        )}
         {p.children}
       </>
     );
@@ -162,6 +176,12 @@ export function ActionBar(p: BarProps) {
         <Star className={cn(p.allStarred && "fill-warning text-warning")} />
       </IconAction>
       {o.move && <MoveMenu boxes={p.boxes} current={p.folderId} onPick={p.onMove} open={p.moveOpen} onOpenChange={p.onMoveOpen} />}
+      {p.onLabel && p.onLabelOpen && <AlsoFileMenu boxes={p.boxes} inIds={{}} onPick={p.onLabel} open={!!p.labelOpen} onOpenChange={p.onLabelOpen} />}
+      {p.onExport && (
+        <IconAction label={tr("Export as .mbox")} onClick={p.onExport}>
+          <Download />
+        </IconAction>
+      )}
       {p.children}
     </>
   );

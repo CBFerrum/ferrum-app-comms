@@ -152,7 +152,7 @@ export function InviteCard({ invite, cancelled }: { invite: Invite; cancelled: b
 }
 
 /** "Block sender", "Report phishing" and the rest of a message's own menu. */
-export function MessageMenu({ from, onBlock, onPhishing, onUnsubscribeMail, unsubscribe }: { from: Address | undefined; onBlock: () => void; onPhishing: () => void; onUnsubscribeMail: () => void; unsubscribe: Unsubscribe | null }) {
+export function MessageMenu({ from, own, onBlock, onPhishing, onUnsubscribeMail, unsubscribe, onFilter, onOriginal, onPrint }: { from: Address | undefined; own: boolean; onBlock: () => void; onPhishing: () => void; onUnsubscribeMail: () => void; unsubscribe: Unsubscribe | null; onFilter: () => void; onOriginal: () => void; onPrint: () => void }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -161,12 +161,16 @@ export function MessageMenu({ from, onBlock, onPhishing, onUnsubscribeMail, unsu
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        {from && (
-          <DropdownMenuItem onSelect={onBlock}>
-            {tr("Block {sender}", { sender: isolate(from.email) })}
-          </DropdownMenuItem>
+        <DropdownMenuItem onSelect={onPrint}>{tr("Print")}</DropdownMenuItem>
+        <DropdownMenuItem onSelect={onOriginal}>{tr("Show original")}</DropdownMenuItem>
+        {from && <DropdownMenuItem onSelect={onFilter}>{tr("Filter messages like this")}</DropdownMenuItem>}
+        {from && !own && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={onBlock}>{tr("Block {sender}", { sender: isolate(from.email) })}</DropdownMenuItem>
+            <DropdownMenuItem onSelect={onPhishing}>{tr("Report phishing")}</DropdownMenuItem>
+          </>
         )}
-        <DropdownMenuItem onSelect={onPhishing}>{tr("Report phishing")}</DropdownMenuItem>
         {unsubscribe && (
           <>
             <DropdownMenuSeparator />

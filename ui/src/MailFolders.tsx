@@ -2,18 +2,22 @@
 // searches, the person's own folders nested and managed here (new, rename, delete), counts that are
 // quiet where they should be. Used beside the list and, on a phone, in a sheet.
 
-import { Archive, CalendarClock, FileText, Folder, FolderPlus, Inbox, Keyboard, Layers, Mail, MoreHorizontal, Pencil, Send, Settings, ShieldAlert, Star, Trash2, Users, type LucideIcon } from "lucide-react";
+import { AlarmClock, Archive, ArrowDownWideNarrow, CalendarClock, FileText, Folder, FolderPlus, Inbox, Keyboard, Layers, Mail, MoreHorizontal, Pencil, Search, Send, Settings, ShieldAlert, Star, Trash2, Users, type LucideIcon } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router";
-import { Badge, Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, Input, Label, Skeleton } from "@ferrum/kit/primitives";
+import { Badge, Button, Progress, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, Input, Label, Skeleton } from "@ferrum/kit/primitives";
 import { errorMessage, isolate, t as tr } from "@ferrum/client";
 import { cn, confirmDialog, toast } from "@ferrum/kit";
 import { ensureArchive } from "./MailActions";
 import { useScheduled } from "./MailScheduled";
-import { ALL_MAIL, SCHEDULED, STARRED, customTree, folderCount, folderName, folderNameProblem, systemFolders, withDescendants } from "./lib/folders";
-import { byRole, jmap, refusal, type Mailbox, type Session } from "./lib/mail";
+import { useQuery } from "@tanstack/react-query";
+import { useChangeMailData } from "./MailData";
+import { DOT_CLASS } from "./MailLabels";
+import { FOLDER_COLORS, type MailData } from "./lib/filters";
+import { ALL_MAIL, LARGEST, SAVED, SCHEDULED, STARRED, customTree, folderCount, folderName, folderNameProblem, isSnoozed, systemFolders, withDescendants } from "./lib/folders";
+import { byRole, jmap, refusal, sizeLabel, type Mailbox, type Session } from "./lib/mail";
 
-const ICONS: Record<string, LucideIcon> = { inbox: Inbox, drafts: FileText, sent: Send, archive: Archive, junk: ShieldAlert, trash: Trash2, starred: Star, all: Layers, scheduled: CalendarClock };
+const ICONS: Record<string, LucideIcon> = { inbox: Inbox, drafts: FileText, sent: Send, archive: Archive, junk: ShieldAlert, trash: Trash2, starred: Star, all: Layers, scheduled: CalendarClock, snoozed: AlarmClock, saved: Search, largest: ArrowDownWideNarrow };
 
 /** The mark of a folder: by its role, a plain folder for the person's own. */
 export const FolderIcon = ({ role, className }: { role: string | null | undefined; className?: string }) => {
@@ -39,9 +43,14 @@ interface Props {
   /** The folder that was open is gone: go to the inbox. */
   onGone: (id: string) => void;
   refetch: () => void;
+  /** Mail's data on the server: saved searches and folder colours. */
+  data?: MailData;
 }
 
+const COLOR_NAMES: Record<string, () => string> = { primary: () => tr("Blue"), success: () => tr("Green"), warning: () => tr("Yellow"), destructive: () => tr("Red"), purple: () => tr("Purple"), muted: () => tr("Grey") };
+
 export function FolderNav(p: Props) {
+  const changeData = useChangeMailData(p.account, p.boxes ?? []);
   const [naming, setNaming] = useState<{ mode: "new"; parent: Mailbox | null } | { mode: "rename"; box: Mailbox } | null>(null);
   const boxes = p.boxes ?? [];
   const link = (id: string, role: string | null, name: string, box?: Mailbox, depth = 0) => {
@@ -56,7 +65,11 @@ export function FolderNav(p: Props) {
           style={{ paddingInlineStart: `${0.5 + depth * 0.875}rem` }}
           className={cn("flex items-center gap-2 rounded-md py-1.5 pe-2 text-sm text-foreground hover:bg-accent pointer-coarse:min-h-11", id === p.current && "bg-accent font-medium")}
         >
-          <FolderIcon role={role} className={id === p.current ? "text-primary" : "text-muted-foreground"} />
+          {mine && p.data?.colors[id] ? (
+            <span className={cn("ms-1 me-1 size-2.5 shrink-0 rounded-full", DOT_CLASS[p.data.colors[id]!])} aria-hidden="true" />
+          ) : (
+            <FolderIcon role={role} className={id === p.current ? "text-primary" : "text-muted-foreground"} />
+          )}
           <span className="min-w-0 flex-1 truncate">{isolate(name)}</span>
           {count &&
             (count.quiet ? (
@@ -83,6 +96,19 @@ export function FolderNav(p: Props) {
               <DropdownMenuItem onSelect={() => setNaming({ mode: "new", parent: box })}>
                 <FolderPlus /> {tr("New subfolder")}
               </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <div className="flex gap-1 px-2 py-1.5" role="group" aria-label={tr("Colour")}>
+                {FOLDER_COLORS.map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    aria-label={tr("Colour: {value}", { value: COLOR_NAMES[c]!() })}
+                    aria-pressed={p.data?.colors[box.id] === c}
+                    className={cn("size-5 rounded-full ring-offset-1 ring-offset-popover hover:ring-2 hover:ring-ring aria-pressed:ring-2 aria-pressed:ring-foreground", DOT_CLASS[c])}
+                    onClick={() => void changeData((d) => ({ ...d, colors: d.colors[box.id] === c ? Object.fromEntries(Object.entries(d.colors).filter(([k]) => k !== box.id)) : { ...d.colors, [box.id]: c } }))}
+                  />
+                ))}
+              </div>
               <DropdownMenuSeparator />
               <DropdownMenuItem variant="destructive" onSelect={() => void remove(box)}>
                 <Trash2 /> {tr("Delete folder")}
@@ -133,6 +159,9 @@ export function FolderNav(p: Props) {
   const inbox = system.filter((b) => b.role === "inbox");
   const rest = system.filter((b) => b.role !== "inbox");
   const mine = customTree(boxes);
+  const snoozed = boxes.find(isSnoozed);
+  const saved = p.data?.saved ?? [];
+  const removeSaved = (id: string) => void changeData((d) => ({ ...d, saved: d.saved.filter((x) => x.id !== id) }));
   const archiveAt = rest.findIndex((b) => b.role === "archive");
   return (
     <>
@@ -168,6 +197,7 @@ export function FolderNav(p: Props) {
           {inbox.map((b) => link(b.id, b.role, folderName(b), b))}
           {!!boxes.length && link(STARRED, "starred", tr("Starred"))}
           {rest.slice(0, archiveAt < 0 ? rest.length : archiveAt + 1).map((b) => [link(b.id, b.role, folderName(b), b), b.role === "sent" && (held > 0 || p.current === SCHEDULED) && link(SCHEDULED, "scheduled", tr("Scheduled"))])}
+          {snoozed && link(snoozed.id, "snoozed", tr("Snoozed"), snoozed)}
           {!!boxes.length && link(ALL_MAIL, "all", tr("All mail"))}
           {archiveAt >= 0 && rest.slice(archiveAt + 1).map((b) => link(b.id, b.role, folderName(b), b))}
         </ul>
@@ -183,9 +213,34 @@ export function FolderNav(p: Props) {
             </div>
             <ul className="grid gap-0.5">{mine.map(({ box, depth }) => link(box.id, null, box.name, box, depth))}</ul>
             {!mine.length && <p className="px-2 py-1 text-xs text-muted-foreground">{tr("Your own folders appear here.")}</p>}
+            {saved.length > 0 && (
+              <>
+                <h2 className="mt-3 ps-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">{tr("Searches")}</h2>
+                <ul className="grid gap-0.5">
+                  {saved.map((x) => (
+                    <li key={x.id} className="group/folder relative">
+                      <Link
+                        to={`/mail/${SAVED}${x.id}${p.suffix}`}
+                        onClick={p.onNavigate}
+                        aria-current={SAVED + x.id === p.current ? "page" : undefined}
+                        title={x.query}
+                        className={cn("flex items-center gap-2 rounded-md py-1.5 ps-2 pe-8 text-sm hover:bg-accent pointer-coarse:min-h-11", SAVED + x.id === p.current && "bg-accent font-medium")}
+                      >
+                        <FolderIcon role="saved" className="text-muted-foreground" />
+                        <span className="min-w-0 flex-1 truncate">{isolate(x.name)}</span>
+                      </Link>
+                      <Button variant="ghost" size="icon-sm" className="absolute end-0.5 top-1/2 size-7 -translate-y-1/2 opacity-0 group-focus-within/folder:opacity-100 group-hover/folder:opacity-100 pointer-coarse:opacity-100" aria-label={tr("Remove the search {name}", { name: x.name })} onClick={() => removeSaved(x.id)}>
+                        <Trash2 />
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
           </>
         )}
       </nav>
+      <Storage account={p.account} suffix={p.suffix} onNavigate={p.onNavigate} />
       <Button variant="ghost" size="sm" className="justify-start" onClick={p.onKeys}>
         <Keyboard aria-hidden="true" /> {tr("Keyboard shortcuts")}
       </Button>
@@ -250,5 +305,31 @@ function NameDialog({ account, boxes, target, onClose, done }: { account: string
         </form>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** How full the mailbox is (the mail server's quota), quiet until it nears the limit; and the way to the largest conversations. */
+function Storage({ account, suffix, onNavigate }: { account: string; suffix: string; onNavigate?: () => void }) {
+  const q = useQuery({
+    queryKey: ["mail", "quota", account],
+    queryFn: async () => ((await jmap([["Quota/get", { accountId: account, ids: null }, "0"]]))["0"].list as { resourceType: string; used: number; hardLimit: number; scope: string }[]) ?? [],
+    staleTime: 10 * 60_000,
+    retry: false,
+  });
+  const octets = q.data?.find((x) => x.resourceType === "octets");
+  const share = octets?.hardLimit ? octets.used / octets.hardLimit : 0;
+  return (
+    <div className="grid gap-1 border-t px-2 pt-2 text-xs text-muted-foreground">
+      {octets?.hardLimit ? (
+        <>
+          <span className={cn(share >= 0.9 && "font-medium text-destructive")}>{tr("{used} of {total} used", { used: sizeLabel(octets.used), total: sizeLabel(octets.hardLimit) })}</span>
+          <Progress value={Math.min(100, share * 100)} aria-label={tr("Mailbox storage")} className={cn("h-1.5", share >= 0.9 && "[&>*]:bg-destructive")} />
+          {share >= 0.9 && <span>{tr("Almost full: new mail will be refused. Empty Trash and Spam, or delete large conversations.")}</span>}
+        </>
+      ) : null}
+      <Link to={`/mail/${LARGEST}${suffix}`} onClick={onNavigate} className="w-fit rounded-sm text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">
+        {tr("Largest conversations")}
+      </Link>
+    </div>
   );
 }

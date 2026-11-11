@@ -111,6 +111,16 @@ export async function ensureArchive(account: string): Promise<Mailbox | null> {
   }
 }
 
+/** One of the person's own top-level folders by name (Snoozed), made when missing. */
+export async function ensureFolder(account: string, boxes: Mailbox[], name: string): Promise<Mailbox> {
+  const found = boxes.find((b) => !b.role && !b.parentId && b.name === name);
+  if (found) return found;
+  const r = await jmap([["Mailbox/set", { accountId: account, create: { f: { name, parentId: null } } }, "0"]]);
+  const made = (r["0"].created as Record<string, { id: string }> | undefined)?.f;
+  if (!made) throw new Error(refusal(Object.values((r["0"].notCreated as Record<string, { type?: string; description?: string }>) ?? {})[0], tr("The folder could not be made.")));
+  return { id: made.id, name, role: null, parentId: null, sortOrder: 0, totalEmails: 0, unreadEmails: 0 };
+}
+
 /** Looks once per account and session: creates Archive when the account has no folder with that role. */
 export function useEnsureArchive(account: string, boxes: Mailbox[] | undefined, mayCreate: boolean) {
   const qc = useQueryClient();
@@ -195,5 +205,43 @@ export function useMailActions(account: string, boxes: Mailbox[]) {
     }
   }, [account]);
 
-  return { run, destroy, idsIn, refresh, undo };
+  /** Any change to messages (a filter applied now, snooze, a folder added or taken off), with the same Undo. `updates` gets each message's folders and keywords as they are. */
+  const patch = useCallback(
+    async (ids: string[], updates: (s: Snapshot) => Update | null, line: string): Promise<boolean> => {
+      if (!ids.length) return false;
+      try {
+        const before = await snapshot(account, ids);
+        const changes = Object.fromEntries(before.map((s) => [s.id, updates(s)]).filter(([, u]) => u)) as Record<string, Update>;
+        if (!Object.keys(changes).length) {
+          toast(tr("Nothing to change."), "info");
+          return true;
+        }
+        await setEmails(account, changes);
+        const kept = before.filter((s) => changes[s.id]);
+        undo.push(line, () => setEmails(account, restoreUpdates(kept)));
+        announce(line);
+        return true;
+      } catch (e) {
+        toast(errorMessage(e), "error");
+        return false;
+      } finally {
+        void refresh();
+      }
+    },
+    [account, undo, refresh],
+  );
+
+  /** Every message a JMAP filter finds (up to `max`). */
+  const idsMatching = useCallback(async (filter: Record<string, unknown>, max = 1000): Promise<string[]> => {
+    const out: string[] = [];
+    while (out.length < max) {
+      const r = await jmap([["Email/query", { accountId: account, filter, limit: 500, position: out.length }, "0"]]);
+      const ids = r["0"].ids as string[];
+      out.push(...ids);
+      if (ids.length < 500) break;
+    }
+    return out.slice(0, max);
+  }, [account]);
+
+  return { run, destroy, idsIn, refresh, undo, patch, idsMatching };
 }

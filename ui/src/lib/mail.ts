@@ -261,7 +261,7 @@ export const messagesIn = (n: number) => `${n} ${n === 1 ? "message" : "messages
 
 // ───────────────────────────── keyboard ─────────────────────────────
 
-export type MailKey = "select" | "move" | "undo" | "read" | "next" | "previous" | "open" | "back" | "reply" | "replyAll" | "forward" | "archive" | "delete" | "spam" | "unread" | "star" | "compose" | "search" | "help";
+export type MailKey = "label" | "select" | "move" | "undo" | "read" | "next" | "previous" | "open" | "back" | "reply" | "replyAll" | "forward" | "archive" | "delete" | "spam" | "unread" | "star" | "compose" | "search" | "help";
 
 /** What the keys do, for the list of shortcuts. */
 export const SHORTCUTS: { keys: string[]; action: MailKey; label: string }[] = [
@@ -279,6 +279,7 @@ export const SHORTCUTS: { keys: string[]; action: MailKey; label: string }[] = [
   { keys: ["Shift", "I"], action: "read", get label() { return tr("Mark as read"); } },
   { keys: ["x"], action: "select", get label() { return tr("Select the conversation"); } },
   { keys: ["v"], action: "move", get label() { return tr("Move to a folder"); } },
+  { keys: ["l"], action: "label", get label() { return tr("Also file under a folder"); } },
   { keys: ["z"], action: "undo", get label() { return tr("Undo the last action"); } },
   { keys: ["s"], action: "star", get label() { return tr("Star or unstar"); } },
   { keys: ["c"], action: "compose", get label() { return tr("Write a message"); } },
@@ -316,6 +317,7 @@ const KEYS: Record<string, MailKey> = {
   I: "read",
   x: "select",
   v: "move",
+  l: "label",
   z: "undo",
   s: "star",
   c: "compose",
@@ -323,9 +325,13 @@ const KEYS: Record<string, MailKey> = {
   "?": "help",
 };
 
-/** What a key press asks for, unless it is part of a shortcut of the browser or the system. */
+let shortcutsOn = true;
+/** The person turned the keyboard shortcuts off (Mail settings): no key acts then. */
+export const setShortcutsOn = (on: boolean) => void (shortcutsOn = on);
+
+/** What a key press asks for, unless it is part of a shortcut of the browser or the system, or the shortcuts are off. */
 export function keyAction(e: { key: string; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean }): MailKey | null {
-  return e.ctrlKey || e.metaKey || e.altKey ? null : (KEYS[e.key] ?? null);
+  return !shortcutsOn || e.ctrlKey || e.metaKey || e.altKey ? null : (KEYS[e.key] ?? null);
 }
 
 /** Whether a key press belongs to something being typed in or operated, not to the shortcuts. */

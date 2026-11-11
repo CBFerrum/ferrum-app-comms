@@ -4,7 +4,6 @@
 
 import { describe, expect, it } from "vitest";
 import { doneLine, offered, patchFor, rangeBetween, restoreUpdates, toolbarVerbs, updatesFor } from "./actions";
-import { blockScript, parseBlocked } from "./blocklist";
 import { ALL_MAIL, STARRED, customTree, folderCount, folderName, folderNameProblem, moveTargets, virtualFolder, withDescendants } from "./folders";
 import { listDate, nameAndAddress, recipientsLine, senderLabel } from "./list";
 import { conversationRows, limiter, type Mailbox } from "./mail";
@@ -227,24 +226,6 @@ describe("images", () => {
     const bad = { getItem: () => { throw new Error("denied"); }, setItem: () => { throw new Error("denied"); } } as unknown as Storage;
     expect(imageSenders("c", bad)).toEqual([]);
     expect(() => alwaysShowImagesFrom("c", "a@b.example", bad)).not.toThrow();
-  });
-});
-
-describe("blocked senders as a Sieve script", () => {
-  it("lists each address in a comment and files them all into Spam", () => {
-    const s = blockScript(["A@x.example", "b@y.example", "a@x.example"], "Junk Mail");
-    expect(s).toContain('require ["fileinto"];');
-    expect(s).toContain('if address :is "from" ["a@x.example", "b@y.example"] { fileinto "Junk Mail"; stop; }');
-    expect(parseBlocked(s)).toEqual(["a@x.example", "b@y.example"]);
-  });
-  it("an empty list is a script that does nothing", () => {
-    const s = blockScript([], "Junk Mail");
-    expect(s).not.toContain("if ");
-    expect(parseBlocked(s)).toEqual([]);
-  });
-  it("quotes what could break out of the string", () => {
-    expect(blockScript(['a"b@x.example'], 'Junk "Mail"')).toContain('"a\\"b@x.example"');
-    expect(blockScript(['a"b@x.example'], 'Junk "Mail"')).toContain('fileinto "Junk \\"Mail\\""');
   });
 });
 

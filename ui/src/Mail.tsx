@@ -12,7 +12,10 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Sh
 import { errorMessage, newKey, shell, t as tr, isolate } from "@ferrum/client";
 import { cn, ListSkeleton, ReaderSkeleton, StatePanel, toast } from "@ferrum/kit";
 import { Failure } from "./States";
-import { Composer, ComposeStack, loadDraft, openBefore, type Win } from "./MailCompose";
+import { Composer, ComposeStack, loadDraft, openBefore, useIdentities, type Win } from "./MailCompose";
+import { prefsOf, useMailData } from "./MailData";
+import { ForwardingBanner } from "./MailFilters";
+import { useMailWatch, useSnoozeWake } from "./MailWatch";
 import { ScheduledList } from "./MailScheduled";
 import { UndoProvider, useEnsureArchive, useUndo } from "./MailActions";
 import { FolderNav } from "./MailFolders";
@@ -122,7 +125,7 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
       const next = [...all, { id: newKey(), draft: d, state: "open" as const }];
       return next.map((w, i) => (i < next.length - 2 && w.state === "open" ? { ...w, state: "min" as const } : w));
     });
-  const [settings, setSettings] = useState(false);
+  const [settings, setSettings] = useState<string | false>(false);
   const [keys, setKeys] = useState(false);
   const [sheet, setSheet] = useState(false);
   const undo = useUndo();
@@ -134,11 +137,32 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
   const open = (box: string, id?: string) => navigate((id ? `/mail/${box}/${id}` : `/mail/${box}`) + suffix);
   const folder = boxes.data?.find((b) => b.id === current) ?? virtualFolder(current ?? "");
   const domains = workspaceDomains(session.username, accounts.map(([, a]) => a.name));
+  const identities = useIdentities(account).data;
+  const own = [me, ...(identities ?? []).map((i) => i.email)];
+  const data = useMailData(account, boxes.data);
+  const prefs = prefsOf(data.data?.data);
+  useMailWatch({ account, boxes: boxes.data, own, notify: prefs.notify, open, enabled: !!boxes.data });
+  useSnoozeWake(account, boxes.data, canEdit);
+  // Compact or comfortable, through the kit's density tokens, for this page.
+  useEffect(() => {
+    document.documentElement.dataset.density = prefs.density;
+    return () => void delete document.documentElement.dataset.density;
+  }, [prefs.density]);
 
   // The Mail tile in the bar shows what waits in the inbox, as Chat's shows its unread.
   const waiting = byRole(boxes.data, "inbox")?.unreadEmails ?? 0;
-  useEffect(() => shell().badge(account === primary ? waiting : 0), [waiting, account, primary]);
-  useEffect(() => () => shell().badge(0), []);
+  // The bar draws no count on an app's tile (its badge() only badges an installed app's icon), so the tab's title carries it too, as Gmail's does.
+  useEffect(() => {
+    shell().badge(account === primary ? waiting : 0);
+    if (boxes.data) shell().title(account === primary && waiting ? `Mail (${waiting > 999 ? "999+" : waiting})` : "Mail");
+  }, [waiting, account, primary, boxes.data]);
+  useEffect(
+    () => () => {
+      shell().badge(0);
+      shell().title("Mail");
+    },
+    [],
+  );
 
   // Writing, help and undo from the keyboard anywhere in Mail.
   useEffect(() => {
@@ -195,15 +219,24 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
       canEdit={canEdit}
       onWrite={() => (setSheet(false), write({ kind: "new" }))}
       onKeys={() => (setSheet(false), setKeys(true))}
-      onSettings={() => (setSheet(false), setSettings(true))}
+      onSettings={() => (setSheet(false), setSettings("general"))}
       onNavigate={inSheet ? () => setSheet(false) : undefined}
       onGone={(id) => id === current && inbox && open(inbox)}
       refetch={() => void boxes.refetch()}
+      data={data.data?.data}
     />
   );
+  const pane = prefs.pane;
   return (
-    <div data-fullbleed className="grid h-[calc(100dvh-var(--ferrum-bar-height,48px))] min-h-0 md:grid-cols-[200px_380px_minmax(0,1fr)]">
-      <aside className="hidden min-h-0 flex-col gap-2 border-e p-2 md:flex" aria-label={tr("Folders")}>
+    <div
+      data-fullbleed
+      className={cn(
+        "grid h-[calc(100dvh-var(--ferrum-bar-height,48px))] min-h-0",
+        pane === "right" ? "md:grid-cols-[200px_380px_minmax(0,1fr)]" : "md:grid-cols-[200px_minmax(0,1fr)]",
+        pane === "below" && "md:grid-rows-[minmax(0,2fr)_minmax(0,3fr)]",
+      )}
+    >
+      <aside className={cn("hidden min-h-0 flex-col gap-2 border-e p-2 md:flex", pane === "below" && "md:row-span-2")} aria-label={tr("Folders")}>
         {nav(false)}
       </aside>
       <Sheet open={sheet} onOpenChange={setSheet}>
@@ -215,7 +248,9 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
           {nav(true)}
         </SheetContent>
       </Sheet>
-      <section className={cn("min-h-0 border-e", email && "hidden md:block")} aria-label={tr("Messages")}>
+      <section className={cn("flex min-h-0 flex-col border-e", email && "hidden md:flex", email && pane === "off" && "md:hidden", pane === "below" && "md:border-e-0 md:border-b")} aria-label={tr("Messages")}>
+        {canEdit && <ForwardingBanner account={account} boxes={boxes.data ?? []} onManage={() => setSettings("filters")} />}
+        <div className="min-h-0 flex-1">
         {current === SCHEDULED ? (
           <ScheduledList account={account} boxes={boxes.data ?? []} onFolders={() => setSheet(true)} open={write} />
         ) : current && (
@@ -230,16 +265,18 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
             opening={opening}
             onOpen={onOpen}
             onWrite={() => write({ kind: "new" })}
-            onSettings={() => setSettings(true)}
+            onSettings={() => setSettings("general")}
             onFolders={() => setSheet(true)}
             onKept={write}
             writing={wins.length > 0}
+            own={own}
           />
         )}
+        </div>
       </section>
-      <section className={cn("min-h-0", !email && "hidden md:grid md:place-items-center")}>
+      <section className={cn("min-h-0", !email && "hidden md:grid md:place-items-center", !email && pane === "off" && "md:hidden")}>
         {email && current ? (
-          <Conversation key={account + email} account={account} id={email} me={me} boxes={boxes.data ?? []} folder={current} domains={domains} onBack={() => open(current)} onDraft={write} />
+          <Conversation key={account + email} account={account} id={email} me={me} own={own} boxes={boxes.data ?? []} folder={current} domains={domains} onBack={() => open(current)} onDraft={write} />
         ) : (
           <p className="text-sm text-muted-foreground">{tr("Pick a message to read it.")}</p>
         )}
@@ -255,7 +292,7 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
         boxes={boxes.data ?? []}
         open={write}
       />
-      {settings && <MailSettings account={primary} me={session.username} servers={session.servers} boxes={boxes.data ?? []} onClose={() => setSettings(false)} />}
+      {settings && <MailSettings account={primary} me={session.username} servers={session.servers} boxes={account === primary ? (boxes.data ?? []) : []} own={own} tab={settings} folder={folder} onClose={() => setSettings(false)} />}
       {keys && <Shortcuts onClose={() => setKeys(false)} />}
     </div>
   );
