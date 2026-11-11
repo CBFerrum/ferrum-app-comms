@@ -401,7 +401,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
               {reminder === "custom" && <option value="custom">{t("Several (kept as they are)")}</option>}
             </select>
           </div>
-          <div className="grid gap-1.5">
+          <div className="grid gap-1.5 sm:col-span-2">
             <Label htmlFor="ev-visible">{t("Who sees it")}</Label>
             <select id="ev-visible" className="h-(--control-h) w-full min-w-0 rounded-md border border-input bg-card px-2 text-sm" value={visibility} onChange={(e) => setVisibility(e.target.value)}>
               <option value="Private">{t("Only you and your guests (others see busy time)")}</option>

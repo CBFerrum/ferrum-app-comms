@@ -119,11 +119,11 @@ export function ChatPage() {
   useEffect(() => () => shell().badge(0), []);
 
   return (
-    <div data-fullbleed className="grid h-[calc(100dvh-var(--ferrum-bar-height,48px))] min-h-0 md:grid-cols-[280px_minmax(0,1fr)]">
-      <aside className={cn("min-h-0 border-e", channel && "hidden md:block")} aria-label={tr("Conversations")}>
+    <div data-fullbleed className="grid h-[calc(100dvh-var(--ferrum-bar-height,48px))] min-h-0 grid-cols-1 md:grid-cols-[280px_minmax(0,1fr)]">
+      <aside className={cn("min-h-0 min-w-0 border-e", channel && "hidden md:block")} aria-label={tr("Conversations")}>
         <ChannelList list={channels.data?.channels} loading={channels.isLoading} error={channels.error} onRetry={() => void channels.refetch()} active={channel} waiting={waiting} />
       </aside>
-      <section className={cn("min-h-0", !channel && "hidden md:grid md:place-items-center")}>
+      <section className={cn("min-h-0 min-w-0", !channel && "hidden md:grid md:place-items-center")}>
         {channel ? (
           <Conversation key={channel} id={channel} summary={channels.data?.channels.find((c) => c.id === channel)} />
         ) : (
@@ -245,7 +245,7 @@ function ChannelList({
       <Input type="search" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder={tr("Find a conversation")} aria-label={tr("Find a conversation")} />
       <div className="flex gap-1" role="group" aria-label={tr("Show")}>
         {SHOWS.map((s) => (
-          <Button key={s.id} size="xs" variant={show === s.id ? "secondary" : "ghost"} aria-pressed={show === s.id} onClick={() => setShow(s.id)}>
+          <Button key={s.id} size="xs" className="pointer-coarse:min-h-11" variant={show === s.id ? "secondary" : "ghost"} aria-pressed={show === s.id} onClick={() => setShow(s.id)}>
             {isolate(s.label)}
           </Button>
         ))}
@@ -424,15 +424,15 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
   const side = panel === "search" ? "search" : panel ? "details" : threadId ? "thread" : null;
 
   return (
-    <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto] xl:grid-cols-[minmax(0,1fr)_auto]">
+    <div className="grid h-full min-h-0 grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto] xl:grid-cols-[minmax(0,1fr)_auto]">
       <div className="xl:col-span-2">
-        <header className="flex items-center gap-2 border-b px-3 py-2">
+        <header className="flex items-center gap-1 sm:gap-2 border-b px-3 py-2">
           <Button asChild variant="ghost" size="icon-sm" className="md:hidden" aria-label={tr("Back to conversations")}>
             <Link to={base}>
               <ArrowLeft />
             </Link>
           </Button>
-          {view ? <ChannelIcon c={view} /> : null}
+          {view ? <span className="max-sm:hidden"><ChannelIcon c={view} /></span> : null}
           <div className="min-w-0 flex-1">
             <h2 className="truncate font-semibold">{c?.title || c?.name || summary?.title || "…"}</h2>
             {c?.topic && <p className="truncate text-xs text-muted-foreground">{isolate(c.topic)}</p>}
@@ -461,7 +461,7 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
         {target && (
           <div role="status" className="flex items-center gap-2 border-b bg-muted px-3 py-1.5 text-sm">
             <span className="min-w-0 flex-1">{feed.error ? tr("That message could not be found.") : tr("Showing the messages around the one you picked.")}</span>
-            <Button size="xs" variant="outline" onClick={() => patch({ m: null })}>
+            <Button size="xs" variant="outline" className="pointer-coarse:min-h-11" onClick={() => patch({ m: null })}>
               {tr("Back to the latest")}
             </Button>
           </div>
@@ -737,9 +737,9 @@ function MessageRow({
           </span>
         )}
       </div>
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 [overflow-wrap:anywhere]">
         {!compact && (
-          <div className="flex items-baseline gap-2">
+          <div className="flex flex-wrap items-baseline gap-x-2">
             <span className="text-sm font-semibold">{isolate(name)}</span>
             <time className="text-xs text-muted-foreground" dateTime={m.posted_at}>
               {isolate(time(m.posted_at))}

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  initials,
   accessText,
   addable,
   attachmentsOf,
@@ -68,6 +69,28 @@ describe("chat", () => {
 });
 
 const chan = (id: string, extra: Partial<ChannelSummary> = {}): ChannelSummary => ({ id, name: id, title: id, type: "Public", role: "Member", unread: 0, ...extra });
+
+describe("initials", () => {
+  it.each([
+    ["Priya Nair", "PN"],
+    ["Ingrid Marie Larsen", "IL"],
+    ["Administrator", "A"],
+    ["priya.nair@demo.test", "PN"],
+    ["李(明)", "李"],
+    ["田愛", "田"],
+    ["김민수", "김"],
+    ["(Omar Haddad)", "OH"],
+    ["عمر حداد", "عح"],
+    ["عمر حداد (Omar Haddad)", "عH"],
+    ["अनिल कुमार", "अकु"],
+    ["क्षमा कुमारी", "क्षकु"],
+    ["Zoë Åberg", "ZÅ"],
+    ["🎉 Party Crew", "🎉C"],
+    ["👩🏽‍💻 Dev", "👩🏽‍💻D"],
+    ["", ""],
+    ["  ()  ", ""],
+  ])("%s -> %s", (name, want) => expect(initials(name)).toBe(want));
+});
 
 describe("who hears of a channel", () => {
   it("reads the person's choice, else what the kind of conversation suggests", () => {

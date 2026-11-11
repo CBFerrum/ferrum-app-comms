@@ -334,16 +334,22 @@ export function refreshMessages(qc: { invalidateQueries(o: { queryKey: readonly 
   for (const queryKey of [["chat", "messages"], ["chat", "thread"], ["chat", "message"], ["chat", "channels"]]) void qc.invalidateQueries({ queryKey });
 }
 
-/** Two letters for someone's picture: their name's first letters, else their address's. */
-export const initials = (name: string) =>
-  name
-    .split(/[\s@.]+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((w) => w[0]!.toUpperCase())
-    .join("");
+const graphemes = (s: string): string[] => (typeof Intl.Segmenter === "function" ? Array.from(new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(s), (g) => g.segment) : Array.from(s));
+const LETTER = /[\p{L}\p{N}\p{Extended_Pictographic}]/u;
+const IDEOGRAPH = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
+/** What stands for someone's picture: the first letter of their first and last word (their address's name part
+ *  when there is no name); one character for Han, Kana and Hangul, which have no spaced words. Brackets
+ *  and other punctuation are skipped, and a character is never split (emoji, combining marks). */
+export const initials = (name: string) => {
+  const first = (w: string) => graphemes(w).find((g) => LETTER.test(g));
+  const letters = name.split("@")[0]!.split(/[\s.]+/).map(first).filter((g): g is string => !!g);
+  if (!letters.length) return "";
+  if (IDEOGRAPH.test(letters[0]!)) return letters[0]!;
+  return (letters.length > 1 ? [letters[0]!, letters[letters.length - 1]!] : letters).map((g) => g.toLocaleUpperCase()).join("");
+};
 
 /** A panel beside a conversation (a thread, its details, a search): over the page on phones and
  *  tablets, a column on wide screens. */
 export const SIDE_PANEL =
-  "fixed inset-y-0 right-0 z-40 grid w-full grid-rows-[auto_minmax(0,1fr)] border-l bg-background shadow-xl sm:w-[420px] xl:static xl:z-auto xl:row-span-2 xl:row-start-2 xl:w-[360px] xl:shadow-none";
+  "fixed inset-y-0 end-0 z-40 grid w-full grid-rows-[auto_minmax(0,1fr)] border-s bg-background shadow-xl sm:w-[420px] xl:static xl:z-auto xl:row-span-2 xl:row-start-2 xl:w-[360px] xl:shadow-none";
