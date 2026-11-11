@@ -1,12 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   SHORTCUTS,
-  addressChoices,
-  addressToken,
   busyWith,
-  completeAddress,
   conversationRows,
-  draftEmail,
   dropDraft,
   expandedIds,
   frameDocument,
@@ -17,16 +13,12 @@ import {
   keyAction,
   messagesIn,
   parseAddresses,
-  quote,
   refusal,
   replyRecipients,
-  replySubject,
   sizeLabel,
   sortMailboxes,
   step,
-  threadingFor,
   type EmailSummary,
-  type Fields,
   type Kept,
   type Mailbox,
 } from "./mail";
@@ -60,15 +52,6 @@ describe("mail", () => {
     expect(replyRecipients({ ...m, from: [{ email: "me@acme.com" }] }, "me@acme.com", false).to).toEqual([{ email: "bob@acme.com" }]);
   });
 
-  it("prefixes subjects once and quotes the original", () => {
-    expect(replySubject("Q3 numbers", "reply")).toBe("Re: Q3 numbers");
-    expect(replySubject("RE: Q3 numbers", "reply")).toBe("RE: Q3 numbers");
-    expect(replySubject("Fw: Q3", "forward")).toBe("Fw: Q3");
-    expect(replySubject(null, "forward")).toBe("Fwd: ");
-    const m = { from: [{ name: "Ann", email: "ann@acme.com" }], to: [{ email: "me@acme.com" }], receivedAt: "", subject: "Q3", text: "Hi\nNumbers attached.\n\n" };
-    expect(quote(m, "reply", "1 Nov 2026")).toBe("\n\nOn 1 Nov 2026, Ann wrote:\n> Hi\n> Numbers attached.");
-    expect(quote(m, "forward", "1 Nov 2026")).toContain("From: Ann <ann@acme.com>\nDate: 1 Nov 2026\nSubject: Q3\nTo: me@acme.com\n\nHi");
-  });
 
   it("frames a message with no scripts and remote images only on request", () => {
     const doc = frameDocument("<p>Hi</p>", false);
@@ -119,11 +102,11 @@ describe("conversations", () => {
 
 describe("keyboard", () => {
   it("maps keys to what they ask for, leaving the browser's own shortcuts alone", () => {
-    expect([keyAction({ key: "j" }), keyAction({ key: "U" }), keyAction({ key: "Escape" }), keyAction({ key: "x" })]).toEqual(["next", "unread", "back", null]);
+    expect([keyAction({ key: "j" }), keyAction({ key: "U" }), keyAction({ key: "Escape" }), keyAction({ key: "q" })]).toEqual(["next", "unread", "back", null]);
     expect([keyAction({ key: "r", ctrlKey: true }), keyAction({ key: "r", metaKey: true }), keyAction({ key: "a", altKey: true })]).toEqual([null, null, null]);
     expect(SHORTCUTS.every((s) => s.keys.length > 0)).toBe(true);
     // Every shortcut listed is one a key reaches.
-    expect(SHORTCUTS.map((s) => s.action).sort()).toEqual([...new Set(Object.values({ j: "next", k: "previous", o: "open", u: "back", r: "reply", a: "replyAll", f: "forward", e: "archive", "#": "delete", "!": "spam", U: "unread", s: "star", c: "compose", "/": "search", "?": "help" }))].sort());
+    expect(SHORTCUTS.map((s) => s.action).sort()).toEqual([...new Set(Object.values({ j: "next", k: "previous", o: "open", u: "back", r: "reply", a: "replyAll", f: "forward", e: "archive", "#": "delete", "!": "spam", U: "unread", I: "read", x: "select", v: "move", l: "label", z: "undo", s: "star", c: "compose", "/": "search", "?": "help" }))].sort());
   });
 
   it("stays out of the way of typing, menus and dialogs", () => {
@@ -143,33 +126,11 @@ describe("keyboard", () => {
 });
 
 describe("writing", () => {
-  const ann = { name: "Ann", email: "ann@acme.com" };
-  const fields = (extra: Partial<Fields> = {}): Fields => ({ to: [ann], cc: [], bcc: [], subject: " Hello ", body: "Hi", files: [], ...extra });
-
-  it("builds the draft the mail server takes, replies in their conversation", () => {
-    const e = draftEmail(fields({ files: [{ blobId: "b1", name: "plan.pdf", type: "application/pdf", size: 10 }] }), { name: "", email: "me@acme.com" }, "drafts", { inReplyTo: ["<1@x>"] });
-    expect(e).toMatchObject({
-      mailboxIds: { drafts: true },
-      keywords: { $seen: true, $draft: true },
-      from: [{ email: "me@acme.com" }],
-      to: [ann],
-      subject: "Hello",
-      textBody: [{ partId: "b", type: "text/plain" }],
-      attachments: [{ blobId: "b1", name: "plan.pdf", disposition: "attachment" }],
-      inReplyTo: ["<1@x>"],
-    });
-    const original = { messageId: ["<2@x>"], references: ["<1@x>"] };
-    expect(threadingFor(original, "reply")).toEqual({ inReplyTo: ["<2@x>"], references: ["<1@x>", "<2@x>"] });
-    expect(threadingFor(original, "forward")).toEqual({});
-    expect(threadingFor(original, "new")).toEqual({});
-    expect(threadingFor(undefined, "reply")).toEqual({});
-  });
-
   it("knows whether anything is written", () => {
-    expect(hasContent({ to: [], cc: [], bcc: [], subject: " ", body: "\n", files: [] })).toBe(false);
-    expect(hasContent(fields({ to: [], subject: "", body: "" }))).toBe(false);
-    expect(hasContent(fields({ to: [], subject: "", body: "x" }))).toBe(true);
-    expect(hasContent({ to: [], cc: [], bcc: [], subject: "", body: "", files: [{ blobId: "b", name: "a", type: "t", size: 1 }] })).toBe(true);
+    const w = { to: [], cc: [], bcc: [], subject: " ", text: "\n", files: [] };
+    expect(hasContent(w)).toBe(false);
+    expect(hasContent({ ...w, text: "x" })).toBe(true);
+    expect(hasContent({ ...w, files: [{ blobId: "b", name: "a", type: "t", size: 1 }] })).toBe(true);
   });
 
   it("tells why the mail server refused, in words", () => {
@@ -181,16 +142,6 @@ describe("writing", () => {
     expect(refusal({ type: "x" }, "Nothing was sent.")).toBe("Nothing was sent.");
   });
 
-  it("completes the address being typed, and only that one", () => {
-    const people = [{ id: "1", email: "ana@acme.com", full_name: "Ana Rao" }, { id: "2", email: "raj@acme.com", full_name: "Raj Anand" }];
-    expect(addressToken("bob@x.com, an", 13)).toEqual({ from: 11, to: 13, query: "an" });
-    expect(addressToken("an, bob@x.com", 2)).toEqual({ from: 0, to: 2, query: "an" });
-    expect(addressChoices(people, "bob@x.com, an", 13).map((p) => p.id)).toEqual(["1", "2"]);
-    expect(addressChoices(people, "ana@acme.com", 12)).toEqual([]);
-    expect(addressChoices(people, "", 0)).toEqual([]);
-    expect(completeAddress("bob@x.com, an", 13, people[0]!)).toEqual({ text: "bob@x.com, Ana Rao <ana@acme.com>, ", caret: 35 });
-    expect(completeAddress("an, bob@x.com", 2, people[0]!)).toEqual({ text: "Ana Rao <ana@acme.com>, bob@x.com", caret: 24 });
-  });
 });
 
 describe("drafts kept in the browser", () => {
@@ -206,18 +157,30 @@ describe("drafts kept in the browser", () => {
       key: (i: number) => [...m.keys()][i] ?? null,
     };
   };
-  const kept = (key: string, at: string, account = "a1"): Kept => ({ key, account, savedAt: at, to: "ann@acme.com", cc: "", bcc: "", subject: "Hi", body: "Words", files: [] });
+  const ago = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
+  const written = { to: [{ email: "ann@acme.com" }], cc: [], bcc: [], subject: "Hi", html: "<p>Words</p>", text: "Words", plain: false, quote: null, files: [], signature: true };
+  const kept = (key: string, at: string, account = "a1"): Kept => ({ key, account, savedAt: at, written });
 
   it("keeps what is written per account, newest first, until it is dropped", () => {
     const st = store();
-    keepDraft(kept("one", "2026-11-01T10:00:00Z"), st);
-    keepDraft(kept("two", "2026-11-01T11:00:00Z"), st);
-    keepDraft(kept("other", "2026-11-01T12:00:00Z", "a2"), st);
+    keepDraft(kept("one", ago(3)), st);
+    keepDraft(kept("two", ago(2)), st);
+    keepDraft(kept("other", ago(1), "a2"), st);
     st.setItem("unrelated", "x");
     expect(keptDrafts("a1", st).map((k) => k.key)).toEqual(["two", "one"]);
     dropDraft("a1", "two", st);
     expect(keptDrafts("a1", st).map((k) => k.key)).toEqual(["one"]);
-    expect(keptDrafts("a1", st)[0]!.body).toBe("Words");
+    expect(keptDrafts("a1", st)[0]!.written.text).toBe("Words");
+  });
+
+  it("lets go of copies older than two weeks, and reads a plain copy from before rich text", () => {
+    const st = store();
+    keepDraft(kept("old", ago(24 * 15)), st);
+    st.setItem("ferrum.mail.draft.a1.legacy", JSON.stringify({ key: "legacy", account: "a1", savedAt: ago(1), to: "Ann <ann@acme.com>, bob@acme.com", cc: "", bcc: "", subject: "Hi", body: "Words", files: [] }));
+    const got = keptDrafts("a1", st);
+    expect(got.map((k) => k.key)).toEqual(["legacy"]);
+    expect(got[0]!.written).toMatchObject({ to: [{ name: "Ann", email: "ann@acme.com" }, { email: "bob@acme.com" }], text: "Words", plain: true, html: "" });
+    expect(st.getItem("ferrum.mail.draft.a1.old")).toBeNull();
   });
 
   it("carries on when the browser keeps nothing or holds something else", () => {

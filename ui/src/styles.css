@@ -3,3 +3,25 @@
 @import "../../../ferrum/web/src/index.css";
 @source "../../../ferrum/web/src";
 @source ".";
+
+/* The body of a message being written (MailEditor): lists, quotes, links and images as they go out. */
+.mail-editor ul { list-style: disc; padding-inline-start: 1.75em; }
+.mail-editor ol { list-style: decimal; padding-inline-start: 1.75em; }
+.mail-editor blockquote { border-inline-start: 1px solid var(--border); padding-inline-start: 1ex; margin-inline-start: 0.8ex; color: var(--muted-foreground); }
+.mail-editor a { color: var(--primary); text-decoration: underline; }
+.mail-editor p.is-editor-empty:first-child::before { content: attr(data-placeholder); color: var(--muted-foreground); float: inline-start; height: 0; pointer-events: none; }
+.mail-img { position: relative; display: inline-block; max-width: 100%; line-height: 0; }
+.mail-img img { max-width: 100%; height: auto; }
+.mail-img.is-selected { outline: 2px solid var(--ring); }
+.mail-img.is-uploading img { opacity: 0.5; }
+.mail-img.is-remote { min-width: 4rem; min-height: 2rem; background: var(--muted); }
+.mail-img-handle { position: absolute; inset-inline-end: -4px; bottom: -4px; width: 12px; height: 12px; border-radius: 2px; background: var(--primary); cursor: nwse-resize; display: none; touch-action: none; }
+.mail-img.is-selected .mail-img-handle, .mail-img:hover .mail-img-handle { display: block; }
+
+/* The kit's toast action (Undo) comes out white on the toast's white in this app's build: the button's own
+   colour wins over the kit's legacy-layer `.toast-action`. Drawn in the primary colour here until the kit fixes it. */
+.toaster .toast-action { color: var(--primary); }
+/* While messages are being written in windows at the bottom end, notices go to the bottom start (as Gmail's do), not over the Send button. */
+@media (min-width: 768px) {
+  body:has([data-compose-stack]) .toaster { inset-inline-end: auto; inset-inline-start: max(16px, env(safe-area-inset-left)); }
+}

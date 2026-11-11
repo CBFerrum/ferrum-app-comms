@@ -5,7 +5,7 @@
   <img alt="Mail, Chat and Calendar" src="docs/assets/banner-light.svg" width="100%">
 </picture>
 
-[![CI](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml/badge.svg)](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml) ![Version](https://img.shields.io/badge/version-0.8.0-2563eb?style=flat-square) ![Ferrum](https://img.shields.io/badge/Ferrum-%3E%3D0.3.2%2C%20%3C0.4-2f5bea?style=flat-square) ![License](https://img.shields.io/badge/license-AGPL--3.0-3b82f6?style=flat-square) ![Rust](https://img.shields.io/badge/Rust-native%20app-b7410e?style=flat-square&logo=rust&logoColor=white) ![Interface](https://img.shields.io/badge/interface-React%20%2B%20Vite-0ea5e9?style=flat-square&logo=react&logoColor=white) ![MCP](https://img.shields.io/badge/AI%20agents-MCP-8b5cf6?style=flat-square)
+[![CI](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml/badge.svg)](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml) ![Version](https://img.shields.io/badge/version-0.13.0-2563eb?style=flat-square) ![Ferrum](https://img.shields.io/badge/Ferrum-%3E%3D0.3.2%2C%20%3C0.4-2f5bea?style=flat-square) ![License](https://img.shields.io/badge/license-AGPL--3.0-3b82f6?style=flat-square) ![Rust](https://img.shields.io/badge/Rust-native%20app-b7410e?style=flat-square&logo=rust&logoColor=white) ![Interface](https://img.shields.io/badge/interface-React%20%2B%20Vite-0ea5e9?style=flat-square&logo=react&logoColor=white) ![MCP](https://img.shields.io/badge/AI%20agents-MCP-8b5cf6?style=flat-square)
 
 **A native app for [Ferrum](https://github.com/CBFerrum/Ferrum), the open-source, AI-first business platform.**
 
@@ -298,6 +298,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.13.0** | Mail: folders with icons, bulk actions with exact Undo, spam and phishing warnings, a rich-text composer, drafts that cannot be lost, undo and schedule send, search operators, server-side filters, previews, snooze, invitations answered from the message. |
 | **0.12.1** | The redesigned interface: the upgraded design system, shaped loading, told-apart states. |
 | **0.12.0** | What meetings keep of a person (their own captions) is in their personal-data copy, goes with their erasure, and again when a restore replays it. |
 | **0.11.0** | Mail asks, as it sends, whether each recipient may be contacted for it: marketing stops where consent ends, nothing goes under a restriction. |
