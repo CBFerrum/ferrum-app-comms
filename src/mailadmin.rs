@@ -31,7 +31,8 @@ fn manager(ctx: &Ctx) -> Result<()> {
 /// An administrative change in the audit trail of the workspace's Communication Settings.
 async fn audit(k: &Kernel, ctx: &Ctx, action: &str, diff: Value) -> Result<()> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let settings: Option<Uuid> = sqlx::query_scalar("select id from e_comms_settings where tenant_id = $1 limit 1").bind(ctx.tenant).fetch_optional(&mut *tx).await?;
+    let settings: Option<Uuid> =
+        sqlx::query_scalar("select id from e_comms_settings where tenant_id = $1 limit 1").bind(ctx.tenant).fetch_optional(&mut *tx).await?;
     if let Some(id) = settings {
         ferrum_kernel::audit::record(&mut tx, ctx, "CommsSettings", id, action, None, diff).await?;
     }
@@ -78,7 +79,8 @@ pub(crate) async fn spam(k: &Kernel, ctx: &Ctx) -> Result<Value> {
     let admin = Admin::connect(k).await?;
     let accounts = admin.accounts(k, ctx.tenant).await?;
     let domain = hosted::mail_domain(k, ctx.tenant).await?.unwrap_or_default();
-    let ours: Vec<(String, String)> = accounts.people.values().chain(accounts.groups.values()).map(|a| (a.id.clone(), format!("{}@{domain}", a.name))).collect();
+    let ours: Vec<(String, String)> =
+        accounts.people.values().chain(accounts.groups.values()).map(|a| (a.id.clone(), format!("{}@{domain}", a.name))).collect();
     let settings = admin.jmap(k, vec![("x:SpamClassifier/get", json!({"ids": ["singleton"]}))]).await?;
     let hold = Duration::milliseconds(settings[0]["list"][0]["holdSamplesFor"].as_i64().unwrap_or(180 * 86_400_000));
     let mut samples = Vec::new();
@@ -127,7 +129,8 @@ pub(crate) fn sender(value: &str) -> Option<String> {
         Some((l, d)) => (Some(l), d),
         None => (None, v.as_str()),
     };
-    let label_ok = |l: &str| !l.is_empty() && l.len() <= 63 && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') && !l.starts_with('-') && !l.ends_with('-');
+    let label_ok =
+        |l: &str| !l.is_empty() && l.len() <= 63 && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') && !l.starts_with('-') && !l.ends_with('-');
     let domain_ok = domain.contains('.') && domain.len() <= 253 && domain.split('.').all(label_ok);
     let local_ok = local.is_none_or(|l| !l.is_empty() && l.len() <= 64 && l.bytes().all(|b| b.is_ascii_graphic() && !b"@,;:<>()[]\\\"".contains(&b)));
     (domain_ok && local_ok && v.len() <= 254).then_some(v)
@@ -145,7 +148,9 @@ pub(crate) async fn senders(k: &Kernel, ctx: &Ctx) -> Result<Value> {
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;
-    Ok(json!({"senders": rows.into_iter().map(|(sender, kind, by, at)| json!({"sender": sender, "kind": kind, "added_by": by, "added_at": util::ts(at)})).collect::<Vec<_>>()}))
+    Ok(
+        json!({"senders": rows.into_iter().map(|(sender, kind, by, at)| json!({"sender": sender, "kind": kind, "added_by": by, "added_at": util::ts(at)})).collect::<Vec<_>>()}),
+    )
 }
 
 /// `POST /domain/senders {sender, kind: allow|block}`: adds one (or moves it to the other list).
@@ -202,7 +207,18 @@ mod tests {
         assert_eq!(sender(" Ann@Example.COM "), Some("ann@example.com".into()));
         assert_eq!(sender("@promo.example"), Some("promo.example".into()));
         assert_eq!(sender("mail.promo.example"), Some("mail.promo.example".into()));
-        for bad in ["", "example", "a@b", "a b@example.com", "-x.example", "x-.example", "a@@example.com", "<a@example.com>", "a@exa mple.com", &format!("{}.com", "a".repeat(64))] {
+        for bad in [
+            "",
+            "example",
+            "a@b",
+            "a b@example.com",
+            "-x.example",
+            "x-.example",
+            "a@@example.com",
+            "<a@example.com>",
+            "a@exa mple.com",
+            &format!("{}.com", "a".repeat(64)),
+        ] {
             assert_eq!(sender(bad), None, "{bad}");
         }
     }

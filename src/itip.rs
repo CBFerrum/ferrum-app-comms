@@ -245,7 +245,11 @@ mod tests {
         // Bob's message also claims Carol declined: only Carol's own message says that.
         assert_eq!(reply_answer(&it, "carol@out.example", &invited), Ok("Declined"));
         assert_eq!(reply_answer(&it, "mallory@evil.example", &invited), Err(Applied::Refused), "not invited");
-        assert_eq!(reply_answer(&it, "dan@out.example", &guests(&[("dan@out.example", "Needs Action")])), Err(Applied::Refused), "invited but says nothing of themself");
+        assert_eq!(
+            reply_answer(&it, "dan@out.example", &guests(&[("dan@out.example", "Needs Action")])),
+            Err(Applied::Refused),
+            "invited but says nothing of themself"
+        );
         let odd = read(&REPLY.replace("PARTSTAT=ACCEPTED", "PARTSTAT=DELEGATED")).unwrap();
         assert_eq!(reply_answer(&odd, "bob@out.example", &invited), Err(Applied::Unsupported));
         assert_eq!(ferrum_event("01a1cbf3-d117-71d2-b08c-48cd9d8bacac@ferrum"), Some("01a1cbf3-d117-71d2-b08c-48cd9d8bacac".parse().unwrap()));
