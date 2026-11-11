@@ -6,37 +6,38 @@
 // vacation reply and app passwords for mail programs. The keyboard drives all of it (? lists the keys).
 
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@ferrum/kit/primitives";
-import { api, errorMessage, shell, t as tr, isolate } from "@ferrum/client";
+import { errorMessage, newKey, shell, t as tr, isolate } from "@ferrum/client";
 import { cn, ListSkeleton, ReaderSkeleton, StatePanel, toast } from "@ferrum/kit";
 import { Failure } from "./States";
-import { Compose } from "./MailCompose";
+import { Composer, ComposeStack, loadDraft, openBefore, type Win } from "./MailCompose";
+import { ScheduledList } from "./MailScheduled";
 import { UndoProvider, useEnsureArchive, useUndo } from "./MailActions";
 import { FolderNav } from "./MailFolders";
 import { MessageList } from "./MailList";
-import { asDraft, Conversation } from "./MailReader";
+import { Conversation } from "./MailReader";
 import { MailSettings } from "./MailSettings";
-import { virtualFolder } from "./lib/folders";
+import { SCHEDULED, virtualFolder } from "./lib/folders";
 import { workspaceDomains } from "./lib/safety";
 import {
-  MAIL,
   SHORTCUTS,
+  WRITING_SHORTCUTS,
   busyWith,
   byRole,
   jmap,
   keyAction,
+  keptDrafts,
   mailAccount,
   sortMailboxes,
   useMailSession,
   type Draft,
   type Mailbox,
-  type Message,
   type Session,
 } from "./lib/mail";
 
-export { Compose };
+export { Composer };
 
 /** `/mail/:mailbox?/:email?` */
 /** Why someone has no mail here: no mailbox, a locked one, or the mail server is unavailable. */
@@ -113,7 +114,14 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
   const accounts = accountsOf(session);
   const suffix = account === primary ? "" : `?account=${encodeURIComponent(account)}`;
   const switchTo = (id: string) => navigate(id === primary ? "/mail" : `/mail?account=${encodeURIComponent(id)}`);
-  const [draft, setDraft] = useState<Draft | null>(compose ? { kind: "new" } : null);
+  const [wins, setWins] = useState<Win[]>(() => (compose ? [{ id: newKey(), draft: { kind: "new" }, state: "open" }] : []));
+  /** Opens a message to write in a window of its own; the older windows fold to bars when there are many. */
+  const write = (d: Draft) =>
+    setWins((all) => {
+      if (d.saved?.id && all.some((w) => w.draft.saved?.id === d.saved?.id)) return all;
+      const next = [...all, { id: newKey(), draft: d, state: "open" as const }];
+      return next.map((w, i) => (i < next.length - 2 && w.state === "open" ? { ...w, state: "min" as const } : w));
+    });
   const [settings, setSettings] = useState(false);
   const [keys, setKeys] = useState(false);
   const [sheet, setSheet] = useState(false);
@@ -138,7 +146,7 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
       const k = keyAction(e);
       if ((k !== "compose" && k !== "help" && k !== "undo") || busyWith(e.target as HTMLElement | null, e.key)) return;
       e.preventDefault();
-      if (k === "compose") setDraft((d) => d ?? { kind: "new" });
+      if (k === "compose") write({ kind: "new" });
       else if (k === "undo") undo.undo();
       else setKeys(true);
     };
@@ -151,7 +159,7 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
   const openDraft = async (id: string) => {
     setOpening(id);
     try {
-      setDraft(asDraft(await api.get<Message>(`${MAIL}/message/${account}/${id}`), id));
+      write(await loadDraft(account, id));
     } catch (e) {
       toast(tr("The draft could not be opened: {e}", { e: errorMessage(e) }), "error");
     } finally {
@@ -159,6 +167,20 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
     }
   };
   const onOpen = (id: string) => (folder?.role === "drafts" ? void openDraft(id) : open(current!, id));
+
+  // The windows open before a reload come back: from this browser's copy when it has newer words, else from Drafts.
+  const restored = useRef(false);
+  useEffect(() => {
+    if (restored.current || !boxes.data) return;
+    restored.current = true;
+    const kept = keptDrafts(account);
+    for (const o of openBefore(account)) {
+      const k = kept.find((x) => x.key === o.key);
+      if (k) write({ kind: "new", saved: { id: k.draftId ?? o.id ?? undefined, key: k.key, written: k.written, inReplyTo: k.inReplyTo, references: k.references } });
+      else if (o.id) void loadDraft(account, o.id).then((d) => write({ ...d, saved: { ...d.saved, key: o.key } }), () => undefined);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, when the folders are known
+  }, [boxes.data, account]);
 
   if (boxes.error) return <Failure error={boxes.error} onRetry={() => void boxes.refetch()} />;
   const nav = (inSheet: boolean) => (
@@ -171,7 +193,7 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
       current={current}
       suffix={suffix}
       canEdit={canEdit}
-      onWrite={() => (setSheet(false), setDraft({ kind: "new" }))}
+      onWrite={() => (setSheet(false), write({ kind: "new" }))}
       onKeys={() => (setSheet(false), setKeys(true))}
       onSettings={() => (setSheet(false), setSettings(true))}
       onNavigate={inSheet ? () => setSheet(false) : undefined}
@@ -185,7 +207,7 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
         {nav(false)}
       </aside>
       <Sheet open={sheet} onOpenChange={setSheet}>
-        <SheetContent side="left" className="w-4/5 gap-2 p-2 md:hidden">
+        <SheetContent side="left" className="top-(--ferrum-bar-height,48px) h-auto w-4/5 gap-2 p-2 md:hidden">
           <SheetHeader className="sr-only">
             <SheetTitle>{tr("Folders")}</SheetTitle>
             <SheetDescription>{tr("The folders of the mailbox, and your own folders.")}</SheetDescription>
@@ -194,7 +216,9 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
         </SheetContent>
       </Sheet>
       <section className={cn("min-h-0 border-e", email && "hidden md:block")} aria-label={tr("Messages")}>
-        {current && (
+        {current === SCHEDULED ? (
+          <ScheduledList account={account} boxes={boxes.data ?? []} onFolders={() => setSheet(true)} open={write} />
+        ) : current && (
           <MessageList
             key={account + current}
             account={account}
@@ -205,34 +229,32 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
             active={email}
             opening={opening}
             onOpen={onOpen}
-            onWrite={() => setDraft({ kind: "new" })}
+            onWrite={() => write({ kind: "new" })}
             onSettings={() => setSettings(true)}
             onFolders={() => setSheet(true)}
-            onKept={(d) => setDraft(d)}
-            writing={!!draft}
+            onKept={write}
+            writing={wins.length > 0}
           />
         )}
       </section>
       <section className={cn("min-h-0", !email && "hidden md:grid md:place-items-center")}>
         {email && current ? (
-          <Conversation key={account + email} account={account} id={email} me={me} boxes={boxes.data ?? []} folder={current} domains={domains} onBack={() => open(current)} onDraft={setDraft} />
+          <Conversation key={account + email} account={account} id={email} me={me} boxes={boxes.data ?? []} folder={current} domains={domains} onBack={() => open(current)} onDraft={write} />
         ) : (
           <p className="text-sm text-muted-foreground">{tr("Pick a message to read it.")}</p>
         )}
       </section>
-      {draft && (
-        <Compose
-          key={draft.saved?.id ?? draft.saved?.key ?? draft.original?.id ?? "new"}
-          account={account}
-          me={me}
-          boxes={boxes.data ?? []}
-          draft={draft}
-          onClose={() => {
-            setDraft(null);
-            if (compose) navigate("/mail", { replace: true });
-          }}
-        />
-      )}
+      <ComposeStack
+        wins={wins}
+        setWins={(f) => {
+          setWins(f);
+          if (compose) navigate("/mail", { replace: true });
+        }}
+        account={account}
+        me={me}
+        boxes={boxes.data ?? []}
+        open={write}
+      />
       {settings && <MailSettings account={primary} me={session.username} servers={session.servers} boxes={boxes.data ?? []} onClose={() => setSettings(false)} />}
       {keys && <Shortcuts onClose={() => setKeys(false)} />}
     </div>
@@ -250,6 +272,21 @@ function Shortcuts({ onClose }: { onClose: () => void }) {
         <dl className="grid grid-cols-[1fr_auto] items-center gap-x-4 gap-y-2 text-sm">
           {SHORTCUTS.map((s) => (
             <div key={s.action} className="contents">
+              <dt>{isolate(s.label)}</dt>
+              <dd className="flex gap-1">
+                {s.keys.map((k) => (
+                  <kbd key={k} className="rounded border bg-muted px-1.5 py-0.5 font-mono text-xs">
+                    {isolate(k)}
+                  </kbd>
+                ))}
+              </dd>
+            </div>
+          ))}
+        </dl>
+        <h3 className="pt-2 text-sm font-semibold">{tr("While writing")}</h3>
+        <dl className="grid grid-cols-[1fr_auto] items-center gap-x-4 gap-y-2 text-sm">
+          {WRITING_SHORTCUTS.map((s) => (
+            <div key={s.label} className="contents">
               <dt>{isolate(s.label)}</dt>
               <dd className="flex gap-1">
                 {s.keys.map((k) => (

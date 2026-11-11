@@ -2,17 +2,18 @@
 // searches, the person's own folders nested and managed here (new, rename, delete), counts that are
 // quiet where they should be. Used beside the list and, on a phone, in a sheet.
 
-import { Archive, FileText, Folder, FolderPlus, Inbox, Keyboard, Layers, Mail, MoreHorizontal, Pencil, Send, Settings, ShieldAlert, Star, Trash2, Users, type LucideIcon } from "lucide-react";
+import { Archive, CalendarClock, FileText, Folder, FolderPlus, Inbox, Keyboard, Layers, Mail, MoreHorizontal, Pencil, Send, Settings, ShieldAlert, Star, Trash2, Users, type LucideIcon } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router";
 import { Badge, Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, Input, Label, Skeleton } from "@ferrum/kit/primitives";
 import { errorMessage, isolate, t as tr } from "@ferrum/client";
 import { cn, confirmDialog, toast } from "@ferrum/kit";
 import { ensureArchive } from "./MailActions";
-import { ALL_MAIL, STARRED, customTree, folderCount, folderName, folderNameProblem, systemFolders, withDescendants } from "./lib/folders";
+import { useScheduled } from "./MailScheduled";
+import { ALL_MAIL, SCHEDULED, STARRED, customTree, folderCount, folderName, folderNameProblem, systemFolders, withDescendants } from "./lib/folders";
 import { byRole, jmap, refusal, type Mailbox, type Session } from "./lib/mail";
 
-const ICONS: Record<string, LucideIcon> = { inbox: Inbox, drafts: FileText, sent: Send, archive: Archive, junk: ShieldAlert, trash: Trash2, starred: Star, all: Layers };
+const ICONS: Record<string, LucideIcon> = { inbox: Inbox, drafts: FileText, sent: Send, archive: Archive, junk: ShieldAlert, trash: Trash2, starred: Star, all: Layers, scheduled: CalendarClock };
 
 /** The mark of a folder: by its role, a plain folder for the person's own. */
 export const FolderIcon = ({ role, className }: { role: string | null | undefined; className?: string }) => {
@@ -127,6 +128,7 @@ export function FolderNav(p: Props) {
     p.refetch();
   };
 
+  const held = useScheduled(p.account).data?.length ?? 0;
   const system = systemFolders(boxes);
   const inbox = system.filter((b) => b.role === "inbox");
   const rest = system.filter((b) => b.role !== "inbox");
@@ -165,7 +167,7 @@ export function FolderNav(p: Props) {
         <ul className="grid gap-0.5">
           {inbox.map((b) => link(b.id, b.role, folderName(b), b))}
           {!!boxes.length && link(STARRED, "starred", tr("Starred"))}
-          {rest.slice(0, archiveAt < 0 ? rest.length : archiveAt + 1).map((b) => link(b.id, b.role, folderName(b), b))}
+          {rest.slice(0, archiveAt < 0 ? rest.length : archiveAt + 1).map((b) => [link(b.id, b.role, folderName(b), b), b.role === "sent" && (held > 0 || p.current === SCHEDULED) && link(SCHEDULED, "scheduled", tr("Scheduled"))])}
           {!!boxes.length && link(ALL_MAIL, "all", tr("All mail"))}
           {archiveAt >= 0 && rest.slice(archiveAt + 1).map((b) => link(b.id, b.role, folderName(b), b))}
         </ul>

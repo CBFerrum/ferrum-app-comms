@@ -10,6 +10,7 @@ import { relativeTime, t as tr, isolate } from "@ferrum/client";
 import { cn, confirmDialog, ListSkeleton, SelectionToolbar, StatePanel, useDebounced } from "@ferrum/kit";
 import { Failure } from "./States";
 import { useMailActions } from "./MailActions";
+import { useMedia } from "./MailCompose";
 import { ActionBar, IconAction } from "./MailToolbar";
 import { conversations, offered, rangeBetween, type Verb } from "./lib/actions";
 import { ALL_MAIL, STARRED, folderName, isVirtual, purgeLine } from "./lib/folders";
@@ -53,6 +54,8 @@ const emptyText = (role: string | null | undefined) =>
   : tr("No messages here.");
 
 export function MessageList(p: ListProps) {
+  // A phone's width: the selection bar folds its actions into a menu.
+  const phone = useMedia("(max-width: 720px)");
   const actions = useMailActions(p.account, p.boxes);
   const [typed, setTyped] = useState("");
   const search = useDebounced(typed.trim(), 300);
@@ -106,6 +109,22 @@ export function MessageList(p: ListProps) {
     const i = rows.findIndex((r) => r.id === p.active);
     if (i >= 0) setCursorId(rows[i]!.id);
   }, [p.active, rows]);
+  // Back from a conversation (after archiving it, say): focus goes to its row, or to the one now in its place.
+  const left = useRef<{ id: string; index: number; until: number } | null>(null);
+  const wasActive = useRef(p.active);
+  useEffect(() => {
+    if (wasActive.current && !p.active) left.current = { id: wasActive.current, index: Math.max(0, rows.findIndex((r) => r.id === wasActive.current)), until: Date.now() + 4000 };
+    wasActive.current = p.active;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- when a conversation closes
+  }, [p.active]);
+  useEffect(() => {
+    const l = left.current;
+    if (!l || Date.now() > l.until || !rows.length) return;
+    const still = rows.findIndex((r) => r.id === l.id);
+    const target = rows[still >= 0 ? still : Math.min(l.index, rows.length - 1)]!;
+    setCursorId(target.id);
+    requestAnimationFrame(() => (document.querySelector(`[data-row="${target.id}"]`) as HTMLElement | null)?.focus());
+  }, [rows]);
   const cursorRow = rows[at]?.id;
   useEffect(() => {
     if (cursorRow) document.querySelector(`[data-row="${cursorRow}"]`)?.scrollIntoView({ block: "nearest" });
@@ -225,7 +244,8 @@ export function MessageList(p: ListProps) {
           count={chosen.length}
           onClear={clear}
           extend={
-            !all && (
+            // A phone's bar has no room for it: it is in the bar's menu there.
+            !all && !phone && (
               <Button size="sm" variant="ghost" onClick={() => setSelected(new Set(ids))}>
                 {tr("Select all {n}", { n: rows.length })}
               </Button>
@@ -234,6 +254,8 @@ export function MessageList(p: ListProps) {
         >
           <span className="flex shrink-0 items-center">
             <ActionBar
+              compact={phone}
+              onSelectAll={all ? undefined : () => setSelected(new Set(ids))}
               role={role}
               boxes={p.boxes}
               anyUnread={anyUnread}
@@ -282,17 +304,13 @@ export function MessageList(p: ListProps) {
       {lost.map((k) => (
         <div key={k.key} role="status" className="grid gap-1 border-b bg-warning-soft px-3 py-2 text-sm">
           <span>
-            {tr("You have a message you did not send, from")} {isolate(relativeTime(k.savedAt))}: <strong className="font-medium">{k.subject || k.body.trim().slice(0, 40) || tr("(no subject)")}</strong>
+            {tr("You have a message you did not send, from")} {isolate(relativeTime(k.savedAt))}: <strong className="font-medium">{k.written.subject || k.written.text.trim().slice(0, 40) || tr("(no subject)")}</strong>
           </span>
           <span className="flex gap-2">
             <Button
               size="xs"
               onClick={() =>
-                p.onKept({
-                  kind: "new",
-                  prefill: { to: k.to, cc: k.cc, subject: k.subject, body: k.body },
-                  saved: { id: k.draftId, key: k.key, files: k.files, inReplyTo: k.inReplyTo, references: k.references },
-                })
+                p.onKept({ kind: "new", saved: { id: k.draftId, key: k.key, written: k.written, inReplyTo: k.inReplyTo, references: k.references } })
               }
             >
               {tr("Continue writing")}
@@ -413,7 +431,7 @@ function MailRow(p: {
         p.open && "border-s-primary bg-primary-soft hover:bg-primary-soft",
       )}
     >
-      <div role="gridcell" className="absolute start-1.5 top-2.5 z-10 grid size-6 place-items-center">
+      <div role="gridcell" className="absolute start-1.5 top-2.5 z-[1] grid size-6 place-items-center">
         <Checkbox
           aria-label={tr("Select the conversation from {sender}: {subject}", { sender: p.sender, subject: m.subject || tr("(no subject)") })}
           checked={p.selected}

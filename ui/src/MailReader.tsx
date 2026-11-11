@@ -13,6 +13,8 @@ import { api, download, errorMessage, formatDateTime, t as tr, isolate } from "@
 import { cn, confirmDialog, ReaderSkeleton, toast } from "@ferrum/kit";
 import { Failure } from "./States";
 import { useMailActions } from "./MailActions";
+import { Composer, loadDraft } from "./MailCompose";
+import { InviteAnswer, ReplyCard } from "./MailInvite";
 import { ExternalMark, ImagesBar, InviteCard, MessageMenu, WarningBanner, WhySpam, useExtras } from "./MailSafety";
 import { ActionBar } from "./MailToolbar";
 import { offered, type Verb } from "./lib/actions";
@@ -72,6 +74,9 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
   const messages = useMemo(() => thread.data ?? [], [thread.data]);
   const newest = messages[messages.length - 1];
   const latest = useMessage(p.account, newest?.id);
+  // Answers go to the newest message that is not one's own unsent draft.
+  const target = [...messages].reverse().find((m) => !m.keywords?.$draft);
+  const answerable = useMessage(p.account, target?.id);
   const comms = useMetaIndex().data?.entities.find((e) => e.name === "Communication");
   const [folded, setFolded] = useState<Record<string, boolean>>({});
   const [first, setFirst] = useState<string[] | null>(null);
@@ -119,7 +124,14 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
     if (ok && (await actions.destroy(ids))) p.onBack();
   };
   const remove = () => void (offered(folderRole).deleteForever ? forever() : verb("trash"));
-  const reply = (kind: "reply" | "replyAll" | "forward") => latest.data && p.onDraft({ kind, original: latest.data });
+  // Answers are written under the conversation (Gmail's inline reply); "Open in a window" moves one out.
+  const [answer, setAnswer] = useState<Draft | null>(null);
+  const answerAt = useRef<HTMLDivElement>(null);
+  const answerTo = (d: Draft) => {
+    setAnswer(d);
+    requestAnimationFrame(() => answerAt.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
+  };
+  const reply = (kind: "reply" | "replyAll" | "forward") => answerable.data && answerTo({ kind, original: answerable.data });
 
   // The keys of the list work on the conversation too (not while typing, or in a dialog).
   const keys = useRef<(k: NonNullable<ReturnType<typeof keyAction>>) => void>(() => undefined);
@@ -152,7 +164,7 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
   if (!thread.data) return <ReaderSkeleton />;
   if (!newest) return <Failure title={tr("That message is not here any more")} error={new Error(tr("It may have been moved or deleted."))} onRetry={p.onBack} />;
   const subject = latest.data?.subject ?? newest.subject;
-  const single = messages.length === 1;
+  const single = messages.length === 1 && !answer;
   const draftOpen = !!role("drafts") && !!newest.mailboxIds[role("drafts")!.id];
   const junkId = role("junk")?.id;
   return (
@@ -161,13 +173,13 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
         <Button variant="ghost" size="icon-sm" aria-label={tr("Back to the list")} title={tr("Back to the list (u)")} onClick={p.onBack}>
           <ArrowLeft />
         </Button>
-        <Button variant="ghost" size="sm" disabled={!latest.data} onClick={() => reply("reply")} title={tr("Reply (r)")}>
+        <Button variant="ghost" size="sm" disabled={!answerable.data} onClick={() => reply("reply")} title={tr("Reply (r)")}>
           <Reply aria-hidden="true" /> {tr("Reply")}
         </Button>
-        <Button variant="ghost" size="sm" disabled={!latest.data} onClick={() => reply("replyAll")} title={tr("Reply to all (a)")}>
+        <Button variant="ghost" size="sm" disabled={!answerable.data} onClick={() => reply("replyAll")} title={tr("Reply to all (a)")}>
           <ReplyAll aria-hidden="true" /> {tr("Reply all")}
         </Button>
-        <Button variant="ghost" size="sm" disabled={!latest.data} onClick={() => reply("forward")} title={tr("Forward (f)")}>
+        <Button variant="ghost" size="sm" disabled={!answerable.data} onClick={() => reply("forward")} title={tr("Forward (f)")}>
           <Forward aria-hidden="true" /> {tr("Forward")}
         </Button>
         <span className="flex-1" />
@@ -194,7 +206,7 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
         <h2 className="text-lg font-semibold break-words">{subject || tr("(no subject)")}</h2>
         {!single && <p className="text-xs text-muted-foreground">{isolate(messagesIn(messages.length))} {tr("in this conversation")}</p>}
         {draftOpen && latest.data && (
-          <Button size="sm" variant="outline" className="mt-1" onClick={() => p.onDraft(asDraft(latest.data!, newest.id))}>
+          <Button size="sm" variant="outline" className="mt-1" onClick={() => void loadDraft(p.account, newest.id).then(p.onDraft, (e: unknown) => toast(errorMessage(e), "error"))}>
             {tr("Continue writing this draft")}
           </Button>
         )}
@@ -214,29 +226,30 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
             junkName={role("junk")?.name ?? "Junk Mail"}
             onVerb={(v) => void verb(v)}
             onDraft={p.onDraft}
+            onAnswer={answerTo}
+            boxes={p.boxes}
           />
         ))}
+        {answer && (
+          <div ref={answerAt} className="p-3">
+            <Composer
+              key={`${answer.kind}-${answer.original?.id}`}
+              mode="inline"
+              account={p.account}
+              me={p.me}
+              boxes={p.boxes}
+              draft={answer}
+              onClose={() => setAnswer(null)}
+              onPopOut={(d) => (setAnswer(null), p.onDraft(d))}
+              open={p.onDraft}
+            />
+          </div>
+        )}
       </div>
       {filing && latest.data && <FileDialog account={p.account} email={latest.data} onClose={() => setFiling(false)} />}
     </article>
   );
 }
-
-/** A message that sits in Drafts, as a message to go on writing. */
-export function asDraft(m: Message, id: string): Draft {
-  return {
-    kind: "new",
-    prefill: { to: addressText(m.to), cc: addressText(m.cc), subject: m.subject ?? "", body: m.text },
-    saved: {
-      id,
-      files: m.attachments.map((a) => ({ blobId: a.blobId, name: a.name ?? "attachment", type: a.type, size: a.size })),
-      inReplyTo: m.inReplyTo,
-      references: m.references,
-    },
-  };
-}
-
-const addressText = (list: Message["to"]) => (list ?? []).map((a) => (a.name ? `${a.name} <${a.email}>` : a.email)).join(", ");
 
 /** A message's plain text, with web addresses as links (https and http only; never followed from here). */
 function PlainText({ text }: { text: string }) {
@@ -257,7 +270,7 @@ function PlainText({ text }: { text: string }) {
 }
 
 /** One message of the conversation: a line when folded, the whole message when open. */
-function Card({ account, summary, open, fill, onToggle, me, domains, inSpam, junkName, onVerb, onDraft }: { account: string; summary: EmailSummary; open: boolean; fill: boolean; onToggle: () => void; me: string; domains: string[]; inSpam: boolean; junkName: string; onVerb: (v: Verb) => void; onDraft: (d: Draft) => void }) {
+function Card({ account, summary, open, fill, onToggle, me, domains, inSpam, junkName, onVerb, onDraft, onAnswer, boxes }: { account: string; summary: EmailSummary; open: boolean; fill: boolean; onToggle: () => void; me: string; domains: string[]; inSpam: boolean; junkName: string; onVerb: (v: Verb) => void; onDraft: (d: Draft) => void; onAnswer: (d: Draft) => void; boxes: Mailbox[] }) {
   const sender = summary.from?.[0];
   const [images, setImages] = useState(() => showsImagesFrom(account, sender?.email));
   const [details, setDetails] = useState(false);
@@ -332,15 +345,17 @@ function Card({ account, summary, open, fill, onToggle, me, domains, inSpam, jun
                 </div>
                 {warning && <WarningBanner warning={warning} />}
                 {inSpam && extras && <WhySpam extras={extras} />}
-                {extras?.invite && <InviteCard invite={extras.invite} cancelled={extras.invite.method === "CANCEL"} />}
-                <div className="flex flex-wrap items-center gap-1">
-                  <Button variant="outline" size="xs" onClick={() => onDraft({ kind: "reply", original: m })}>
+                {extras?.invite && extras.invite.method !== "REPLY" && <InviteCard invite={extras.invite} cancelled={extras.invite.method === "CANCEL"} />}
+                {extras?.ics && extras.invite?.method === "REQUEST" && <InviteAnswer account={account} emailId={summary.id} keywords={summary.keywords} ics={extras.ics} me={me} boxes={boxes} title={extras.invite.title} />}
+                {extras?.ics && extras.invite?.method === "REPLY" && <ReplyCard account={account} emailId={summary.id} keywords={summary.keywords} ics={extras.ics} me={me} />}
+                <div className={cn("flex flex-wrap items-center gap-1", summary.keywords?.$draft && "hidden")}>
+                  <Button variant="outline" size="xs" onClick={() => onAnswer({ kind: "reply", original: m })}>
                     <Reply aria-hidden="true" /> {tr("Reply")}
                   </Button>
-                  <Button variant="outline" size="xs" onClick={() => onDraft({ kind: "replyAll", original: m })}>
+                  <Button variant="outline" size="xs" onClick={() => onAnswer({ kind: "replyAll", original: m })}>
                     <ReplyAll aria-hidden="true" /> {tr("Reply all")}
                   </Button>
-                  <Button variant="outline" size="xs" onClick={() => onDraft({ kind: "forward", original: m })}>
+                  <Button variant="outline" size="xs" onClick={() => onAnswer({ kind: "forward", original: m })}>
                     <Forward aria-hidden="true" /> {tr("Forward")}
                   </Button>
                   {!mine && (

@@ -20,6 +20,8 @@ export interface Extras {
   /** The message has no HTML part: it is plain text, drawn on the theme's surface. */
   plain: boolean;
   invite: Invite | null;
+  /** The invitation's iCalendar text, for answering it. */
+  ics: string | null;
 }
 
 interface Part {
@@ -65,6 +67,7 @@ export function useExtras(account: string, id: string | undefined) {
           oneClick: /List-Unsubscribe\s*=\s*One-Click/i.test(String(e["header:List-Unsubscribe-Post:asRaw"] ?? "")),
           plain: html.length > 0 && html.every((p) => p.type === "text/plain"),
           invite: parseInvite(ics),
+          ics,
         };
       } catch {
         return null;
