@@ -1,9 +1,9 @@
-// Mail settings: the vacation reply, and the app passwords mail programs (Outlook, Apple Mail,
+// Mail settings: writing (Undo send, signatures per address, templates), the vacation reply, and the app passwords mail programs (Outlook, Apple Mail,
 // Thunderbird, phones) sign in with. For managers there is a way on to the domain's health.
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Inbox } from "lucide-react";
-import { useEffect, useState, type FormEvent } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router";
 import { Button } from "@ferrum/kit/primitives";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@ferrum/kit/primitives";
@@ -12,12 +12,17 @@ import { Label } from "@ferrum/kit/primitives";
 import { Skeleton } from "@ferrum/kit/primitives";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ferrum/kit/primitives";
 import { Textarea } from "@ferrum/kit/primitives";
-import { errorMessage, formatDateTime, t, isolate } from "@ferrum/client";
+import { errorMessage, formatDateTime, fromZonedInput, t, isolate, toZonedInput } from "@ferrum/client";
 import { can, useMetaIndex } from "@ferrum/records";
 import { confirmDialog, FormSkeleton, toast, placed } from "@ferrum/kit";
 import { Failure } from "./States";
 import { readBlocked, writeBlocked } from "./lib/blocklist";
-import { byRole, jmap, type Mailbox } from "./lib/mail";
+import { byRole, jmap, refusal, type Mailbox } from "./lib/mail";
+import { fromEditor, htmlToText, saveWritePrefs, UNDO_CHOICES, writePrefs } from "./lib/compose";
+import { signatureOf, useIdentities, useTemplates } from "./MailCompose";
+import type { EditorHandle } from "./MailEditor";
+
+const MailEditor = lazy(() => import("./MailEditor"));
 
 interface Vacation {
   isEnabled: boolean;
@@ -39,18 +44,22 @@ export function MailSettings({ account, me, servers, boxes, onClose }: { account
   const manages = !!settings && can(settings.permissions, "write");
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="sm:max-w-xl">
+      <DialogContent className="max-h-[92dvh] overflow-y-auto sm:max-w-2xl [&>*]:min-w-0">
         <DialogHeader>
           <DialogTitle>{t("Mail settings")}</DialogTitle>
           <DialogDescription>{isolate(me)}</DialogDescription>
         </DialogHeader>
-        <Tabs defaultValue="vacation">
-          <TabsList>
+        <Tabs defaultValue="writing" className="min-w-0">
+          <TabsList className="max-w-full justify-start overflow-x-auto">
+            <TabsTrigger value="writing">{t("Writing")}</TabsTrigger>
             <TabsTrigger value="vacation">{t("Vacation reply")}</TabsTrigger>
             <TabsTrigger value="blocked">{t("Blocked senders")}</TabsTrigger>
             <TabsTrigger value="apps">{t("Mail programs")}</TabsTrigger>
             {manages && <TabsTrigger value="domain">{t("Domain")}</TabsTrigger>}
           </TabsList>
+          <TabsContent value="writing">
+            <WritingSettings account={account} boxes={boxes} />
+          </TabsContent>
           <TabsContent value="vacation">
             <VacationForm account={account} />
           </TabsContent>
@@ -78,7 +87,8 @@ export function MailSettings({ account, me, servers, boxes, onClose }: { account
   );
 }
 
-const day = (iso: string | null) => (iso ? iso.slice(0, 10) : "");
+/** The day a moment falls on, on the person's clock (the form edits days; the server keeps moments). */
+const day = (v: string | null) => (!v ? "" : /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : toZonedInput(v).slice(0, 10));
 
 function VacationForm({ account }: { account: string }) {
   const q = useQuery({
@@ -98,8 +108,9 @@ function VacationForm({ account }: { account: string }) {
     try {
       const patch = {
         isEnabled: form.isEnabled,
-        fromDate: form.fromDate ? `${day(form.fromDate)}T00:00:00Z` : null,
-        toDate: form.toDate ? `${day(form.toDate)}T23:59:59Z` : null,
+        // The start and end of those days on the person's clock, not UTC midnights.
+        fromDate: form.fromDate ? fromZonedInput(`${day(form.fromDate)}T00:00`) : null,
+        toDate: form.toDate ? fromZonedInput(`${day(form.toDate)}T23:59:59`) : null,
         subject: form.subject || null,
         textBody: form.textBody || null,
       };
@@ -281,6 +292,109 @@ function BlockedSenders({ account, junkName }: { account: string; junkName: stri
         ))}
         {s && !s.blocked.length && <li className="text-muted-foreground">{t("Nobody is blocked.")}</li>}
       </ul>
+    </div>
+  );
+}
+
+/** How sending behaves, the signature of each address the person writes as, and their templates. */
+function WritingSettings({ account, boxes }: { account: string; boxes: Mailbox[] }) {
+  const qc = useQueryClient();
+  const [prefs, setPrefs] = useState(() => writePrefs(account));
+  const set = (p: typeof prefs) => {
+    setPrefs(p);
+    saveWritePrefs(account, p);
+  };
+  const identities = useIdentities(account);
+  const templates = useTemplates(account, boxes);
+  const remove = async (id: string, subject: string) => {
+    if (!(await confirmDialog({ title: t("Delete the template “{name}”?", { name: subject }), message: t("It is removed from your Templates folder for good."), confirmLabel: t("Delete"), danger: true }))) return;
+    try {
+      await jmap([["Email/set", { accountId: account, destroy: [id] }, "0"]]);
+      void qc.invalidateQueries({ queryKey: ["mail", "templates", account] });
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    }
+  };
+  return (
+    <div className="grid gap-5 pt-2">
+      <section className="grid gap-1.5" aria-labelledby="set-undo">
+        <h3 id="set-undo" className="text-sm font-semibold">{t("Undo send")}</h3>
+        <p className="text-sm text-muted-foreground">{t("The mail server holds a sent message this long, so Undo can call it back, even if you close the page.")}</p>
+        <select aria-labelledby="set-undo" className="h-(--control-h) w-48 rounded-md border border-input bg-card px-2 text-sm" value={prefs.undoSeconds} onChange={(e) => set({ ...prefs, undoSeconds: Number(e.target.value) })}>
+          {UNDO_CHOICES.map((n) => (
+            <option key={n} value={n}>
+              {n ? t("{n} seconds", { n }) : t("Off")}
+            </option>
+          ))}
+        </select>
+        <p className="text-xs text-muted-foreground">{t("Kept in this browser.")}</p>
+      </section>
+      <section className="grid gap-2" aria-labelledby="set-sig">
+        <h3 id="set-sig" className="text-sm font-semibold">{t("Signature")}</h3>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={prefs.signatureInReplies} onChange={(e) => set({ ...prefs, signatureInReplies: e.target.checked })} />
+          {t("Add it to replies and forwards too, above the quoted message")}
+        </label>
+        {identities.error ? <Failure error={identities.error} onRetry={() => void identities.refetch()} /> : !identities.data ? <Skeleton className="h-24" /> : identities.data.map((i) => <SignatureEditor key={i.id} account={account} identity={i} />)}
+      </section>
+      <section className="grid gap-1.5" aria-labelledby="set-tpl">
+        <h3 id="set-tpl" className="text-sm font-semibold">{t("Templates")}</h3>
+        <p className="text-sm text-muted-foreground">{t("Save a message as a template from its ⋮ menu while you write; insert one from the same menu. They are kept in your Templates folder, where other mail programs see them too.")}</p>
+        {templates.data?.length ? (
+          <ul className="grid gap-1">
+            {templates.data.map((m) => (
+              <li key={m.id} className="flex items-center gap-2 rounded-md border px-2 py-1 text-sm">
+                <span className="min-w-0 flex-1 truncate">{isolate(m.subject || t("(no subject)"))}</span>
+                <span className="hidden min-w-0 flex-1 truncate text-xs text-muted-foreground sm:block">{isolate(m.preview)}</span>
+                <Button variant="ghost" size="xs" onClick={() => void remove(m.id, m.subject ?? "")}>
+                  {t("Delete")}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-muted-foreground">{templates.isLoading ? t("Loading…") : t("No templates yet.")}</p>
+        )}
+      </section>
+    </div>
+  );
+}
+
+/** One address's signature, written as rich text and kept on the mail server's identity, so other mail programs that read it share it. */
+function SignatureEditor({ account, identity }: { account: string; identity: { id: string; name: string; email: string; htmlSignature?: string | null; textSignature?: string | null } }) {
+  const qc = useQueryClient();
+  const editor = useRef<EditorHandle>(null);
+  const [dirty, setDirty] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    const raw = editor.current?.html() ?? "";
+    const empty = !htmlToText(raw).trim();
+    const html = empty ? "" : fromEditor(raw);
+    setBusy(true);
+    try {
+      const r = await jmap([["Identity/set", { accountId: account, update: { [identity.id]: { htmlSignature: html, textSignature: empty ? "" : htmlToText(html) } } }, "0"]]);
+      const failed = (r["0"].notUpdated as Record<string, { type?: string; description?: string }> | undefined)?.[identity.id];
+      if (failed) throw new Error(refusal(failed, t("The mail server refused the change.")));
+      setDirty(false);
+      toast(empty ? t("Signature removed") : t("Signature saved"));
+      void qc.invalidateQueries({ queryKey: ["mail", "identities", account] });
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="grid gap-1.5">
+      <span className="text-sm">{isolate(identity.name ? `${identity.name} <${identity.email}>` : identity.email)}</span>
+      <div className="h-40 overflow-hidden rounded-md border">
+        <Suspense fallback={<Skeleton className="h-full" />}>
+          <MailEditor ref={editor} initial={signatureOf(identity as never)} label={t("Signature for {address}", { address: identity.email })} placeholder={t("Your name, role, phone")} onChange={() => setDirty(true)} onFiles={() => toast(t("Pictures cannot go into a signature yet."), "info")} onSend={() => void save()} />
+        </Suspense>
+      </div>
+      <Button size="sm" className="justify-self-end" disabled={!dirty || busy} onClick={() => void save()}>
+        {t("Save signature")}
+      </Button>
     </div>
   );
 }
