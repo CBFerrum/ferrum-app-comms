@@ -41,3 +41,11 @@ describe("the actions bar", () => {
     expect(labels("drafts")).not.toContain("Move to");
   });
 });
+
+describe("the actions bar on a phone", () => {
+  it("keeps Archive and Delete as buttons and folds the rest into one menu", () => {
+    const html = renderToString(<ActionBar compact role="inbox" boxes={BOXES} anyUnread={false} allStarred={false} onVerb={() => {}} onMove={() => {}} onForever={() => {}} moveOpen={false} onMoveOpen={() => {}} />);
+    // Move to keeps an anchor for its popover, hidden from readers and out of the tab order (the menu opens it).
+    expect([...html.matchAll(/<button[^>]*aria-label="([^"]+)"[^>]*>/g)].filter((m) => !m[0].includes('aria-hidden="true"')).map((m) => m[1])).toEqual(["Archive", "Delete", "More actions"]);
+  });
+});
