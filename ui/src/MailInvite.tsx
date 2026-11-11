@@ -12,7 +12,7 @@ import { toast } from "@ferrum/kit";
 import { api, docPath, errorMessage, isolate, t } from "@ferrum/client";
 import { CALENDAR } from "./lib/calendar";
 import { answersIn, eventOf, ferrumEvent, replyIcs, replyWords, RESPONSE, type PartStat } from "./lib/itip";
-import { byRole, jmap, refusal, type Mailbox } from "./lib/mail";
+import { MAIL, byRole, jmap, refusal, useServerDoes, type Mailbox } from "./lib/mail";
 import { useIdentities } from "./MailCompose";
 
 interface EventDoc {
@@ -131,18 +131,26 @@ async function sendReply(account: string, boxes: Mailbox[], ics: string, a: Part
 /**
  * A REPLY to an event the person organised: who answered what, put on the event once (the message is
  * marked so it is not applied again), and said on the card. Events from elsewhere are left alone.
+ * A server with `itip` applies it itself (the same code as when it arrives with no tab open: only the
+ * sender's own answer, and only when they are invited); an older one is applied from here.
  */
 export function ReplyCard({ account, emailId, keywords, ics, me }: { account: string; emailId: string; keywords: Record<string, boolean> | null; ics: string; me: string }) {
   const qc = useQueryClient();
   const got = answersIn(ics);
   const applied = !!keywords?.["ferrum-rsvp-applied"];
   const done = useRef(false);
+  const server = useServerDoes("itip");
   const result = useQuery({
-    queryKey: ["mail", "rsvp-apply", account, emailId],
+    queryKey: ["mail", "rsvp-apply", account, emailId, server],
     enabled: !!got?.answers.length,
     staleTime: Infinity,
     retry: false,
-    queryFn: async (): Promise<"updated" | "same" | "none"> => {
+    queryFn: async (): Promise<"updated" | "same" | "none" | "refused" | "unsupported"> => {
+      if (server) {
+        const r = await api.post<{ result: "updated" | "same" | "none" | "refused" | "unsupported" }>(`${MAIL}/itip`, { account, email: emailId });
+        if (r.result === "updated") void qc.invalidateQueries({ queryKey: ["calendar"] });
+        return r.result === "updated" ? "same" : r.result;
+      }
       const found = (await eventsWithUid(got!.uid)).find((e) => (e.owner ?? "").toLowerCase() === me.toLowerCase());
       if (!found) return "none";
       // A list gives no guests: the event itself does.
@@ -171,7 +179,17 @@ export function ReplyCard({ account, emailId, keywords, ics, me }: { account: st
     <p className="flex flex-wrap items-center gap-x-2 rounded-md border bg-muted px-3 py-2 text-sm" role="status">
       <span>{got.answers.map((a) => `${a.name || a.email} ${words[a.response]}`).map(isolate).join("; ")}.</span>
       <span className="text-muted-foreground">
-        {result.isLoading ? t("Updating your calendar…") : result.error ? t("Your calendar could not be updated: {e}", { e: errorMessage(result.error) }) : result.data === "none" ? t("This event is not in your calendar.") : t("Your calendar shows this answer.")}
+        {result.isLoading
+          ? t("Updating your calendar…")
+          : result.error
+            ? t("Your calendar could not be updated: {e}", { e: errorMessage(result.error) })
+            : result.data === "none"
+              ? t("This event is not in your calendar.")
+              : result.data === "refused"
+                ? t("Not applied: the sender is not on this event's guest list.")
+                : result.data === "unsupported"
+                  ? t("Your calendar does not take this kind of answer from mail.")
+                  : t("Your calendar shows this answer.")}
       </span>
     </p>
   );
