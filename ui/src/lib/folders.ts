@@ -8,6 +8,8 @@ import { sortMailboxes, type Mailbox } from "./mail";
 /** Ids of the folders that are searches, not mailboxes: `/mail/~starred`. */
 export const STARRED = "~starred";
 export const ALL_MAIL = "~all";
+/** Messages held on the mail server until a chosen time (Schedule send): pending submissions, not a mailbox. */
+export const SCHEDULED = "~scheduled";
 
 const ROLE_NAMES: Record<string, () => string> = {
   inbox: () => tr("Inbox"),
@@ -24,12 +26,13 @@ export const SYSTEM_ROLES = ["inbox", "drafts", "sent", "archive", "junk", "tras
 /** What the person sees: a system folder by its role, their own folder by its own name. */
 export const folderName = (b: Pick<Mailbox, "name" | "role">) => (b.role && ROLE_NAMES[b.role] ? ROLE_NAMES[b.role]!() : b.name);
 
-export const isVirtual = (id: string | undefined) => id === STARRED || id === ALL_MAIL;
+export const isVirtual = (id: string | undefined) => id === STARRED || id === ALL_MAIL || id === SCHEDULED;
 
 /** A folder that is a query, shaped like a mailbox so the list and its actions treat it alike. */
 export function virtualFolder(id: string): Mailbox | undefined {
   if (id === STARRED) return { id, name: tr("Starred"), role: "starred", sortOrder: 0, totalEmails: 0, unreadEmails: 0 };
   if (id === ALL_MAIL) return { id, name: tr("All mail"), role: "all", sortOrder: 0, totalEmails: 0, unreadEmails: 0 };
+  if (id === SCHEDULED) return { id, name: tr("Scheduled"), role: "scheduled", sortOrder: 0, totalEmails: 0, unreadEmails: 0 };
   return undefined;
 }
 
