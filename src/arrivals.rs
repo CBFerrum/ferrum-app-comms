@@ -93,8 +93,9 @@ pub(crate) struct Owner<'a> {
 impl Mail for Owner<'_> {
     async fn call(&self, calls: Value) -> std::result::Result<Vec<Value>, Refusal> {
         let body = json!({"using": USING, "methodCalls": calls}).to_string().into_bytes();
-        let (status, _, out) =
-            hosted::send(self.k, &self.url, &self.auth, "/jmap/", Some(("application/json", body)), 16 << 20).await.map_err(|e| Refusal::Failed(e.to_string()))?;
+        let (status, _, out) = hosted::send(self.k, &self.url, &self.auth, "/jmap/", Some(("application/json", body)), 16 << 20)
+            .await
+            .map_err(|e| Refusal::Failed(e.to_string()))?;
         if let Some(r) = refusal(status, &out) {
             return Err(r);
         }
@@ -151,7 +152,15 @@ impl Senders {
     /// itself decides first, then its domain and the domains above it, nearest first.
     pub(crate) fn verdict(&self, email: &str) -> Option<bool> {
         let email = email.trim().to_lowercase();
-        let of = |key: &str| if self.block.contains(key) { Some(true) } else if self.allow.contains(key) { Some(false) } else { None };
+        let of = |key: &str| {
+            if self.block.contains(key) {
+                Some(true)
+            } else if self.allow.contains(key) {
+                Some(false)
+            } else {
+                None
+            }
+        };
         if let Some(v) = of(&email) {
             return Some(v);
         }
@@ -232,12 +241,17 @@ const ARRIVED: &[&str] = &["threadId", "mailboxIds", "keywords", "from", "subjec
 
 /// Looks at `account` (owned by the addresses `own`) since `cur`, files and wakes what the
 /// workspace's senders and snooze say, and returns what notifies.
-pub(crate) async fn look(mail: &dyn Mail, account: &str, own: &[String], cur: &Cursor, senders: &Senders, now: DateTime<Utc>) -> std::result::Result<Look, Refusal> {
+pub(crate) async fn look(
+    mail: &dyn Mail,
+    account: &str,
+    own: &[String],
+    cur: &Cursor,
+    senders: &Senders,
+    now: DateTime<Utc>,
+) -> std::result::Result<Look, Refusal> {
     let mut out = Look::default();
     let boxes_call = json!(["Mailbox/get", {"accountId": account, "properties": ["name", "role", "parentId", "totalEmails"]}, "b"]);
-    let get_created = |from: &str| {
-        json!(["Email/get", {"accountId": account, "#ids": {"resultOf": from, "name": "Email/changes", "path": "/created"}, "properties": ARRIVED, "bodyProperties": ["type"]}, "g"])
-    };
+    let get_created = |from: &str| json!(["Email/get", {"accountId": account, "#ids": {"resultOf": from, "name": "Email/changes", "path": "/created"}, "properties": ARRIVED, "bodyProperties": ["type"]}, "g"]);
     let mut created: Vec<Value> = Vec::new();
     let boxes: Vec<Value>;
     match &cur.state {
@@ -301,11 +315,17 @@ pub(crate) async fn look(mail: &dyn Mail, account: &str, own: &[String], cur: &C
         let in_junk = junk.as_ref().is_some_and(|j| ids.contains_key(j));
         match (senders.verdict(&from), &inbox, &junk) {
             (Some(true), Some(i), Some(j)) if in_inbox && !mine => {
-                moves.insert(id.into(), json!({format!("mailboxIds/{i}"): null, format!("mailboxIds/{j}"): true, "keywords/$junk": true, "keywords/$notjunk": null}));
+                moves.insert(
+                    id.into(),
+                    json!({format!("mailboxIds/{i}"): null, format!("mailboxIds/{j}"): true, "keywords/$junk": true, "keywords/$notjunk": null}),
+                );
                 in_inbox = false;
             }
             (Some(false), Some(i), Some(j)) if in_junk => {
-                moves.insert(id.into(), json!({format!("mailboxIds/{j}"): null, format!("mailboxIds/{i}"): true, "keywords/$junk": null, "keywords/$notjunk": true}));
+                moves.insert(
+                    id.into(),
+                    json!({format!("mailboxIds/{j}"): null, format!("mailboxIds/{i}"): true, "keywords/$junk": null, "keywords/$notjunk": true}),
+                );
                 in_inbox = true;
             }
             _ => {}
@@ -373,7 +393,10 @@ pub(crate) async fn look(mail: &dyn Mail, account: &str, own: &[String], cur: &C
         for m in answer(&r, 1)?["list"].as_array().into_iter().flatten() {
             let (Some(id), Some((key, at))) = (m["id"].as_str(), wake_of(&m["keywords"])) else { continue };
             if at <= now {
-                wake.insert(id.into(), json!({format!("mailboxIds/{sid}"): null, format!("mailboxIds/{i}"): true, "keywords/$seen": null, format!("keywords/{key}"): null}));
+                wake.insert(
+                    id.into(),
+                    json!({format!("mailboxIds/{sid}"): null, format!("mailboxIds/{i}"): true, "keywords/$seen": null, format!("keywords/{key}"): null}),
+                );
             }
         }
         out.woke = wake.len();
@@ -406,8 +429,11 @@ async fn written_to(mail: &dyn Mail, account: &str, sent: Option<&str>, list: &[
     let senders: Vec<&String> = list.iter().map(|a| &a.from).collect::<BTreeSet<_>>().into_iter().take(PEOPLE).collect();
     let mut known = BTreeSet::new();
     for chunk in senders.chunks(CALLS) {
-        let calls: Vec<Value> =
-            chunk.iter().enumerate().map(|(i, e)| json!(["Email/query", {"accountId": account, "filter": {"inMailbox": sent, "to": e}, "limit": 1}, i.to_string()])).collect();
+        let calls: Vec<Value> = chunk
+            .iter()
+            .enumerate()
+            .map(|(i, e)| json!(["Email/query", {"accountId": account, "filter": {"inMailbox": sent, "to": e}, "limit": 1}, i.to_string()]))
+            .collect();
         let r = mail.call(Value::Array(calls)).await?;
         for (i, e) in chunk.iter().enumerate() {
             if answer(&r, i)?["ids"].as_array().is_some_and(|ids| !ids.is_empty()) {
@@ -448,7 +474,8 @@ pub async fn run(k: &Kernel, tenant: Uuid, budget: Duration) -> Result<usize> {
     .bind(tenant)
     .fetch_all(&mut *tx)
     .await?;
-    let senders: Vec<(String, String)> = sqlx::query_as("select sender, kind from comms_mail_sender where tenant_id = $1").bind(tenant).fetch_all(&mut *tx).await?;
+    let senders: Vec<(String, String)> =
+        sqlx::query_as("select sender, kind from comms_mail_sender where tenant_id = $1").bind(tenant).fetch_all(&mut *tx).await?;
     tx.commit().await?;
     let senders = Senders {
         allow: senders.iter().filter(|s| s.1 == "allow").map(|s| s.0.clone()).collect(),
@@ -606,10 +633,23 @@ pub(crate) mod tests {
             Fake { answers: Mutex::new(answers.into()), ..Default::default() }
         }
         pub(crate) fn methods(&self) -> Vec<String> {
-            self.asked.lock().unwrap().iter().flat_map(|r| r.as_array().cloned().unwrap_or_default()).map(|c| c[0].as_str().unwrap_or_default().to_string()).collect()
+            self.asked
+                .lock()
+                .unwrap()
+                .iter()
+                .flat_map(|r| r.as_array().cloned().unwrap_or_default())
+                .map(|c| c[0].as_str().unwrap_or_default().to_string())
+                .collect()
         }
         fn sets(&self) -> Vec<Value> {
-            self.asked.lock().unwrap().iter().flat_map(|r| r.as_array().cloned().unwrap_or_default()).filter(|c| c[0] == "Email/set").map(|c| c[1]["update"].clone()).collect()
+            self.asked
+                .lock()
+                .unwrap()
+                .iter()
+                .flat_map(|r| r.as_array().cloned().unwrap_or_default())
+                .filter(|c| c[0] == "Email/set")
+                .map(|c| c[1]["update"].clone())
+                .collect()
         }
     }
 
@@ -639,7 +679,10 @@ pub(crate) mod tests {
     }
 
     fn changes(new: &str, more: bool, created: Vec<Value>) -> Vec<Value> {
-        vec![json!(["Email/changes", {"newState": new, "hasMoreChanges": more, "created": created.iter().map(|m| m["id"].clone()).collect::<Vec<_>>()}, "c"]), json!(["Email/get", {"list": created}, "g"])]
+        vec![
+            json!(["Email/changes", {"newState": new, "hasMoreChanges": more, "created": created.iter().map(|m| m["id"].clone()).collect::<Vec<_>>()}, "c"]),
+            json!(["Email/get", {"list": created}, "g"]),
+        ]
     }
 
     fn cursor(state: Option<&str>, notify: Notify) -> Cursor {
@@ -659,7 +702,9 @@ pub(crate) mod tests {
             blobs: vec![("blob2".into(), script)],
             ..Fake::new(vec![
                 Ok(vec![boxes(0), json!(["Email/get", {"state": "s9", "list": []}, "s"])]),
-                Ok(vec![json!(["SieveScript/get", {"list": [{"id": "1", "name": "vacation", "blobId": "v"}, {"id": "2", "name": "ferrum-mail", "blobId": "blob2"}]}, "0"])]),
+                Ok(vec![
+                    json!(["SieveScript/get", {"list": [{"id": "1", "name": "vacation", "blobId": "v"}, {"id": "2", "name": "ferrum-mail", "blobId": "blob2"}]}, "0"]),
+                ]),
             ])
         };
         let found = look(&fake, "h", &[ME.into()], &Cursor { state: None, notify: Notify::All, script_blob: None }, &Senders::default(), now()).await.unwrap();
@@ -726,7 +771,12 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn the_setting_decides_who_notifies() {
-        let created = || vec![msg("a", &["I"], ("Ann", "ann@x.example"), "Hi", "2026-11-12T08:00:00Z", json!({})), msg("b", &["I"], ("Bob", "bob@x.example"), "Yo", "2026-11-12T08:01:00Z", json!({}))];
+        let created = || {
+            vec![
+                msg("a", &["I"], ("Ann", "ann@x.example"), "Hi", "2026-11-12T08:00:00Z", json!({})),
+                msg("b", &["I"], ("Bob", "bob@x.example"), "Yo", "2026-11-12T08:01:00Z", json!({})),
+            ]
+        };
         let mut first = vec![boxes(0)];
         first.extend(changes("s2", false, created()));
         let fake = Fake::new(vec![
@@ -777,7 +827,11 @@ pub(crate) mod tests {
         let sets = fake.sets();
         assert_eq!(sets[0]["a"], json!({"mailboxIds/I": null, "mailboxIds/J": true, "keywords/$junk": true, "keywords/$notjunk": null}));
         assert_eq!(sets[0]["b"], json!({"mailboxIds/J": null, "mailboxIds/I": true, "keywords/$junk": null, "keywords/$notjunk": true}));
-        assert_eq!(sets[1], json!({"z1": {"mailboxIds/Z": null, "mailboxIds/I": true, "keywords/$seen": null, "keywords/$ferrum_wake_202611120830": null}}), "only the one due");
+        assert_eq!(
+            sets[1],
+            json!({"z1": {"mailboxIds/Z": null, "mailboxIds/I": true, "keywords/$seen": null, "keywords/$ferrum_wake_202611120830": null}}),
+            "only the one due"
+        );
         assert_eq!(wake_of(&json!({"$ferrum_wake_202611120830": true})).map(|w| w.1), Some(Utc.with_ymd_and_hms(2026, 11, 12, 8, 30, 0).unwrap()));
         assert_eq!(wake_of(&json!({"$ferrum_wake_2026": true})), None);
         assert_eq!((backoff(1).num_minutes(), backoff(3).num_minutes(), backoff(30).num_minutes()), (2, 8, 360));
@@ -787,7 +841,8 @@ pub(crate) mod tests {
     async fn calendar_mail_is_picked_out_for_the_calendar() {
         let mut reply = msg("r", &["I"], ("Bob", "bob@out.example"), "Accepted: Review", "2026-11-12T08:00:00Z", json!({}));
         reply["attachments"] = json!([{"type": "text/calendar; method=REPLY"}]);
-        let mut done = msg("d", &["I"], ("Bob", "bob@out.example"), "Accepted: Old", "2026-11-12T07:00:00Z", json!({"$seen": true, "ferrum-rsvp-applied": true}));
+        let mut done =
+            msg("d", &["I"], ("Bob", "bob@out.example"), "Accepted: Old", "2026-11-12T07:00:00Z", json!({"$seen": true, "ferrum-rsvp-applied": true}));
         done["attachments"] = json!([{"type": "text/calendar"}]);
         let mut first = vec![boxes(0)];
         first.extend(changes("s2", false, vec![reply, done]));

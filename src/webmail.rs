@@ -427,8 +427,13 @@ fn one_click(urls: &Value, post: &Value) -> Option<String> {
 /// addresses (resolved first), no redirects, no cookies or credentials, a short time limit, ten a
 /// minute per person. `{done: true}` when the sender's server took it.
 async fn unsubscribe(k: &Kernel, ctx: &Ctx, account: &str, email: &str) -> Result<Value> {
-    k.rate_limit(&format!("comms-unsubscribe|{}|{}", ctx.tenant, ctx.user), std::time::Duration::from_secs(60), 10, "Too many unsubscribes at once. Try again in a minute.")
-        .await?;
+    k.rate_limit(
+        &format!("comms-unsubscribe|{}|{}", ctx.tenant, ctx.user),
+        std::time::Duration::from_secs(60),
+        10,
+        "Too many unsubscribes at once. Try again in a minute.",
+    )
+    .await?;
     let got = send_json(
         k,
         ctx,
