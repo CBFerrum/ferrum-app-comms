@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.1
+
+Outgoing mail can carry extra headers. A Communication has a `headers` field (an object of name to value, set by the app that queues the mail, read-only to people) which is copied onto the message when it is sent through an email account. It is meant for what bulk senders need: `List-Unsubscribe` and `List-Unsubscribe-Post` (RFC 2369, RFC 8058), `List-Id`, `Precedence`, `Auto-Submitted`, `Feedback-ID` and `X-` names. Any other name (From, To, Cc, Bcc, Subject, Reply-To, Content-*), a value with a line break or other control character, an empty or over-long value, or more than 20 headers is refused when the Communication is saved. Mail sent through the server's own mailer (no email account) cannot carry headers: it still goes, the headers are not sent, and the log says so.
+
 ## 0.13.0
 
 Mail becomes a mail program people can live in. Built with Ferrum-Frontend 60402fa and tried throughout against a real Stalwart with seeded mailboxes. Nothing here needs a newer mail server; one administrator's list needs this version's own server code.
