@@ -318,6 +318,62 @@ pub(crate) async fn mail_domain(k: &Kernel, tenant: Uuid) -> Result<Option<Strin
 
 /// The DNS records the mail server wants published for `domain`, as the zone file it keeps for it
 /// (the domain's `dnsZoneFile`); none when hosted mail is not set up or it does not know the domain.
+/// `GET /domain/mailboxes` (Comms managers): the workspace's mailboxes on the mail server with how
+/// much each holds and its quota (none set = no limit). Last sign-in is not something the mail
+/// server's administration API gives.
+pub(crate) async fn usage(k: &Kernel, ctx: &Ctx) -> Result<Value> {
+    ctx.require("CommsSettings", ferrum_kernel::Action::Write)?;
+    let admin = Admin::connect(k).await?;
+    let mut list = Vec::new();
+    let mut position = 0;
+    loop {
+        let r = admin
+            .jmap(
+                k,
+                vec![
+                    ("x:Account/query", json!({"position": position, "limit": PAGE})),
+                    (
+                        "x:Account/get",
+                        json!({"#ids": {"resultOf": "0", "name": "x:Account/query", "path": "/ids"},
+                               "properties": ["externalId", "name", "description", "emailAddress", "usedDiskQuota", "quotas"]}),
+                    ),
+                ],
+            )
+            .await?;
+        list.extend(r[1]["list"].as_array().cloned().unwrap_or_default());
+        match r[0]["ids"].as_array().map_or(0, Vec::len) {
+            0 => break,
+            n => position += n,
+        }
+    }
+    Ok(json!({"mailboxes": usage_rows(&list, ctx.tenant)}))
+}
+
+/// The workspace's own accounts (by `externalId`) as rows: address, name, bytes used, the disk
+/// quota when one is set, and whether it is a shared mailbox; largest first.
+fn usage_rows(list: &[Value], tenant: Uuid) -> Vec<Value> {
+    let prefix = format!("ferrum:{tenant}:");
+    let mut rows: Vec<Value> = list
+        .iter()
+        .filter_map(|a| {
+            let ours = a["externalId"].as_str()?.strip_prefix(&prefix)?;
+            let quota = a["quotas"]
+                .as_object()
+                .and_then(|q| q.iter().find(|(k, _)| k.to_ascii_lowercase().contains("disk")).and_then(|(_, v)| v.as_u64()))
+                .filter(|q| *q > 0);
+            Some(json!({
+                "email": a["emailAddress"].as_str().unwrap_or_else(|| a["name"].as_str().unwrap_or_default()),
+                "name": a["description"].as_str().unwrap_or_default(),
+                "used": a["usedDiskQuota"].as_u64().unwrap_or(0),
+                "quota": quota,
+                "shared": ours.starts_with("group:"),
+            }))
+        })
+        .collect();
+    rows.sort_by(|a, b| b["used"].as_u64().cmp(&a["used"].as_u64()).then_with(|| a["email"].as_str().cmp(&b["email"].as_str())));
+    rows
+}
+
 pub(crate) async fn zone_file(k: &Kernel, domain: &str) -> Result<Option<String>> {
     if configured().is_none() {
         return Ok(None);
@@ -482,6 +538,21 @@ mod tests {
 
     fn person(email: &str, active: bool) -> Person {
         Person { id: Uuid::now_v7(), email: email.into(), full_name: "Ann".into(), active }
+    }
+
+    #[test]
+    fn usage_lists_the_workspace_s_mailboxes_largest_first() {
+        let tenant = Uuid::nil();
+        let list = vec![
+            json!({"externalId": format!("ferrum:{tenant}:01a1"), "name": "ann", "emailAddress": "ann@x.test", "description": "Ann", "usedDiskQuota": 10, "quotas": {}}),
+            json!({"externalId": format!("ferrum:{tenant}:group:02b2"), "name": "sales", "emailAddress": "sales@x.test", "usedDiskQuota": 500, "quotas": {"maxDiskQuota": 1000}}),
+            json!({"externalId": "ferrum:another-tenant:03c3", "emailAddress": "eve@y.test", "usedDiskQuota": 9999}),
+            json!({"name": "postmaster", "usedDiskQuota": 1}),
+        ];
+        let rows = usage_rows(&list, tenant);
+        assert_eq!(rows.len(), 2, "only this workspace's accounts");
+        assert_eq!(rows[0], json!({"email": "sales@x.test", "name": "", "used": 500, "quota": 1000, "shared": true}));
+        assert_eq!(rows[1], json!({"email": "ann@x.test", "name": "Ann", "used": 10, "quota": null, "shared": false}));
     }
 
     #[test]
