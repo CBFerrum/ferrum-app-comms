@@ -3,6 +3,8 @@
 // in-app notice with Open, a desktop notification when the person allowed them and the page is
 // behind). Snoozed mail whose time came goes back to the Inbox, unread. Without the state (an old
 // server) nothing here runs and the minute's refresh of the lists still holds.
+// A server that notifies about new mail itself (`arrivals`) is the one voice: its notification reaches
+// the bar, the phone and every tab once, so a tab then only refreshes its lists and announces nothing.
 
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
@@ -12,7 +14,7 @@ import { SNOOZED_NAME } from "./lib/folders";
 import { byRole, jmap, type Mailbox } from "./lib/mail";
 import { WATCH_HIDDEN_MS, WATCH_VISIBLE_MS, notificationText, notifying, wakeKeys, wakeOf, type Arrived } from "./lib/watch";
 
-export function useMailWatch(o: { account: string; boxes: Mailbox[] | undefined; own: string[]; notify: "all" | "people" | "none"; open: (folder: string, id?: string) => void; enabled: boolean }) {
+export function useMailWatch(o: { account: string; boxes: Mailbox[] | undefined; own: string[]; notify: "all" | "people" | "none"; open: (folder: string, id?: string) => void; enabled: boolean; serverNotifies?: boolean }) {
   const qc = useQueryClient();
   const latest = useRef(o);
   latest.current = o;
@@ -31,7 +33,7 @@ export function useMailWatch(o: { account: string; boxes: Mailbox[] | undefined;
       return known.get(email)!;
     };
     const tick = async () => {
-      const { account, boxes, own, notify } = latest.current;
+      const { account, boxes, own, notify, serverNotifies } = latest.current;
       try {
         const r = await jmap([["Email/get", { accountId: account, ids: [], properties: ["id"] }, "0"]]);
         const now = String(r["0"].state ?? "");
@@ -42,7 +44,7 @@ export function useMailWatch(o: { account: string; boxes: Mailbox[] | undefined;
           ]).catch(() => null);
           void qc.invalidateQueries({ queryKey: ["mail"], predicate: (q) => !["session", "data", "message", "extras"].includes(String(q.queryKey[1])) });
           const arrived = (c?.g.list as Arrived[] | undefined) ?? [];
-          if (arrived.length && boxes) {
+          if (arrived.length && boxes && !serverNotifies) {
             const sent = byRole(boxes, "sent")?.id;
             const people = new Set<string>();
             if (notify === "people") for (const m of arrived) if (m.from?.[0]?.email && (await wroteTo(account, m.from[0].email.toLowerCase(), sent))) people.add(m.from[0].email.toLowerCase());

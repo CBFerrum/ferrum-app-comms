@@ -3,7 +3,7 @@
 // the raw message, to copy or save as .eml).
 
 import { useQuery } from "@tanstack/react-query";
-import { Download, Eye, FolderUp, MoreHorizontal, Paperclip } from "lucide-react";
+import { Download, Eye, FolderArchive, FolderUp, MoreHorizontal, Paperclip } from "lucide-react";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, Skeleton } from "@ferrum/kit/primitives";
 import { api, download, errorMessage, fetchBlob, formatDateTime, isolate, queryString, request, shell, t as tr } from "@ferrum/client";
@@ -40,12 +40,25 @@ async function saveToDrive(account: string, a: Attachment) {
 }
 
 /** A message's files: open one to look at it, or download it, or save it to Drive. */
-export function AttachmentList({ account, files }: { account: string; files: Attachment[] }) {
+export function AttachmentList({ account, files, all, subject }: { account: string; files: Attachment[]; all?: string; subject?: string | null }) {
   const [shown, setShown] = useState<Attachment | null>(null);
+  const [zipping, setZipping] = useState(false);
   const drive = useDrive();
   const get = (a: Attachment) => void download(`${MAIL}/blob/${account}/${a.blobId}`, a.name ?? "attachment", { name: a.name ?? "attachment", type: a.type }).catch((e: unknown) => toast(errorMessage(e), "error"));
+  const getAll = () => {
+    if (!all) return;
+    setZipping(true);
+    void download(all, `${(subject ?? "").trim() || tr("attachments")}.zip`)
+      .catch((e: unknown) => toast(tr("The attachments could not be downloaded together: {e}", { e: errorMessage(e) }), "error"))
+      .finally(() => setZipping(false));
+  };
   return (
     <>
+      {all && (
+        <Button variant="outline" size="xs" className="justify-self-start" onClick={getAll} disabled={zipping}>
+          <FolderArchive aria-hidden="true" /> {zipping ? tr("Preparing the zip…") : tr("Download all ({n}, as a zip)", { n: files.length })}
+        </Button>
+      )}
       <ul className="flex flex-wrap gap-2 pt-1" aria-label={tr("Attachments")}>
         {files.map((a) => (
           <li key={a.blobId} className="flex items-center rounded-md border">
@@ -248,5 +261,46 @@ export function OriginalDialog({ account, emailId, onClose }: { account: string;
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+interface Submission {
+  deliveryStatus: Record<string, { delivered: "queued" | "yes" | "no" | "unknown"; smtpReply: string }> | null;
+  undoStatus: string;
+}
+
+/**
+ * Where a sent message got to, as the mail server's submission says (RFC 8621 §7): delivered, still on
+ * its way (with the receiving server's last word), or refused. The server keeps this for a few days
+ * after sending; older messages, and those sent from another program, show nothing.
+ */
+export function DeliveryStatus({ account, emailId }: { account: string; emailId: string }) {
+  const q = useQuery({
+    queryKey: ["mail", "delivery", account, emailId],
+    staleTime: 60_000,
+    retry: false,
+    queryFn: async () => {
+      const r = await inTurn(() =>
+        jmap([
+          ["EmailSubmission/query", { accountId: account, filter: { emailIds: [emailId] } }, "q"],
+          ["EmailSubmission/get", { accountId: account, "#ids": { resultOf: "q", name: "EmailSubmission/query", path: "/ids" }, properties: ["deliveryStatus", "undoStatus"] }, "g"],
+        ]),
+      );
+      return (r.g.list as Submission[] | undefined) ?? [];
+    },
+  });
+  const rows = (q.data ?? []).filter((s) => s.undoStatus === "final").flatMap((s) => Object.entries(s.deliveryStatus ?? {}));
+  if (!rows.length) return null;
+  const group = (k: "yes" | "wait" | "no") => rows.filter(([, d]) => (d.delivered === "yes" ? "yes" : d.delivered === "no" ? "no" : "wait") === k);
+  const who = (list: typeof rows) => list.map(([email]) => isolate(email)).join(", ");
+  const done = group("yes");
+  const waiting = group("wait");
+  const failed = group("no");
+  return (
+    <div className="grid gap-0.5 text-xs" role="status">
+      {done.length > 0 && <p className="text-muted-foreground">{tr("Delivered to {who}", { who: who(done) })}</p>}
+      {waiting.length > 0 && <p className="text-muted-foreground">{tr("On its way to {who}: {reply}", { who: who(waiting), reply: isolate(waiting[0]![1].smtpReply || tr("waiting for their server")) })}</p>}
+      {failed.length > 0 && <p className="text-destructive">{tr("Could not be delivered to {who}: {reply}", { who: who(failed), reply: isolate(failed[0]![1].smtpReply) })}</p>}
+    </div>
   );
 }

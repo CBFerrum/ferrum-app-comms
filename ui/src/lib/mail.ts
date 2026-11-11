@@ -14,7 +14,14 @@ export interface Session {
   primaryAccounts: Record<string, string>;
   capabilities: Record<string, unknown>;
   servers?: { imap: string; smtp: string };
+  /** What this server's Mail does beyond JMAP (a server from before wave 4 sends none). */
+  ferrum?: { features?: string[] };
 }
+
+/** Whether the server does `feature` itself: "arrivals" (new mail, snooze and calendar answers without a tab), "itip", "unsubscribe" (one-click), "zip". */
+export const serverDoes = (s: Session | undefined, feature: string) => !!s?.ferrum?.features?.includes(feature);
+/** The same, from the cached session. */
+export const useServerDoes = (feature: string) => serverDoes(useMailSession().data, feature);
 
 export interface Address {
   name?: string | null;
