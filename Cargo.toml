@@ -31,6 +31,8 @@ chrono-tz = { version = "0.10", default-features = false }
 ammonia = "4"
 # The version Ferrum already builds (through its S3 client), so a server build compiles it once.
 quick-xml = "0.42"
+# The version and features the platform already builds, for "Download all" attachments.
+zip = { version = "9", default-features = false, features = ["deflate"] }
 tokio = { version = "1.45", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "net", "io-util"] }
 chrono = { version = "0.4", features = ["serde"] }
 rust_decimal = { version = "1.43", features = ["serde-with-str", "maths"] }
