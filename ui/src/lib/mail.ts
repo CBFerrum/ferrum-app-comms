@@ -7,7 +7,7 @@ import { matchPeople, type Person } from "./chat";
 
 export const MAIL = "/api/app/comms/mail";
 
-const USING = ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail", "urn:ietf:params:jmap:submission", "urn:ietf:params:jmap:vacationresponse", "urn:stalwart:jmap"];
+const USING = ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail", "urn:ietf:params:jmap:submission", "urn:ietf:params:jmap:vacationresponse", "urn:ietf:params:jmap:sieve", "urn:stalwart:jmap"];
 
 export interface Session {
   username: string;
@@ -90,8 +90,41 @@ export const mailAccount = (s: Session | undefined) => s?.primaryAccounts["urn:i
 
 type Call = [string, Record<string, unknown>, string];
 
+/**
+ * The mail server answers at most `maxConcurrentRequests` (4 on Stalwart) requests of one account at a
+ * time and refuses the rest, so the screen asks in turn: three at once, the rest wait, leaving one for
+ * the proxy's own (a message's inline images). A refusal for that reason is asked again a little later.
+ */
+export function limiter(max: number) {
+  let active = 0;
+  const waiting: (() => void)[] = [];
+  return async <T>(fn: () => Promise<T>): Promise<T> => {
+    if (active >= max) await new Promise<void>((r) => waiting.push(r));
+    else active++;
+    try {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await fn();
+        } catch (e) {
+          if (attempt >= 3 || !/maxConcurrentRequests/.test(String((e as Error)?.message ?? e))) throw e;
+          await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+        }
+      }
+    } finally {
+      const next = waiting.shift();
+      if (next) next();
+      else active--;
+    }
+  };
+}
+
+/** Every request to the mail server from this screen goes through here. */
+export const inTurn = limiter(3);
+
 /** Calls in one JMAP request; the answers by call id. A method error becomes an exception. */
-export async function jmap(calls: Call[]): Promise<Record<string, Record<string, unknown>>> {
+export const jmap = (calls: Call[]) => inTurn(() => jmapNow(calls));
+
+async function jmapNow(calls: Call[]): Promise<Record<string, Record<string, unknown>>> {
   const out = await api.post<{ methodResponses: [string, Record<string, unknown>, string][] }>(`${MAIL}/jmap`, { using: USING, methodCalls: calls });
   const answers: Record<string, Record<string, unknown>> = {};
   for (const [name, args, id] of out.methodResponses) {
@@ -195,7 +228,7 @@ export function frameDocument(html: string, images: boolean): string {
     `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${policy}">` +
     // ui-lint-allow raw-color: authored mail content in a sandboxed iframe; senders write for a white page, so it ignores the theme
     `<base target="_blank"><style>body{margin:0;padding:16px;font:14px/1.5 system-ui,sans-serif;color:#1f2328;background:#fff;word-wrap:break-word}` +
-    `img{max-width:100%;height:auto}pre{white-space:pre-wrap;font:inherit}table{max-width:100%}</style></head><body>${html}</body></html>`
+    `img{max-width:100%;height:auto}img:not([src]){display:none!important}pre{white-space:pre-wrap;font:inherit}table{max-width:100%}</style></head><body>${html}</body></html>`
   );
 }
 
@@ -225,13 +258,15 @@ export function conversationRows(
   threads: { id: string; emailIds: string[] }[],
   flags: { id: string; keywords: Record<string, boolean> | null; mailboxIds?: Record<string, boolean> | null }[],
   folder: string,
+  /** A view that is not a folder (Starred, All mail): an action reaches the whole conversation. */
+  whole = false,
 ): Row[] {
   const members = new Map(threads.map((t) => [t.id, t.emailIds]));
   const known = new Map(flags.map((f) => [f.id, f]));
   return emails.map((e) => {
     const ids = members.get(e.threadId) ?? [e.id];
     const unread = ids.some((id) => !(known.get(id) ? !!known.get(id)!.keywords?.$seen : !!e.keywords?.$seen));
-    const here = ids.filter((id) => (id === e.id ? true : !!known.get(id)?.mailboxIds?.[folder]));
+    const here = ids.filter((id) => (whole || id === e.id ? true : !!known.get(id)?.mailboxIds?.[folder]));
     return { ...e, count: ids.length, unread, folderIds: here };
   });
 }
@@ -252,7 +287,7 @@ export const messagesIn = (n: number) => `${n} ${n === 1 ? "message" : "messages
 
 // ───────────────────────────── keyboard ─────────────────────────────
 
-export type MailKey = "next" | "previous" | "open" | "back" | "reply" | "replyAll" | "forward" | "archive" | "delete" | "spam" | "unread" | "star" | "compose" | "search" | "help";
+export type MailKey = "select" | "move" | "undo" | "read" | "next" | "previous" | "open" | "back" | "reply" | "replyAll" | "forward" | "archive" | "delete" | "spam" | "unread" | "star" | "compose" | "search" | "help";
 
 /** What the keys do, for the list of shortcuts. */
 export const SHORTCUTS: { keys: string[]; action: MailKey; label: string }[] = [
@@ -267,6 +302,10 @@ export const SHORTCUTS: { keys: string[]; action: MailKey; label: string }[] = [
   { keys: ["#"], action: "delete", get label() { return tr("Delete"); } },
   { keys: ["!"], action: "spam", get label() { return tr("Mark as spam"); } },
   { keys: ["Shift", "U"], action: "unread", get label() { return tr("Mark as unread"); } },
+  { keys: ["Shift", "I"], action: "read", get label() { return tr("Mark as read"); } },
+  { keys: ["x"], action: "select", get label() { return tr("Select the conversation"); } },
+  { keys: ["v"], action: "move", get label() { return tr("Move to a folder"); } },
+  { keys: ["z"], action: "undo", get label() { return tr("Undo the last action"); } },
   { keys: ["s"], action: "star", get label() { return tr("Star or unstar"); } },
   { keys: ["c"], action: "compose", get label() { return tr("Write a message"); } },
   { keys: ["/"], action: "search", get label() { return tr("Search"); } },
@@ -287,6 +326,10 @@ const KEYS: Record<string, MailKey> = {
   "#": "delete",
   "!": "spam",
   U: "unread",
+  I: "read",
+  x: "select",
+  v: "move",
+  z: "undo",
   s: "star",
   c: "compose",
   "/": "search",
