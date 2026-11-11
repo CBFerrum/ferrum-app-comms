@@ -3,8 +3,10 @@
 //! the password it keeps sealed; the mail server decides what the account may do, and Ferrum
 //! passes on only the methods of mail (`METHODS`). Messages to read come made safe (`message`).
 
+use crate::arrivals::{self, Mail, Refusal};
 use crate::inbound::{self, Ingested};
-use crate::{hosted, site, util};
+use crate::{hosted, itip, site, util};
+use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use ferrum_kernel::{Ctx, Error, Kernel, Result, SiteRequest, SiteResponse};
@@ -34,6 +36,10 @@ const METHODS: &[&str] = &[
 const MAX_BLOB: usize = 50 * 1024 * 1024;
 /// Inline (`cid:`) images embedded in a message to read, together.
 const MAX_INLINE: usize = 5 * 1024 * 1024;
+/// A message's attachments in one zip ("Download all"), together, before compression.
+const MAX_ZIP: usize = 100 * 1024 * 1024;
+/// What this server does beyond JMAP, so the interface can tell a newer server from an older one.
+const FEATURES: &[&str] = &["arrivals", "itip", "unsubscribe", "zip"];
 /// Inline styles a message may keep: layout, type and colour (nothing that loads a URL).
 const STYLES: &[&str] = &[
     "color",
@@ -104,6 +110,23 @@ pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> 
         }
         ("GET", ["message", account, email]) => Ok(util::ok(message(k, ctx, jmap_id(account)?, jmap_id(email)?, q("images") == Some("1")).await?)),
         ("POST", ["file"]) => Ok(util::created(file(k, ctx, util::body_json(req)?).await?)),
+        ("GET", ["notice", id]) => {
+            let id = id.parse().map_err(|_| Error::NotFound("notification".into()))?;
+            Ok(util::ok(arrivals::notice(k, ctx.tenant, ctx.user, id).await?))
+        }
+        ("POST", ["itip"]) => {
+            let body = util::body_json(req)?;
+            let field = |name: &str| body.get(name).and_then(Value::as_str).ok_or_else(|| Error::field(name, "required"));
+            let (account, email) = (jmap_id(field("account")?)?, jmap_id(field("email")?)?);
+            let done = itip::from_message(k, ctx.tenant, &Signed { k, ctx }, account, email, &ctx.email.to_lowercase()).await?;
+            Ok(util::ok(json!({"result": done.word()})))
+        }
+        ("POST", ["unsubscribe"]) => {
+            let body = util::body_json(req)?;
+            let field = |name: &str| body.get(name).and_then(Value::as_str).ok_or_else(|| Error::field(name, "required"));
+            Ok(util::ok(unsubscribe(k, ctx, jmap_id(field("account")?)?, jmap_id(field("email")?)?).await?))
+        }
+        ("GET", ["zip", account, email]) => zip(k, ctx, jmap_id(account)?, jmap_id(email)?).await,
         _ => Err(Error::NotFound("endpoint".into())),
     }
 }
@@ -186,6 +209,7 @@ async fn session(k: &Kernel, ctx: &Ctx) -> Result<Value> {
     for key in ["apiUrl", "downloadUrl", "uploadUrl", "eventSourceUrl"] {
         o.remove(key);
     }
+    o.insert("ferrum".into(), json!({"features": FEATURES}));
     if let Some(host) = std::env::var("FERRUM_MAIL_HOST").ok().map(|h| h.trim().to_string()).filter(|h| !h.is_empty()) {
         o.insert("servers".into(), json!({"imap": format!("{host}:993"), "smtp": format!("{host}:465")}));
     }
@@ -367,9 +391,147 @@ async fn file(k: &Kernel, ctx: &Ctx, body: serde_json::Map<String, Value>) -> Re
     Ok(json!({"communication": filed}))
 }
 
+/// The signed-in person's mailbox as [`Mail`], for what webmail shares with maintenance.
+struct Signed<'a> {
+    k: &'a Kernel,
+    ctx: &'a Ctx,
+}
+
+#[async_trait]
+impl Mail for Signed<'_> {
+    async fn call(&self, calls: Value) -> std::result::Result<Vec<Value>, Refusal> {
+        let request = json!({"using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail", "urn:ietf:params:jmap:submission"], "methodCalls": calls});
+        let out = send_json(self.k, self.ctx, &request).await.map_err(|e| Refusal::Failed(e.to_string()))?;
+        out["methodResponses"].as_array().cloned().ok_or_else(|| Refusal::Failed("no answers".into()))
+    }
+    async fn download(&self, account: &str, blob: &str, max: usize) -> std::result::Result<Vec<u8>, Refusal> {
+        let path = download(account, blob, "part", None).map_err(|e| Refusal::Failed(e.to_string()))?;
+        send(self.k, self.ctx, &path, None, max).await.map(|(_, d)| d).map_err(|e| Refusal::Failed(e.to_string()))
+    }
+}
+
+/// The body of a one-click unsubscribe (RFC 8058 §3.1), exactly.
+const ONE_CLICK: &str = "List-Unsubscribe=One-Click";
+
+/// Where a one-click unsubscribe goes: the first `https:` address of the message's own
+/// `List-Unsubscribe`, when its `List-Unsubscribe-Post` asks for one-click (RFC 8058).
+fn one_click(urls: &Value, post: &Value) -> Option<String> {
+    if post.as_str().map(str::trim) != Some(ONE_CLICK) {
+        return None;
+    }
+    urls.as_array()?.iter().filter_map(Value::as_str).find(|u| u.len() <= 2000 && u.to_ascii_lowercase().starts_with("https://")).map(String::from)
+}
+
+/// `POST /mail/unsubscribe {account, email}`: the one-click unsubscribe a message offers, made from
+/// the server (RFC 8058): only to the message's own address, HTTPS, not to private or loopback
+/// addresses (resolved first), no redirects, no cookies or credentials, a short time limit, ten a
+/// minute per person. `{done: true}` when the sender's server took it.
+async fn unsubscribe(k: &Kernel, ctx: &Ctx, account: &str, email: &str) -> Result<Value> {
+    k.rate_limit(&format!("comms-unsubscribe|{}|{}", ctx.tenant, ctx.user), std::time::Duration::from_secs(60), 10, "Too many unsubscribes at once. Try again in a minute.")
+        .await?;
+    let got = send_json(
+        k,
+        ctx,
+        &json!({"using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"], "methodCalls": [["Email/get", {"accountId": account, "ids": [email],
+            "properties": ["header:List-Unsubscribe:asURLs", "header:List-Unsubscribe-Post:asText"]}, "0"]]}),
+    )
+    .await?;
+    let m = &got["methodResponses"][0][1]["list"][0];
+    if m.is_null() {
+        return Err(Error::NotFound("message".into()));
+    }
+    let url = one_click(&m["header:List-Unsubscribe:asURLs"], &m["header:List-Unsubscribe-Post:asText"])
+        .ok_or_else(|| Error::invalid("this message does not offer a one-click unsubscribe"))?;
+    let (client, parsed) = k.vetted_client(&url, false, std::time::Duration::from_secs(10), "Ferrum Mail").await?;
+    let res = client
+        .post(parsed)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(ONE_CLICK)
+        .send()
+        .await
+        .map_err(|e| Error::Unavailable(format!("the sender's server cannot be reached: {}", util::cut(&e.to_string(), 200))))?;
+    let status = res.status().as_u16();
+    Ok(json!({"done": (200..300).contains(&status), "status": status}))
+}
+
+/// A name safe inside a zip: no folders, no `.` or `..`, nothing that is not printable; a second
+/// `a.pdf` becomes `a (2).pdf`.
+fn zip_name(name: &str, taken: &mut HashSet<String>) -> String {
+    let base: String = name.chars().map(|c| if c.is_control() || "/\\:".contains(c) { '_' } else { c }).collect();
+    let base = base.trim().trim_matches('.').to_string();
+    let base = if base.is_empty() { "attachment".to_string() } else { util::cut(&base, 150) };
+    let (stem, ext) = match base.rfind('.') {
+        Some(i) if i > 0 => (base[..i].to_string(), base[i..].to_string()),
+        _ => (base.clone(), String::new()),
+    };
+    let mut n = 1;
+    let mut out = base;
+    while !taken.insert(out.to_lowercase()) {
+        n += 1;
+        out = format!("{stem} ({n}){ext}");
+    }
+    out
+}
+
+/// `GET /mail/zip/{account}/{email}`: the message's attachments in one zip, at most `MAX_ZIP`.
+async fn zip(k: &Kernel, ctx: &Ctx, account: &str, email: &str) -> Result<SiteResponse> {
+    let got = send_json(
+        k,
+        ctx,
+        &json!({"using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"], "methodCalls": [["Email/get", {"accountId": account, "ids": [email],
+            "properties": ["subject", "attachments"], "bodyProperties": ["blobId", "name", "type", "size", "disposition", "cid"]}, "0"]]}),
+    )
+    .await?;
+    let m = &got["methodResponses"][0][1]["list"][0];
+    let parts: Vec<Value> = m["attachments"].as_array().cloned().unwrap_or_default();
+    let parts: Vec<&Value> = parts.iter().filter(|p| p["blobId"].is_string() && (p["cid"].is_null() || p["disposition"] == "attachment")).collect();
+    if parts.is_empty() {
+        return Err(Error::NotFound("attachments".into()));
+    }
+    if parts.iter().map(|p| p["size"].as_u64().unwrap_or(0) as usize).sum::<usize>() > MAX_ZIP {
+        return Err(Error::invalid(format!("the attachments are larger than {} MB together; save them one by one", MAX_ZIP >> 20)));
+    }
+    let fail = |e: &dyn std::fmt::Display| Error::Internal(format!("zip: {e}"));
+    let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let mut taken = HashSet::new();
+    for p in parts {
+        let name = zip_name(p["name"].as_str().unwrap_or("attachment"), &mut taken);
+        let (_, data) = send(k, ctx, &download(account, p["blobId"].as_str().unwrap_or_default(), "part", None)?, None, MAX_ZIP).await?;
+        out.start_file(name, opts).map_err(|e| fail(&e))?;
+        std::io::Write::write_all(&mut out, &data).map_err(|e| fail(&e))?;
+    }
+    let body = out.finish().map_err(|e| fail(&e))?.into_inner();
+    let subject = util::clean_line(m["subject"].as_str().unwrap_or_default(), 80);
+    let name = if subject.is_empty() { "attachments.zip".to_string() } else { format!("{subject}.zip") };
+    Ok(site::attachment(&name, "application/zip", body))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_click_unsubscribe_goes_only_where_the_message_says_over_https() {
+        let urls = json!(["mailto:leave@list.example", "http://list.example/u?x=1", "https://list.example/u?x=1"]);
+        assert_eq!(one_click(&urls, &json!("List-Unsubscribe=One-Click")).as_deref(), Some("https://list.example/u?x=1"));
+        assert_eq!(one_click(&urls, &json!(" List-Unsubscribe=One-Click ")).as_deref(), Some("https://list.example/u?x=1"));
+        assert_eq!(one_click(&urls, &Value::Null), None, "no List-Unsubscribe-Post: not one-click");
+        assert_eq!(one_click(&urls, &json!("List-Unsubscribe=Other")), None);
+        assert_eq!(one_click(&json!(["http://list.example/u"]), &json!(ONE_CLICK)), None, "never plain http");
+        assert_eq!(one_click(&Value::Null, &json!(ONE_CLICK)), None);
+    }
+
+    #[test]
+    fn names_in_a_zip_are_safe_and_distinct() {
+        let mut taken = HashSet::new();
+        assert_eq!(zip_name("Report.pdf", &mut taken), "Report.pdf");
+        assert_eq!(zip_name("report.PDF", &mut taken), "report (2).PDF");
+        assert_eq!(zip_name("../../etc/passwd", &mut taken), "_.._etc_passwd");
+        assert_eq!(zip_name("..", &mut taken), "attachment");
+        assert_eq!(zip_name("C:\\x.txt", &mut taken), "C__x.txt");
+        assert_eq!(zip_name("", &mut taken), "attachment (2)");
+    }
 
     #[test]
     fn mail_html_is_made_safe() {

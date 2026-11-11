@@ -40,7 +40,7 @@ fn lower(v: Option<&str>) -> String {
     v.unwrap_or_default().trim().to_lowercase()
 }
 
-fn attendees(doc: &Doc) -> Vec<(String, Option<String>, String)> {
+pub(crate) fn attendees(doc: &Doc) -> Vec<(String, Option<String>, String)> {
     rows(doc, "attendees")
         .iter()
         .filter_map(|r| {
@@ -589,7 +589,7 @@ fn answered(response: &str) -> &'static str {
 /// Writes one attendee's answer (and a note that came with it) on the event, and tells its
 /// organizer. `write` is who changes the event (the person, or the system for someone answering
 /// from a link); `who` is how the organizer should read the name.
-async fn record_answer(
+pub(crate) async fn record_answer(
     k: &Kernel,
     tx: &mut Tx,
     tenant: Uuid,
