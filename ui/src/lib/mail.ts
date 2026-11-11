@@ -3,7 +3,6 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { api, t as tr } from "@ferrum/client";
-import { matchPeople, type Person } from "./chat";
 
 export const MAIL = "/api/app/comms/mail";
 
@@ -129,7 +128,8 @@ async function jmapNow(calls: Call[]): Promise<Record<string, Record<string, unk
   const answers: Record<string, Record<string, unknown>> = {};
   for (const [name, args, id] of out.methodResponses) {
     if (name === "error") throw new Error(tr("The mail server refused it: {value}", { value: String(args.description ?? args.type) }));
-    answers[id] = args;
+    // A call's own answer comes first; one it implies (onSuccessUpdateEmail's Email/set) shares its id and must not replace it.
+    if (!(id in answers)) answers[id] = args;
   }
   return answers;
 }
@@ -171,24 +171,17 @@ export function parseAddresses(input: string): { list: Address[]; bad: string[] 
 
 export const formatAddresses = (list: Address[] | null | undefined) => (list ?? []).map((a) => (a.name ? `${a.name} <${a.email}>` : a.email)).join(", ");
 
-export function replySubject(subject: string | null, kind: "reply" | "forward"): string {
-  const s = (subject ?? "").trim();
-  const prefix = kind === "reply" ? /^re:/i : /^(fwd?|fw):/i;
-  if (prefix.test(s)) return s;
-  return `${kind === "reply" ? "Re" : "Fwd"}: ${s}`;
-}
-
 /**
  * A reply's recipients: the sender (or Reply-To), or for one's own message its recipients; with
  * `all`, everyone else on it too, never oneself.
  */
-export function replyRecipients(m: Pick<Message, "from" | "to" | "cc" | "replyTo">, me: string, all: boolean): { to: Address[]; cc: Address[] } {
-  const self = me.toLowerCase();
-  const others = (list: Address[] | null | undefined) => (list ?? []).filter((a) => a.email.toLowerCase() !== self);
+export function replyRecipients(m: Pick<Message, "from" | "to" | "cc" | "replyTo">, me: string | string[], all: boolean): { to: Address[]; cc: Address[] } {
+  const own = new Set((Array.isArray(me) ? me : [me]).map((x) => x.toLowerCase()));
+  const others = (list: Address[] | null | undefined) => (list ?? []).filter((a) => !own.has(a.email.toLowerCase()));
   const sender = others(m.replyTo?.length ? m.replyTo : m.from);
   const to = sender.length ? sender : others(m.to);
   if (!all) return { to, cc: [] };
-  const seen = new Set([self, ...to.map((a) => a.email.toLowerCase())]);
+  const seen = new Set([...own, ...to.map((a) => a.email.toLowerCase())]);
   const cc = [...(m.to ?? []), ...(m.cc ?? [])].filter((a) => {
     const e = a.email.toLowerCase();
     if (seen.has(e)) return false;
@@ -196,25 +189,6 @@ export function replyRecipients(m: Pick<Message, "from" | "to" | "cc" | "replyTo
     return true;
   });
   return { to, cc };
-}
-
-/** The quoted original under a reply or forward. */
-export function quote(m: Pick<Message, "from" | "receivedAt" | "text" | "subject" | "to">, kind: "reply" | "forward", when: string): string {
-  if (kind === "forward") {
-    return [
-      "",
-      "",
-      "---------- Forwarded message ----------",
-      `From: ${formatAddresses(m.from)}`,
-      `Date: ${when}`,
-      `Subject: ${m.subject ?? ""}`,
-      `To: ${formatAddresses(m.to)}`,
-      "",
-      m.text,
-    ].join("\n");
-  }
-  const lines = m.text.replace(/\s+$/, "").split("\n").map((l) => `> ${l}`);
-  return ["", "", tr("On {when}, {value} wrote:", { when, value: addressLabel(m.from?.[0]) }), ...lines].join("\n");
 }
 
 /**
@@ -312,6 +286,19 @@ export const SHORTCUTS: { keys: string[]; action: MailKey; label: string }[] = [
   { keys: ["?"], action: "help", get label() { return tr("Show these shortcuts"); } },
 ];
 
+/** Keys while writing (shown in the same help; the editor and the composer handle them). */
+export const WRITING_SHORTCUTS: { keys: string[]; label: string }[] = [
+  { keys: ["Ctrl", "Enter"], get label() { return tr("Send"); } },
+  { keys: ["Ctrl", "K"], get label() { return tr("Add or change a link (also Ctrl+Shift+K)"); } },
+  { keys: ["Ctrl", "B"], get label() { return tr("Bold"); } },
+  { keys: ["Ctrl", "I"], get label() { return tr("Italic"); } },
+  { keys: ["Ctrl", "U"], get label() { return tr("Underline"); } },
+  { keys: ["Ctrl", "Shift", "8"], get label() { return tr("Bulleted list"); } },
+  { keys: ["Ctrl", "Shift", "7"], get label() { return tr("Numbered list"); } },
+  { keys: ["Ctrl", "\\"], get label() { return tr("Remove formatting"); } },
+  { get keys() { return [tr("Esc")]; }, get label() { return tr("Save the draft and close"); } },
+];
+
 const KEYS: Record<string, MailKey> = {
   j: "next",
   k: "previous",
@@ -356,6 +343,25 @@ export const step = (index: number, count: number, by: 1 | -1) => (count ? Math.
 
 // ───────────────────────────── writing ─────────────────────────────
 
+/** What is written in a composer: the state it saves, keeps in the browser and is opened again from. */
+export interface Written {
+  to: Address[];
+  cc: Address[];
+  bcc: Address[];
+  subject: string;
+  /** The editor's HTML (rich text); empty when written as plain text. */
+  html: string;
+  /** The words as plain text (what is sent when `plain`). */
+  text: string;
+  plain: boolean;
+  /** The quoted original, not opened into the body yet ("…"); null once opened or left out. */
+  quote: string | null;
+  files: Upload[];
+  identityId?: string | null;
+  /** The identity's signature goes with it. */
+  signature: boolean;
+}
+
 /** A message to write: new, an answer to one, or a forward of one. */
 export interface Draft {
   kind: "new" | "reply" | "replyAll" | "forward";
@@ -364,49 +370,14 @@ export interface Draft {
   prefill?: { to?: string; cc?: string; subject?: string; body?: string };
   /** Files to attach first: this site's `/api/` addresses, fetched with the person's rights. */
   attach?: { url: string; name: string }[];
-  /** A message already in Drafts that the person goes on with; saving replaces it. */
-  saved?: { id?: string; key?: string; files?: Upload[]; inReplyTo?: string[] | null; references?: string[] | null };
-}
-
-export interface Threading {
-  inReplyTo?: string[];
-  references?: string[];
-}
-
-/** The headers that keep a reply in its conversation (a forward starts its own). */
-export function threadingFor(original: Pick<Message, "messageId" | "references"> | undefined, kind: "new" | "reply" | "replyAll" | "forward"): Threading {
-  return original?.messageId?.length && kind !== "forward" && kind !== "new" ? { inReplyTo: original.messageId, references: [...(original.references ?? []), ...original.messageId] } : {};
-}
-
-export interface Fields {
-  to: Address[];
-  cc: Address[];
-  bcc: Address[];
-  subject: string;
-  body: string;
-  files: Upload[];
+  /** A message already written that the person goes on with: in Drafts (`id`), in this browser (`key`), or both. */
+  saved?: { id?: string; key?: string; written?: Partial<Written>; inReplyTo?: string[] | null; references?: string[] | null };
 }
 
 /** Whether there is anything written: recipients, a subject, words or a file. */
-export const hasContent = (f: Fields) => !!(f.to.length || f.cc.length || f.bcc.length || f.subject.trim() || f.body.trim() || f.files.length);
+export const hasContent = (w: Pick<Written, "to" | "cc" | "bcc" | "subject" | "text" | "files">) => !!(w.to.length || w.cc.length || w.bcc.length || w.subject.trim() || w.text.trim() || w.files.length);
 
-/** The message as the mail server takes it into Drafts (and, when sending, the same message). */
-export function draftEmail(f: Fields, from: { name?: string | null; email: string }, drafts: string, threading: Threading = {}): Record<string, unknown> {
-  return {
-    mailboxIds: { [drafts]: true },
-    keywords: { $seen: true, $draft: true },
-    from: [{ name: from.name || undefined, email: from.email }],
-    to: f.to,
-    cc: f.cc,
-    bcc: f.bcc,
-    subject: f.subject.trim(),
-    bodyValues: { b: { value: f.body } },
-    textBody: [{ partId: "b", type: "text/plain" }],
-    attachments: f.files.map((u) => ({ blobId: u.blobId, type: u.type, name: u.name, disposition: "attachment" })),
-    ...threading,
-  };
-}
-
+/** The mail server's refusal in plain words. */
 const PROBLEMS: Record<string, string> = {
   get overQuota() { return tr("Your mailbox is full. Delete some mail and try again."); },
   get tooLarge() { return tr("The message is too large for the mail server. Remove an attachment or two."); },
@@ -427,49 +398,24 @@ export function refusal(err: { type?: string; description?: string; properties?:
   return err.description ? tr("The mail server said: {description}", { description: err.description }) : fallback;
 }
 
-/** The part of a typed list of addresses the caret is in, and what has been typed there. */
-export function addressToken(text: string, caret: number): { from: number; to: number; query: string } {
-  const before = text.slice(0, caret);
-  const start = Math.max(before.lastIndexOf(","), before.lastIndexOf(";"), before.lastIndexOf("\n")) + 1;
-  const after = [",", ";", "\n"].map((c) => text.indexOf(c, caret)).filter((i) => i >= 0);
-  const end = after.length ? Math.min(...after) : text.length;
-  const raw = text.slice(start, end);
-  const lead = raw.length - raw.trimStart().length;
-  return { from: start + lead, to: end, query: raw.trim() };
-}
-
-/** People offered for the address being typed: nobody for a name already in full (an address). */
-export function addressChoices(people: Person[], text: string, caret: number): Person[] {
-  const q = addressToken(text, caret).query;
-  return q.length < 1 || q.includes("@") && q.includes(".") ? [] : matchPeople(people, q, undefined, 6);
-}
-
-/** The typed part replaced by the person, with a comma to go on with. */
-export function completeAddress(text: string, caret: number, p: Person): { text: string; caret: number } {
-  const t = addressToken(text, caret);
-  const address = `${p.full_name ? `${p.full_name} <${p.email}>` : p.email}, `;
-  const rest = text.slice(t.to).replace(/^[,;]\s*/, "");
-  return { text: text.slice(0, t.from) + address + rest, caret: t.from + address.length };
-}
-
 // ───────────────────────────── drafts kept in the browser ─────────────────────────────
 
-/** What the browser keeps of a message being written, until the mail server has it. */
+/** What the browser keeps of a message being written while the mail server does not have its last
+ *  words (a save failed, or the tab closed between a key and the save); gone once the server has it,
+ *  and after two weeks. */
 export interface Kept {
   key: string;
   account: string;
   savedAt: string;
-  to: string;
-  cc: string;
-  bcc: string;
-  subject: string;
-  body: string;
-  files: Upload[];
+  written: Written;
   /** The message in Drafts it replaces. */
   draftId?: string;
   inReplyTo?: string[] | null;
   references?: string[] | null;
 }
+
+/** How long the browser keeps unsent words (a shared computer should not hold them for ever). */
+const KEEP_DAYS = 14;
 
 interface Store {
   getItem(key: string): string | null;
@@ -512,8 +458,15 @@ export function keptDrafts(account: string, store: Store | null = local()): Kept
     for (let i = 0; store && i < store.length; i++) {
       const name = store.key(i);
       if (!name?.startsWith(`${PREFIX}${account}.`)) continue;
-      const k = JSON.parse(store.getItem(name) ?? "null") as Kept | null;
-      if (k && k.account === account && typeof k.key === "string") out.push(k);
+      const k = JSON.parse(store.getItem(name) ?? "null") as (Kept & { to?: string; cc?: string; bcc?: string; subject?: string; body?: string; files?: Upload[] }) | null;
+      const old = !k?.savedAt || Date.now() - Date.parse(k.savedAt) > KEEP_DAYS * 86_400_000;
+      // A copy from before rich text is its plain words.
+      if (k && !k.written)
+        k.written = { to: parseAddresses(k.to ?? "").list, cc: parseAddresses(k.cc ?? "").list, bcc: parseAddresses(k.bcc ?? "").list, subject: k.subject ?? "", html: "", text: k.body ?? "", plain: true, quote: null, files: k.files ?? [], signature: false };
+      if (!k || old) {
+        store.removeItem(name);
+        i--;
+      } else if (k.account === account && typeof k.key === "string") out.push(k);
     }
   } catch {
     return out;
