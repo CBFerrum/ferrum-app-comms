@@ -1137,6 +1137,7 @@
   "{used} of {quota}": "{quota} में से {used}",
   "{used} of {total} used": "{total} में से {used} इस्तेमाल",
   "{used}, no limit": "{used}, कोई सीमा नहीं",
+  "{value} GB": "{value} GB",
   "{value} MB": "{value} MB",
   "{value} also filed under {folder}": "{value} {folder} में भी रखी गईं",
   "{value} archived": "{value} संग्रहीत किए गए",

@@ -1137,6 +1137,7 @@
   "{used} of {quota}": "{used} من {quota}",
   "{used} of {total} used": "مُستخدم {used} من {total}",
   "{used}, no limit": "{used}، بلا حد",
+  "{value} GB": "{value} غيغابايت",
   "{value} MB": "{value} ميغابايت",
   "{value} also filed under {folder}": "حُفظت {value} أيضًا في {folder}",
   "{value} archived": "تمت أرشفة {value}",
