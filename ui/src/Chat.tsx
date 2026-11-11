@@ -28,7 +28,8 @@ import {
   Textarea,
 } from "@ferrum/kit/primitives";
 import { api, download, errorMessage, fetchBlob, relativeTime, shell, t as tr, isolate } from "@ferrum/client";
-import { cn, confirmDialog, EmptyState, ErrorState, Markdown, toast, useLivePush } from "@ferrum/kit";
+import { cn, confirmDialog, EmptyState, ListSkeleton, Markdown, StatePanel, toast, useLivePush } from "@ferrum/kit";
+import { Failure } from "./States";
 import { useMe, usePeople } from "@ferrum/records";
 import { Composer, PeoplePicker } from "./ChatComposer";
 import { ChannelDetails, type DetailsTab } from "./ChatDetails";
@@ -118,11 +119,11 @@ export function ChatPage() {
   useEffect(() => () => shell().badge(0), []);
 
   return (
-    <div data-fullbleed className="grid h-[calc(100dvh-var(--ferrum-bar-height,48px))] min-h-0 md:grid-cols-[280px_minmax(0,1fr)]">
-      <aside className={cn("min-h-0 border-e", channel && "hidden md:block")} aria-label={tr("Conversations")}>
+    <div data-fullbleed className="grid h-[calc(100dvh-var(--ferrum-bar-height,48px))] min-h-0 grid-cols-1 md:grid-cols-[280px_minmax(0,1fr)]">
+      <aside className={cn("min-h-0 min-w-0 border-e", channel && "hidden md:block")} aria-label={tr("Conversations")}>
         <ChannelList list={channels.data?.channels} loading={channels.isLoading} error={channels.error} onRetry={() => void channels.refetch()} active={channel} waiting={waiting} />
       </aside>
-      <section className={cn("min-h-0", !channel && "hidden md:grid md:place-items-center")}>
+      <section className={cn("min-h-0 min-w-0", !channel && "hidden md:grid md:place-items-center")}>
         {channel ? (
           <Conversation key={channel} id={channel} summary={channels.data?.channels.find((c) => c.id === channel)} />
         ) : (
@@ -186,7 +187,7 @@ function ChannelList({
           aria-current={c.id === active ? "page" : undefined}
           className={cn(
             "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent pointer-coarse:min-h-11",
-            c.id === active && "bg-accent font-medium",
+            c.id === active && "bg-primary-soft font-medium hover:bg-primary-soft",
             (b.count > 0 || b.mention) && "font-semibold",
             quiet && "text-muted-foreground",
           )}
@@ -195,7 +196,7 @@ function ChannelList({
           <span className="min-w-0 flex-1 truncate">{c.title || c.name}</span>
           {quiet && <BellOff className="size-3.5 shrink-0" aria-label={tr("Muted")} />}
           {b.mention && (
-            <span className="grid size-5 shrink-0 place-items-center rounded-full border border-destructive bg-destructive-soft text-[11px] leading-none font-bold text-destructive" aria-hidden="true">
+            <span className="grid size-5 shrink-0 place-items-center rounded-full border border-destructive bg-destructive-soft text-xs leading-none font-bold text-destructive" aria-hidden="true">
               @
             </span>
           )}
@@ -244,14 +245,20 @@ function ChannelList({
       <Input type="search" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder={tr("Find a conversation")} aria-label={tr("Find a conversation")} />
       <div className="flex gap-1" role="group" aria-label={tr("Show")}>
         {SHOWS.map((s) => (
-          <Button key={s.id} size="xs" variant={show === s.id ? "secondary" : "ghost"} aria-pressed={show === s.id} onClick={() => setShow(s.id)}>
+          <Button key={s.id} size="xs" className="pointer-coarse:min-h-11" variant={show === s.id ? "secondary" : "ghost"} aria-pressed={show === s.id} onClick={() => setShow(s.id)}>
             {isolate(s.label)}
           </Button>
         ))}
       </div>
       <nav className="min-h-0 flex-1 overflow-y-auto" aria-label={tr("Conversations")} aria-busy={loading}>
-        {loading && <Skeleton className="h-40" />}
-        {!!error && <ErrorState error={error} onRetry={onRetry} />}
+        {loading && (
+          <div className="grid gap-1" role="status" aria-label={tr("Loading…")}>
+            {Array.from({ length: 7 }, (_, i) => (
+              <Skeleton key={i} className="h-8" />
+            ))}
+          </div>
+        )}
+        {!!error && <Failure error={error} onRetry={onRetry} />}
         {direct.length > 0 && (
           <>
             <h2 className="px-2 pt-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">{tr("Direct messages")}</h2>
@@ -270,11 +277,20 @@ function ChannelList({
             <ul className="mt-1 grid gap-0.5">{joinable.map(row)}</ul>
           </>
         )}
-        {none && (
-          <p className="px-2 py-4 text-sm text-muted-foreground">
-            {filter.trim() ? tr("No conversation matches “{filter}”.", { filter: filter.trim() }) : show === "unread" ? tr("Nothing unread. You are up to date.") : show === "mentions" ? tr("Nobody has mentioned you lately.") : tr("No conversations yet. Start one with the buttons above.")}
-          </p>
-        )}
+        {none &&
+          (filter.trim() || show !== "all" ? (
+            <StatePanel
+              kind="no-matches"
+              onClear={() => {
+                setFilter("");
+                setShow("all");
+              }}
+            >
+              {filter.trim() ? tr("No conversation matches “{filter}”.", { filter: filter.trim() }) : show === "unread" ? tr("Nothing unread. You are up to date.") : tr("Nobody has mentioned you lately.")}
+            </StatePanel>
+          ) : (
+            <StatePanel kind="empty">{tr("No conversations yet. Start one with the buttons above.")}</StatePanel>
+          ))}
       </nav>
       {creating === "channel" && <NewChannel onClose={() => setCreating(null)} />}
       {creating === "direct" && <NewDirect onClose={() => setCreating(null)} />}
@@ -401,22 +417,22 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
     }
   };
 
-  if (channel.error && !summary) return <ErrorState error={channel.error} onRetry={() => void channel.refetch()} />;
+  if (channel.error && !summary) return <Failure error={channel.error} onRetry={() => void channel.refetch()} />;
   const state = view ? posting(view) : ({ state: "ok" } as const);
   const direct = view?.type === "Direct";
   const open = (tab: DetailsTab | "search") => patch({ panel: tab, thread: null });
   const side = panel === "search" ? "search" : panel ? "details" : threadId ? "thread" : null;
 
   return (
-    <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto] xl:grid-cols-[minmax(0,1fr)_auto]">
+    <div className="grid h-full min-h-0 grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto] xl:grid-cols-[minmax(0,1fr)_auto]">
       <div className="xl:col-span-2">
-        <header className="flex items-center gap-2 border-b px-3 py-2">
+        <header className="flex items-center gap-1 sm:gap-2 border-b px-3 py-2">
           <Button asChild variant="ghost" size="icon-sm" className="md:hidden" aria-label={tr("Back to conversations")}>
             <Link to={base}>
               <ArrowLeft />
             </Link>
           </Button>
-          {view ? <ChannelIcon c={view} /> : null}
+          {view ? <span className="max-sm:hidden"><ChannelIcon c={view} /></span> : null}
           <div className="min-w-0 flex-1">
             <h2 className="truncate font-semibold">{c?.title || c?.name || summary?.title || "…"}</h2>
             {c?.topic && <p className="truncate text-xs text-muted-foreground">{isolate(c.topic)}</p>}
@@ -445,7 +461,7 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
         {target && (
           <div role="status" className="flex items-center gap-2 border-b bg-muted px-3 py-1.5 text-sm">
             <span className="min-w-0 flex-1">{feed.error ? tr("That message could not be found.") : tr("Showing the messages around the one you picked.")}</span>
-            <Button size="xs" variant="outline" onClick={() => patch({ m: null })}>
+            <Button size="xs" variant="outline" className="pointer-coarse:min-h-11" onClick={() => patch({ m: null })}>
               {tr("Back to the latest")}
             </Button>
           </div>
@@ -462,6 +478,7 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
         hasMore={!!feed.hasNextPage}
         loadMore={() => void feed.fetchNextPage()}
         loadingMore={feed.isFetchingNextPage}
+        onRetry={() => void feed.refetch()}
         onThread={(m) => patch({ thread: m, panel: null })}
         onUnread={member ? (m) => void markUnread(m) : undefined}
         marks={divider ? { [divider]: "New messages" } : undefined}
@@ -524,6 +541,7 @@ function MessageList(p: {
   hasMore: boolean;
   loadMore: () => void;
   loadingMore: boolean;
+  onRetry?: () => void;
   onThread?: (id: string) => void;
   onUnread?: (m: Message) => void;
   /** Words on a line above a message: where the new ones start, how many replies follow. */
@@ -599,13 +617,9 @@ function MessageList(p: {
             </Button>
           </div>
         )}
-        {p.loading && <Skeleton className="h-32" />}
-        {!!p.error && (
-          <p role="alert" className="text-sm text-destructive">
-            {isolate(errorMessage(p.error))}
-          </p>
-        )}
-        {!p.loading && !p.error && !p.list.length && <p className="py-8 text-center text-sm text-muted-foreground">{p.empty ?? tr("No messages yet.")}</p>}
+        {p.loading && <ListSkeleton rows={4} />}
+        {!!p.error && <Failure error={p.error} onRetry={p.onRetry} />}
+        {!p.loading && !p.error && !p.list.length && <StatePanel kind="empty">{p.empty ?? tr("No messages yet.")}</StatePanel>}
         {p.list.map((m, i) => (
           <div key={m.id}>
             {startsDay(m, p.list[i - 1]) && (
@@ -709,23 +723,23 @@ function MessageRow({
         if (!(e.target as HTMLElement).closest("a,button,input,textarea,[role=menuitem]")) e.currentTarget.focus();
       }}
       className={cn(
-        "group relative flex gap-2 rounded-md px-1 outline-none hover:bg-muted/40 focus-visible:bg-muted/40",
+        "group relative flex gap-2 rounded-md px-1 hover:bg-muted/40 focus-visible:-outline-offset-2",
         compact ? "py-0.5" : "mt-2 py-1",
-        toMe && "border-l-2 border-primary bg-primary/5",
+        toMe && "border-s-2 border-primary bg-primary-soft",
         picked && "bg-warning-soft ring-1 ring-warning",
       )}
       aria-label={(toMe ? tr("{name} at {value}, mentions you", { name, value: time(m.posted_at) }) : tr("{name} at {value}", { name, value: time(m.posted_at) }))}
     >
       <div className="w-8 shrink-0">
         {!compact && (
-          <span className="grid size-8 place-items-center rounded-full bg-primary/10 text-xs font-semibold text-primary" aria-hidden="true">
+          <span className="grid size-8 place-items-center rounded-full bg-primary-soft text-xs font-semibold text-primary" aria-hidden="true">
             {isolate(initials(name))}
           </span>
         )}
       </div>
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 [overflow-wrap:anywhere]">
         {!compact && (
-          <div className="flex items-baseline gap-2">
+          <div className="flex flex-wrap items-baseline gap-x-2">
             <span className="text-sm font-semibold">{isolate(name)}</span>
             <time className="text-xs text-muted-foreground" dateTime={m.posted_at}>
               {isolate(time(m.posted_at))}
@@ -942,6 +956,7 @@ function Thread({
         hasMore={false}
         loadMore={() => undefined}
         loadingMore={false}
+        onRetry={() => void Promise.all([first.refetch(), replies.refetch()])}
         onUnread={onUnread}
         marks={marks}
         focus={highlight ?? undefined}

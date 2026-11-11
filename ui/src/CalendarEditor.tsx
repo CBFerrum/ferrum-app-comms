@@ -8,7 +8,8 @@ import { ArrowLeft, Plus, X } from "lucide-react";
 import { useMemo, useState, type FormEvent, type MouseEvent } from "react";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router";
 import { Badge, Button, Input, Label, Skeleton, Textarea } from "@ferrum/kit/primitives";
-import { Alert, confirmDialog, EmptyState, ErrorState, PageLoading, toast, useShellTitle, placed } from "@ferrum/kit";
+import { Alert, confirmDialog, FormSkeleton, StatePanel, toast, useShellTitle, placed } from "@ferrum/kit";
+import { Failure } from "./States";
 import { api, currentLanguage, docPath, errorMessage, t, isolate } from "@ferrum/client";
 import { useMe, usePeople } from "@ferrum/records";
 import { matchPeople, type Person } from "./lib/chat";
@@ -64,22 +65,31 @@ export function EventPage() {
   const [params] = useSearchParams();
   const doc = useQuery({ queryKey: ["calendar", "event", event], queryFn: ({ signal }) => api.get<EventDoc>(docPath("CalendarEvent", event), undefined, signal), enabled: event !== "new", gcTime: 0, retry: false });
   useShellTitle(event === "new" ? t("New event") : t("Edit event"));
-  if (event === "new") return me ? <Editor key="new" me={me} params={params} /> : <PageLoading />;
+  if (event === "new") return me ? <Editor key="new" me={me} params={params} /> : <EditorLoading />;
   if (doc.error) {
+    const status = (doc.error as { status?: number }).status;
+    if (status === 0 || (status ?? 0) >= 500) return <Failure error={doc.error} onRetry={() => void doc.refetch()} />;
     return (
-      <EmptyState title={t("That event is not available")} icon="calendar">
-        <p className="text-sm text-muted-foreground">{t("It was deleted, or it is not on your calendar.")}</p>
-        <Link className="text-primary underline" to="/calendar">
-          {t("Go to Calendar")}
-        </Link>
-      </EmptyState>
+      <StatePanel
+        kind="denied"
+        title={t("That event is not available")}
+        action={
+          <Link className="text-primary underline" to="/calendar">
+            {t("Go to Calendar")}
+          </Link>
+        }
+      >
+        {t("It was deleted, or it is not on your calendar.")}
+      </StatePanel>
     );
   }
-  if (!doc.data || !me) return <PageLoading />;
+  if (!doc.data || !me) return <EditorLoading />;
   // A guest does not edit: the event opens in Calendar, where they answer.
   if (doc.data.owner?.toLowerCase() !== me) return <Navigate to={`/calendar?event=${event}${params.get("at") ? `&at=${encodeURIComponent(params.get("at")!)}` : ""}`} replace />;
   return <Editor key={doc.data.id + doc.data.version} me={me} doc={doc.data} params={params} />;
 }
+
+const EditorLoading = () => <FormSkeleton fields={5} className="mx-auto max-w-5xl p-4" />;
 
 const DAY = 86_400_000;
 const dayWord = (d: Date) => d.toLocaleDateString([], { weekday: "long", day: "numeric", month: "long" });
@@ -313,7 +323,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="grid gap-1.5">
             <Label htmlFor="ev-repeat">{t("Repeats")}</Label>
-            <select id="ev-repeat" className="h-9 rounded-md border bg-background px-2 text-sm" value={repeat} onChange={(e) => setRepeat(e.target.value as Repeat)}>
+            <select id="ev-repeat" className="h-(--control-h) w-full min-w-0 rounded-md border border-input bg-card px-2 text-sm" value={repeat} onChange={(e) => setRepeat(e.target.value as Repeat)}>
               {REPEATS.map((r) => (
                 <option key={r.value} value={r.value}>
                   {isolate(r.label)}
@@ -378,7 +388,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
             <Label htmlFor="ev-remind">{t("Reminder")}</Label>
             <select
               id="ev-remind"
-              className="h-9 rounded-md border bg-background px-2 text-sm"
+              className="h-(--control-h) w-full min-w-0 rounded-md border border-input bg-card px-2 text-sm"
               value={String(reminder)}
               onChange={(e) => setReminder(e.target.value === "none" || e.target.value === "custom" ? e.target.value : Number(e.target.value))}
             >
@@ -391,9 +401,9 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
               {reminder === "custom" && <option value="custom">{t("Several (kept as they are)")}</option>}
             </select>
           </div>
-          <div className="grid gap-1.5">
+          <div className="grid gap-1.5 sm:col-span-2">
             <Label htmlFor="ev-visible">{t("Who sees it")}</Label>
-            <select id="ev-visible" className="h-9 rounded-md border bg-background px-2 text-sm" value={visibility} onChange={(e) => setVisibility(e.target.value)}>
+            <select id="ev-visible" className="h-(--control-h) w-full min-w-0 rounded-md border border-input bg-card px-2 text-sm" value={visibility} onChange={(e) => setVisibility(e.target.value)}>
               <option value="Private">{t("Only you and your guests (others see busy time)")}</option>
               <option value="Public">{t("Everyone in the workspace")}</option>
             </select>
@@ -518,12 +528,12 @@ function FindTime(p: {
       {p.loading ? (
         <Skeleton className="h-24" />
       ) : p.error ? (
-        <ErrorState error={p.error} onRetry={p.retry} title={t("Their calendars could not be read")} />
+        <Failure error={p.error} onRetry={p.retry} title={t("Their calendars could not be read")} />
       ) : (
         <div className="grid gap-1">
-          <div className="relative ml-24 h-4 text-[10px] text-muted-foreground" aria-hidden="true">
+          <div className="relative ml-24 h-4 text-xs text-muted-foreground" aria-hidden="true">
             {hours.map((h) => (
-              <span key={h} className="absolute -translate-x-1/2 tabular-nums" style={{ left: `${((h - FROM) / (TO - FROM)) * 100}%` }}>
+              <span key={h} className="absolute -translate-x-1/2 whitespace-nowrap tabular-nums" style={{ left: `${((h - FROM) / (TO - FROM)) * 100}%` }}>
                 {isolate(new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: "numeric" }))}
               </span>
             ))}

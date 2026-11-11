@@ -9,7 +9,8 @@ import { StrictMode, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Link, Outlet, RouterProvider, useLocation, useRouteError } from "react-router";
 import { addCatalogs, isPublicPage, routeBase, shell, t, wordsReady } from "@ferrum/client";
-import { ConfirmHost, EmptyState, ErrorState, Toaster } from "@ferrum/kit";
+import { ConfirmHost, EmptyState, StatePanel, Toaster } from "@ferrum/kit";
+import { Failure } from "./States";
 import "./styles.css";
 
 // Its own words in the page's language (src/locales), fetched as the page starts; it is drawn once they are in.
@@ -41,7 +42,7 @@ function Frame() {
 }
 
 function RouteError() {
-  return <ErrorState error={useRouteError()} onRetry={() => window.location.reload()} />;
+  return <Failure error={useRouteError()} onRetry={() => window.location.reload()} />;
 }
 
 function NotFound() {
@@ -67,8 +68,8 @@ const router = createBrowserRouter([
     path: "/",
     element: <Frame />,
     errorElement: <RouteError />,
-    // A first page that loads its code later shows nothing meanwhile (the bar is there already).
-    hydrateFallbackElement: <span />,
+    // A first page that loads its code later says so meanwhile (the bar is there already).
+    hydrateFallbackElement: <StatePanel kind="loading" />,
     children: [
       { path: `${at("mail")}/_intent/compose`, lazy: page(intents, "ComposeIntentPage") },
       { path: `${at("mail")}/compose`, lazy: () => mail().then((m) => ({ Component: () => <m.MailPage compose /> })) },
