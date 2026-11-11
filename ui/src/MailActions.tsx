@@ -1,26 +1,24 @@
 // The one way mail is changed: a key, a row's button, the selection toolbar and the open conversation
 // all call `run`. It reads what the messages were, sends the patch, and offers Undo (a toast for 8
-// seconds, `z` too) that puts exactly those folders and keywords back. Nothing is shown as done before
+// seconds in the kit's toast, `z` too) that puts exactly those folders and keywords back. Nothing is shown as done before
 // the mail server has taken it.
 
 import { useQueryClient } from "@tanstack/react-query";
-import { X } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Button } from "@ferrum/kit/primitives";
 import { errorMessage, t as tr } from "@ferrum/client";
-import { toast } from "@ferrum/kit";
+import { announce, toast } from "@ferrum/kit";
 import { doneLine, patchFor, restoreUpdates, updatesFor, type Snapshot, type Verb } from "./lib/actions";
 import { folderName } from "./lib/folders";
 import { byRole, jmap, refusal, type Mailbox } from "./lib/mail";
 
 interface Item {
   id: number;
-  label: string;
   undo: () => Promise<void>;
 }
 
 interface Undoer {
-  push: (label: string, undo: () => Promise<void>) => void;
+  /** Offers Undo for an action in the kit's toast (at least 8 seconds, or `ms`) and keeps it for `z` meanwhile. */
+  push: (label: string, undo: () => Promise<void>, ms?: number) => void;
   undo: () => void;
   /** Whether there is something to undo (for the help and the toolbar). */
   pending: boolean;
@@ -28,54 +26,45 @@ interface Undoer {
 
 const UndoContext = createContext<Undoer | null>(null);
 
-/** Keeps the last action's undo and shows it; Mail sits inside it. */
+/** Keeps the last action's undo; Mail sits inside it. The toast is the kit's, with Undo as its action. */
 export function UndoProvider({ children }: { children: ReactNode }) {
   const [item, setItem] = useState<Item | null>(null);
   const seq = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const qc = useQueryClient();
-  const clear = useCallback(() => {
-    clearTimeout(timer.current);
-    setItem(null);
-  }, []);
-  const push = useCallback((label: string, undo: () => Promise<void>) => {
-    clearTimeout(timer.current);
-    const id = ++seq.current;
-    setItem({ id, label, undo });
-    timer.current = setTimeout(() => setItem((cur) => (cur?.id === id ? null : cur)), 8000);
-  }, []);
   const current = useRef<Item | null>(null);
   current.current = item;
-  const undo = useCallback(() => {
-    const it = current.current;
-    if (!it) return;
-    clear();
-    it.undo().then(
-      () => toast(tr("Undone")),
-      (e: unknown) => toast(tr("Could not undo: {e}", { e: errorMessage(e) }), "error"),
-    ).finally(() => void qc.invalidateQueries({ queryKey: ["mail"], predicate: (q) => q.queryKey[1] !== "session" }));
-  }, [clear, qc]);
+  const run = useCallback(
+    (id: number) => {
+      const it = current.current;
+      if (!it || it.id !== id) return;
+      clearTimeout(timer.current);
+      setItem(null);
+      it.undo().then(
+        () => toast(tr("Undone")),
+        (e: unknown) => toast(tr("Could not undo: {e}", { e: errorMessage(e) }), "error"),
+      ).finally(() => void qc.invalidateQueries({ queryKey: ["mail"], predicate: (q) => q.queryKey[1] !== "session" }));
+    },
+    [qc],
+  );
+  const push = useCallback(
+    (label: string, undo: () => Promise<void>, ms = 8000) => {
+      clearTimeout(timer.current);
+      const id = ++seq.current;
+      setItem({ id, undo });
+      toast(label, "success", { action: { label: tr("Undo"), onSelect: () => run(id) }, duration: ms });
+      timer.current = setTimeout(() => setItem((cur) => (cur?.id === id ? null : cur)), ms);
+    },
+    [run],
+  );
+  const undo = useCallback(() => current.current && run(current.current.id), [run]);
   useEffect(() => () => clearTimeout(timer.current), []);
   const value = useMemo(() => ({ push, undo, pending: !!item }), [push, undo, item]);
-  return (
-    <UndoContext.Provider value={value}>
-      {children}
-      <div className="pointer-events-none fixed inset-x-4 bottom-4 z-50 flex justify-center max-[720px]:bottom-24" role="status" aria-live="polite">
-        {item && (
-          <div className="pointer-events-auto flex max-w-full items-center gap-2 rounded-lg border bg-popover py-1.5 ps-3 pe-1.5 text-sm text-popover-foreground shadow-(--shadow)">
-            <span className="min-w-0 truncate">{item.label}</span>
-            <Button size="sm" variant="ghost" className="font-semibold text-primary" onClick={undo} title={tr("Undo (z)")}>
-              {tr("Undo")}
-            </Button>
-            <Button size="icon-sm" variant="ghost" aria-label={tr("Dismiss notification")} onClick={clear}>
-              <X />
-            </Button>
-          </div>
-        )}
-      </div>
-    </UndoContext.Provider>
-  );
+  return <UndoContext.Provider value={value}>{children}</UndoContext.Provider>;
 }
+
+/** The undo of Mail, or null outside it (the composer another app opens has none). */
+export const useOptionalUndo = (): Undoer | null => useContext(UndoContext);
 
 export function useUndo(): Undoer {
   const u = useContext(UndoContext);
@@ -164,7 +153,9 @@ export function useMailActions(account: string, boxes: Mailbox[]) {
         if (!patch) throw new Error(tr("This mailbox has no such folder."));
         const before = await snapshot(account, r.ids);
         await setEmails(account, updatesFor(r.ids, patch));
-        undo.push(doneLine(r.verb, r.count, r.to ? folderName(r.to) : ""), () => setEmails(account, restoreUpdates(before)));
+        const line = doneLine(r.verb, r.count, r.to ? folderName(r.to) : "");
+        undo.push(line, () => setEmails(account, restoreUpdates(before)));
+        if (r.count > 1) announce(line);
         void refresh();
         return true;
       } catch (e) {

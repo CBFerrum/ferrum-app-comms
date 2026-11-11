@@ -1,9 +1,9 @@
 // The buttons that act on mail: one bar used by the selection toolbar over the list and by the open
 // conversation, the same bar smaller on a row, and the "Move to" menu (a folder filter in a popover).
 
-import { Archive, FolderInput, Inbox, MailOpen, Mail as MailClosed, ShieldAlert, ShieldCheck, Star, Trash2 } from "lucide-react";
+import { Archive, FolderInput, Inbox, MailOpen, Mail as MailClosed, MoreVertical, ShieldAlert, ShieldCheck, Star, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
-import { Button, Command, CommandEmpty, CommandInput, CommandItem, CommandList, Popover, PopoverContent, PopoverTrigger } from "@ferrum/kit/primitives";
+import { Button, Command, CommandEmpty, CommandInput, CommandItem, CommandList, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, Popover, PopoverContent, PopoverTrigger } from "@ferrum/kit/primitives";
 import { isolate, t as tr } from "@ferrum/client";
 import { cn } from "@ferrum/kit";
 import { FolderIcon } from "./MailFolders";
@@ -21,12 +21,12 @@ export function IconAction({ label, keys, onClick, children, className, danger, 
 }
 
 /** "Move to": the folders with a filter; picking one moves what is selected or open. */
-export function MoveMenu({ boxes, current, onPick, open, onOpenChange, small = true }: { boxes: Mailbox[]; current?: string; onPick: (to: Mailbox) => void; open: boolean; onOpenChange: (o: boolean) => void; small?: boolean }) {
+export function MoveMenu({ boxes, current, onPick, open, onOpenChange, small = true, quiet = false }: { boxes: Mailbox[]; current?: string; onPick: (to: Mailbox) => void; open: boolean; onOpenChange: (o: boolean) => void; small?: boolean; quiet?: boolean }) {
   const targets = moveTargets(boxes).filter((t) => t.box.id !== current);
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
-        <Button variant="ghost" size={small ? "icon-sm" : "sm"} aria-label={tr("Move to")} title={tr("Move to (v)")}>
+        <Button variant="ghost" size={small ? "icon-sm" : "sm"} aria-label={tr("Move to")} title={tr("Move to (v)")} className={cn(quiet && "pointer-events-none w-0 overflow-hidden p-0 opacity-0")} tabIndex={quiet ? -1 : undefined} aria-hidden={quiet || undefined}>
           <FolderInput /> {!small && tr("Move to")}
         </Button>
       </PopoverTrigger>
@@ -71,12 +71,58 @@ export interface BarProps {
   folderId?: string;
   /** More buttons at the end (the open conversation's). */
   children?: ReactNode;
+  /** A phone's width: Archive and Delete as buttons, the rest in a menu, so nothing is pushed off the screen. */
+  compact?: boolean;
+  /** Compact only: "Select all" in the menu. */
+  onSelectAll?: () => void;
 }
 
 /** Archive, Delete, Spam or Not spam, Mark read or unread, Star, Move to; in Trash and Spam also Move to Inbox and Delete forever. */
 export function ActionBar(p: BarProps) {
   const o = offered(p.role);
   const inbox = p.boxes.find((b) => b.role === "inbox");
+  if (p.compact) {
+    const more: { label: string; run: () => void }[] = [
+      ...(p.role === "trash" && inbox ? [{ label: tr("Move to Inbox"), run: () => p.onMove(inbox) }] : []),
+      ...(o.notSpam ? [{ label: tr("Not spam"), run: () => p.onVerb("notSpam") }] : []),
+      ...(o.spam ? [{ label: tr("Report spam"), run: () => p.onVerb("spam") }] : []),
+      ...(o.deleteForever ? [{ label: tr("Delete forever"), run: p.onForever }] : []),
+      { label: p.anyUnread ? tr("Mark as read") : tr("Mark as unread"), run: () => p.onVerb(p.anyUnread ? "read" : "unread") },
+      { label: p.allStarred ? tr("Remove the star") : tr("Star"), run: () => p.onVerb(p.allStarred ? "unstar" : "star") },
+      ...(o.move ? [{ label: tr("Move to…"), run: () => setTimeout(() => p.onMoveOpen(true)) }] : []),
+      ...(p.onSelectAll ? [{ label: tr("Select all"), run: p.onSelectAll }] : []),
+    ];
+    return (
+      <>
+        {o.archive && (
+          <IconAction label={tr("Archive")} keys="e" onClick={() => p.onVerb("archive")}>
+            <Archive />
+          </IconAction>
+        )}
+        {o.trash && (
+          <IconAction label={tr("Delete")} keys="#" onClick={() => p.onVerb("trash")}>
+            <Trash2 />
+          </IconAction>
+        )}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon-sm" aria-label={tr("More actions")} title={tr("More actions")}>
+              <MoreVertical />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {more.map((m) => (
+              <DropdownMenuItem key={m.label} onSelect={m.run}>
+                {m.label}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        {o.move && <MoveMenu quiet boxes={p.boxes} current={p.folderId} onPick={p.onMove} open={p.moveOpen} onOpenChange={p.onMoveOpen} />}
+        {p.children}
+      </>
+    );
+  }
   return (
     <>
       {o.archive && (
