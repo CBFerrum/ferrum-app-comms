@@ -9,7 +9,8 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Label, Skeleton } from "@ferrum/kit/primitives";
 import { can, LinkInput, useMetaIndex } from "@ferrum/records";
 import { api, download, errorMessage, formatDateTime, relativeTime, t as tr, isolate } from "@ferrum/client";
-import { cn, confirmDialog, ErrorState, toast } from "@ferrum/kit";
+import { cn, confirmDialog, ReaderSkeleton, toast } from "@ferrum/kit";
+import { Failure } from "./States";
 import {
   MAIL,
   addressLabel,
@@ -153,9 +154,9 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
     return () => window.removeEventListener("keydown", on);
   }, []);
 
-  if (thread.error) return <ErrorState error={thread.error} onRetry={() => void thread.refetch()} />;
-  if (!thread.data) return <Skeleton className="m-4 h-64" />;
-  if (!newest) return <ErrorState title={tr("That message is not here any more")} error={new Error(tr("It may have been moved or deleted."))} onRetry={p.onBack} />;
+  if (thread.error) return <Failure error={thread.error} onRetry={() => void thread.refetch()} />;
+  if (!thread.data) return <ReaderSkeleton />;
+  if (!newest) return <Failure title={tr("That message is not here any more")} error={new Error(tr("It may have been moved or deleted."))} onRetry={p.onBack} />;
   const subject = latest.data?.subject ?? newest.subject;
   const single = messages.length === 1;
   const draftOpen = !!role("drafts") && !!newest.mailboxIds[role("drafts")!.id];
@@ -250,7 +251,7 @@ function Card({ account, summary, open, fill, onToggle, me, onDraft }: { account
   return (
     <section className={cn(fill ? "grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)]" : "border-b")} aria-label={tr("{value} on {value2}", { value: mine ? tr("You") : from, value2: formatDateTime(summary.receivedAt) })}>
       <div>
-        <button type="button" onClick={onToggle} aria-expanded={open} className="flex w-full items-center gap-2 px-4 py-2 text-start hover:bg-accent/50 pointer-coarse:min-h-11">
+        <button type="button" onClick={onToggle} aria-expanded={open} className="flex w-full items-center gap-2 px-4 py-2 text-start hover:bg-accent focus-visible:-outline-offset-2 pointer-coarse:min-h-11">
           {open ? <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" /> : <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />}
           {unread && <span className="size-2 shrink-0 rounded-full bg-primary" role="img" aria-label={tr("Unread")} />}
           <span className={cn("shrink-0 text-sm", unread ? "font-semibold" : "font-medium")}>{mine ? tr("You") : from || tr("(unknown sender)")}</span>
@@ -375,7 +376,7 @@ export function FileDialog({ account, email, onClose }: { account: string; email
             <Label htmlFor="file-entity">{tr("Kind of record")}</Label>
             <select
               id="file-entity"
-              className="h-9 rounded-md border bg-background px-2 text-sm"
+              className="h-(--control-h) rounded-md border border-input bg-card px-2 text-sm"
               value={entity}
               onChange={(e) => {
                 setEntity(e.target.value);

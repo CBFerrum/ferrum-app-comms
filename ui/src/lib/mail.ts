@@ -193,6 +193,7 @@ export function frameDocument(html: string, images: boolean): string {
   const policy = `default-src 'none'; style-src 'unsafe-inline'; img-src data:${images ? " https: http:" : ""}; base-uri 'none'; form-action 'none'`;
   return (
     `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${policy}">` +
+    // ui-lint-allow raw-color: authored mail content in a sandboxed iframe; senders write for a white page, so it ignores the theme
     `<base target="_blank"><style>body{margin:0;padding:16px;font:14px/1.5 system-ui,sans-serif;color:#1f2328;background:#fff;word-wrap:break-word}` +
     `img{max-width:100%;height:auto}pre{white-space:pre-wrap;font:inherit}table{max-width:100%}</style></head><body>${html}</body></html>`
   );

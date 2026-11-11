@@ -1,0 +1,1 @@
+import"./index-LvnK8Uc2.js";import{u as o}from"./useQuery-BNe5DjX5.js";import{b as r}from"./chat-CI843nA3.js";const i=()=>o({queryKey:["people"],queryFn:({signal:e})=>r.get("/api/users",void 0,e),staleTime:5*6e4});export{i as u};

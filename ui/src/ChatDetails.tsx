@@ -7,8 +7,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Lock, MoreHorizontal, Plus, X } from "lucide-react";
 import { useContext, useId, useState } from "react";
 import { useNavigate } from "react-router";
-import { Badge, Button, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, Input, Label, Skeleton, Textarea } from "@ferrum/kit/primitives";
-import { cn, confirmDialog, ErrorState, TabPanel, Tabs, toast } from "@ferrum/kit";
+import { Badge, Button, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, Input, Label, Textarea } from "@ferrum/kit/primitives";
+import { cn, confirmDialog, FormSkeleton, TabPanel, Tabs, toast } from "@ferrum/kit";
+import { Failure } from "./States";
 import { api, errorMessage, t as tr, isolate } from "@ferrum/client";
 import { useMe, usePeople } from "@ferrum/records";
 import { CHAT, LOUDNESS, SIDE_PANEL, accessText, addable, initials, keys, loudness, memberRows, type Channel, type Loud, type Member } from "./lib/chat";
@@ -42,9 +43,9 @@ export function ChannelDetails({ id, tab, onTab, onClose }: { id: string; tab: D
       </header>
       <div className="min-h-0 overflow-y-auto">
         {channel.error ? (
-          <ErrorState error={channel.error} onRetry={() => void channel.refetch()} />
+          <Failure error={channel.error} onRetry={() => void channel.refetch()} />
         ) : !c ? (
-          <Skeleton className="m-3 h-40" />
+          <FormSkeleton fields={4} className="p-3" />
         ) : (
           <>
             {tabs.length > 1 && <Tabs id="chat-details" tabs={tabs} value={shown} onChange={(t) => onTab(t as DetailsTab)} />}
@@ -161,7 +162,7 @@ function General({ c }: { c: Channel }) {
       <div className="grid gap-1.5">
         <Label htmlFor={`${ids}-type`}>{tr("Who can find it")}</Label>
         {owner ? (
-          <select id={`${ids}-type`} className="h-9 rounded-md border bg-background px-2 text-sm" value={c.type} disabled={busy} onChange={(e) => void type(e.target.value as "Public" | "Private")}>
+          <select id={`${ids}-type`} className="h-(--control-h) rounded-md border border-input bg-card px-2 text-sm" value={c.type} disabled={busy} onChange={(e) => void type(e.target.value as "Public" | "Private")}>
             <option value="Public">{tr("Anyone in the workspace")}</option>
             <option value="Private">{tr("Only its members")}</option>
           </select>
@@ -175,7 +176,7 @@ function General({ c }: { c: Channel }) {
         {owner ? (
           <select
             id={`${ids}-post`}
-            className="h-9 rounded-md border bg-background px-2 text-sm"
+            className="h-(--control-h) rounded-md border border-input bg-card px-2 text-sm"
             value={c.post_policy === "Owners" ? "Owners" : "Members"}
             disabled={busy}
             onChange={(e) => void save("post_policy", { post_policy: e.target.value }, tr("Updated"))}
@@ -248,7 +249,7 @@ function Personal({ c }: { c: Channel }) {
       <fieldset className="grid gap-2">
         <legend className="mb-1 font-medium">{tr("Tell me about")}</legend>
         {LOUDNESS.map((o) => (
-          <label key={o.value} htmlFor={`${ids}-${o.value}`} className={cn("flex cursor-pointer items-start gap-2 rounded-md border p-2 pointer-coarse:min-h-11", level === o.value && "border-primary bg-primary/5")}>
+          <label key={o.value} htmlFor={`${ids}-${o.value}`} className={cn("flex cursor-pointer items-start gap-2 rounded-md border p-2 pointer-coarse:min-h-11", level === o.value && "border-primary bg-primary-soft")}>
             <input id={`${ids}-${o.value}`} className="mt-0.5" type="radio" name={`${ids}-loud`} checked={level === o.value} onChange={() => void set(o.value)} />
             <span>
               <span className="block font-medium">{isolate(o.label)}</span>
@@ -349,9 +350,9 @@ function Members({ c }: { c: Channel }) {
           const you = m.email.toLowerCase() === me;
           return (
             <li key={m.email} className="flex items-center gap-2 rounded-md px-1 py-1 pointer-coarse:min-h-11">
-              <span className="relative grid size-8 shrink-0 place-items-center rounded-full bg-primary/10 text-xs font-semibold text-primary" aria-hidden="true">
+              <span className="relative grid size-8 shrink-0 place-items-center rounded-full bg-primary-soft text-xs font-semibold text-primary" aria-hidden="true">
                 {isolate(initials(m.full_name || m.email))}
-                {m.active && <span className="absolute -end-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-background bg-emerald-500" />}
+                {m.active && <span className="absolute -end-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-background bg-success" />}
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate font-medium">

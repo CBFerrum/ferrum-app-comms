@@ -7,8 +7,9 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Copy, Download, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router";
-import { Button, Skeleton } from "@ferrum/kit/primitives";
-import { cn, EmptyState, ErrorState, toast, useShellTitle, placed } from "@ferrum/kit";
+import { Button } from "@ferrum/kit/primitives";
+import { cn, EmptyState, StatePanel, TableSkeleton, toast, useShellTitle, placed } from "@ferrum/kit";
+import { Failure } from "./States";
 import { ApiError, api, formatDateTime, relativeTime, saveBlob, t, isolate } from "@ferrum/client";
 import { DOMAIN, STATUS, headline, shown, zoneName, type Check, type Health } from "./lib/domain";
 
@@ -43,25 +44,25 @@ export function DomainPage() {
         </Link>
       </div>
       {forbidden ? (
-        <EmptyState title={t("This page is for people who manage Communication Settings")} icon="mail">
-          <p className="text-sm text-muted-foreground">{t("Ask an administrator for the Comms Manager role.")}</p>
-        </EmptyState>
+        <StatePanel kind="denied" title={t("This page is for people who manage Communication Settings")}>
+          {t("Ask an administrator for the Comms Manager role.")}
+        </StatePanel>
       ) : q.error ? (
-        <ErrorState error={q.error} onRetry={() => void q.refetch()} />
+        <Failure error={q.error} onRetry={() => void q.refetch()} />
       ) : !h ? (
-        <div role="status" aria-label={t("Checking the domain")}>
-          <Skeleton className="h-24" />
-          <Skeleton className="mt-3 h-48" />
-        </div>
+        <TableSkeleton columns={3} rows={6} />
       ) : !h.domain ? (
-        <EmptyState title={t("No mail domain is set")} icon="mail">
-          <p className="max-w-md text-center text-sm text-muted-foreground">
-            {t("Set the Mail Domain in Communication Settings (for example acme.com) and everyone whose address is in it gets a mailbox. Then this page shows which DNS records that domain needs.")}
-          </p>
-          <Link className="text-primary underline" to="/open/CommsSettings" reloadDocument>
-            {t("Open Communication Settings")}
-          </Link>
-        </EmptyState>
+        <StatePanel
+          kind="empty"
+          title={t("No mail domain is set")}
+          action={
+            <Link className="text-primary underline" to="/open/CommsSettings" reloadDocument>
+              {t("Open Communication Settings")}
+            </Link>
+          }
+        >
+          {t("Set the Mail Domain in Communication Settings (for example acme.com) and everyone whose address is in it gets a mailbox. Then this page shows which DNS records that domain needs.")}
+        </StatePanel>
       ) : (
         <Report h={h} only={only} setOnly={setOnly} fetching={q.isFetching} again={() => void q.refetch()} />
       )}
