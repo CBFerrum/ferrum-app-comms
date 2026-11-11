@@ -9,7 +9,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useId, useState } from "react";
 import { Route, Routes } from "react-router";
 import { api, currentLanguage, docPath, errorMessage, shell, type IntentRequest, t, isolate } from "@ferrum/client";
-import { EmptyState, Spinner, toast } from "@ferrum/kit";
+import { EmptyState, StatePanel, toast } from "@ferrum/kit";
 import { Button, Input, Label, Textarea } from "@ferrum/kit/primitives";
 import { useMe, usePeople } from "@ferrum/records";
 import { ChatBase, ChatPage } from "./Chat";
@@ -42,7 +42,7 @@ export function ComposeIntentPage() {
   const boxes = useMailboxes(account);
   if (error) return <EmptyState title={t("Nothing to write")}>{isolate(error)}</EmptyState>;
   if (session.error) return <MailUnavailable error={session.error} />;
-  if (!req || !session.data || !account || !boxes.data) return <Spinner label={t("Opening Mail")} />;
+  if (!req || !session.data || !account || !boxes.data) return <StatePanel kind="loading" title={t("Opening Mail")} />;
   const d = (req.data ?? {}) as Record<string, unknown>;
   const attachments = (Array.isArray(d.attachments) ? d.attachments : [])
     .map((a) => a as { url?: unknown; name?: unknown })
@@ -107,7 +107,7 @@ export function ScheduleIntentPage() {
     staleTime: 60_000,
   });
   if (error) return <EmptyState title={t("Nothing to schedule")}>{isolate(error)}</EmptyState>;
-  if (!req || !form) return <Spinner label={t("Opening Calendar")} />;
+  if (!req || !form) return <StatePanel kind="loading" title={t("Opening Calendar")} />;
   const set = (patch: Partial<typeof form>) => setForm({ ...form, ...patch });
   const names = (list: string[]) => list.map((e) => (e === me ? t("You") : people.find((p) => p.email.toLowerCase() === e)?.full_name || e));
   const clash = free.data && span?.starts && span.ends ? clashes(free.data, span.starts, span.ends) : [];
@@ -224,7 +224,7 @@ export function ShareIntentPage() {
   if (error) return <EmptyState title={t("Nothing to share")}>{isolate(error)}</EmptyState>;
   const d = (req?.data ?? {}) as { entity?: unknown; id?: unknown; title?: unknown };
   if (req && (typeof d.entity !== "string" || typeof d.id !== "string")) return <EmptyState title={t("Nothing to share")}>{t("The app did not say which record.")}</EmptyState>;
-  if (!req || !channels.data) return channels.error ? <EmptyState title={t("Chat is not available")}>{isolate(errorMessage(channels.error))}</EmptyState> : <Spinner label={t("Opening Chat")} />;
+  if (!req || !channels.data) return channels.error ? <EmptyState title={t("Chat is not available")}>{isolate(errorMessage(channels.error))}</EmptyState> : <StatePanel kind="loading" title={t("Opening Chat")} />;
   const title = (typeof d.title === "string" && d.title.trim()) || `${d.entity} ${d.id}`;
   const link = `/open/${encodeURIComponent(d.entity as string)}/${encodeURIComponent(d.id as string)}`;
   const share = async (e: FormEvent) => {
@@ -247,7 +247,7 @@ export function ShareIntentPage() {
       <p className="text-sm text-muted-foreground">{t("“{title}” goes to the conversation as a link; only people who may open it see it.", { title })}</p>
       <div className="grid gap-1.5">
         <Label htmlFor={`${ids}-c`}>{t("Conversation")}</Label>
-        <select id={`${ids}-c`} className="h-9 rounded-md border bg-background px-2 text-sm" value={channel} onChange={(e) => setChannel(e.target.value)} autoFocus>
+        <select id={`${ids}-c`} className="h-(--control-h) rounded-md border border-input bg-card px-2 text-sm" value={channel} onChange={(e) => setChannel(e.target.value)} autoFocus>
           <option value="">{t("Choose…")}</option>
           {channels.data.map((c) => (
             <option key={c.id} value={c.id}>

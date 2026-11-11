@@ -25,6 +25,7 @@
 .ferrum-pip .lk-control-bar {
   justify-content: center;
   padding: 6px;
+  /* ui-lint-allow raw-color: the fallback of LiveKit's own variable, beside LiveKit's stylesheet */
   border-top: 1px solid var(--lk-border-color, rgb(255 255 255 / 0.12));
 }
 .ferrum-pip-empty {

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.1
+
+The interface follows the upgraded design system, rebuilt with Ferrum-Frontend 0a47157. Text uses the kit's type roles (nothing under 12px) and controls its height tokens; loading shows skeletons shaped like what is coming; empty, no matches, denied, offline and failed are told apart; status colours come from stored state ids. The interface check now runs the UI lint against an empty baseline. In Mail an open row, an unread one, a starred one and the keyboard cursor are distinct, a long sender no longer pushes the time off the row, and the draft line never says saved for a draft kept only in the browser. Chat fits a phone: lines wrap and the composer stays in view. Initials take one character for a Han, Kana or Hangul name and ignore a bracketed alias. In right-to-left a calendar event's title is cut at its end, and the new event's "Who sees it" shows its whole value.
+
 ## 0.12.0
 
 What meetings keep of a person is part of their personal-data requests (Ferrum's closure review, FEO-016). The captions someone gave of their own voice, kept as meetings' transcripts in Comms' own table, are in their copy (Administration → Personal data, under the apps), go with their erasure, and go again when a restore replays the erasure. The meeting keeps everyone else's words. Needs Ferrum 937a494 or later (`privacy::PersonalHeld`).
