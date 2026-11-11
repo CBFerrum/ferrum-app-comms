@@ -170,7 +170,7 @@ export function Composer({
               <Paperclip className="size-3.5 shrink-0" aria-hidden="true" />
               <span className="truncate">{isolate(f.name)}</span>
               <span className="shrink-0 text-muted-foreground">{f.error ? f.error : f.stored ? fileSize(f.size) : tr("Uploading…")}</span>
-              <Button type="button" variant="ghost" size="icon-xs" aria-label={tr("Remove {name}", { name: f.name })} onClick={() => setFiles((fs) => fs.filter((x) => x.key !== f.key))}>
+              <Button type="button" variant="ghost" size="icon-xs" className="pointer-coarse:size-11" aria-label={tr("Remove {name}", { name: f.name })} onClick={() => setFiles((fs) => fs.filter((x) => x.key !== f.key))}>
                 <X />
               </Button>
             </li>
@@ -220,7 +220,7 @@ export function Composer({
           aria-controls={open ? list : undefined}
           aria-activedescendant={open ? `${list}-${active}` : undefined}
           rows={1}
-          className="max-h-40 min-h-(--control-h) flex-1 resize-none"
+          className="max-h-40 min-h-(--control-h) min-w-0 flex-1 resize-none"
         />
         <input
           ref={picker}

@@ -154,7 +154,7 @@ export function CalendarPage() {
     <div className="grid gap-3">
       <header className="flex flex-wrap items-center gap-2">
         <CalendarDays className="size-5 text-muted-foreground" aria-hidden="true" />
-        <h1 className="mr-2 text-lg font-semibold">{isolate(title)}</h1>
+        <h1 className="me-2 text-lg font-semibold">{isolate(title)}</h1>
         <Button variant="outline" size="icon-sm" aria-label={t("Previous {unit}", { unit })} onClick={() => step(-1)}>
           <ChevronLeft />
         </Button>
@@ -378,8 +378,8 @@ function WeekGrid({
                         borderLeftColor: color,
                       }}
                     >
-                      <span className="block truncate font-medium">{isolate(p.o.subject)}</span>
-                      <span className="block truncate text-muted-foreground tabular-nums">{isolate(timeOf(p.o.start))}</span>
+                      <span dir="auto" className="block truncate font-medium" title={p.o.subject}>{p.o.subject}</span>
+                      <span dir="auto" className="block truncate text-muted-foreground tabular-nums">{timeOf(p.o.start)}</span>
                     </button>
                   );
                 })}
@@ -408,15 +408,16 @@ function OccurrenceChip({ o, onOpen, large }: { o: Occurrence; onOpen: () => voi
       }}
       title={drag ? t("Drag to another day to move") : undefined}
       className={cn(
-        "flex w-full min-w-0 items-center gap-1.5 rounded px-1 text-left hover:bg-accent focus-visible:-outline-offset-2",
+        "flex w-full min-w-0 items-center gap-1.5 rounded px-1 text-start hover:bg-accent focus-visible:-outline-offset-2",
         large ? "border p-2 text-sm pointer-coarse:min-h-11" : "text-xs",
         drag && "cursor-grab active:cursor-grabbing",
         (cancelled || declined) && "text-muted-foreground line-through",
       )}
     >
       <span className="size-2 shrink-0 rounded-full" style={{ background: color }} aria-hidden="true" />
-      {!o.all_day && <span className="shrink-0 tabular-nums">{isolate(timeOf(o.start))}</span>}
-      <span className="min-w-0 truncate">{isolate(o.subject)}</span>
+      {!o.all_day && <span dir="auto" className="shrink-0 tabular-nums">{timeOf(o.start)}</span>}
+      {/* dir="auto": a left-to-right title in a right-to-left cell is cut at its end, not its start. */}
+      <span dir="auto" className="min-w-0 truncate text-start" title={o.subject}>{o.subject}</span>
     </button>
   );
 }
