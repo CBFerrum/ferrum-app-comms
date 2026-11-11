@@ -13,7 +13,7 @@ import { EmptyState, StatePanel, toast } from "@ferrum/kit";
 import { Button, Input, Label, Textarea } from "@ferrum/kit/primitives";
 import { useMe, usePeople } from "@ferrum/records";
 import { ChatBase, ChatPage } from "./Chat";
-import { Compose, MailUnavailable, useMailboxes } from "./Mail";
+import { Composer, MailUnavailable, useMailboxes } from "./Mail";
 import { CHAT, type ChannelSummary } from "./lib/chat";
 import { mailAccount, useMailSession } from "./lib/mail";
 import { CALENDAR, clashes, fromInput, parseGuests, stretch, suggestSlots, toInput, type BusyMap } from "./lib/calendar";
@@ -49,7 +49,8 @@ export function ComposeIntentPage() {
     .filter((a): a is { url: string; name: string } => typeof a.url === "string" && typeof a.name === "string")
     .slice(0, 20);
   return (
-    <Compose
+    <Composer
+      mode="page"
       account={account}
       me={session.data.accounts[account]?.name ?? session.data.username}
       boxes={boxes.data}
