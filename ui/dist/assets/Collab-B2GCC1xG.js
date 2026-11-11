@@ -1,1 +1,0 @@
-import"./index-ysrBDWtd.js";import{u as o}from"./useQuery-BGovyHmc.js";import{b as r}from"./meta-DeoPonfg.js";const i=()=>o({queryKey:["people"],queryFn:({signal:e})=>r.get("/api/users",void 0,e),staleTime:5*6e4});export{i as u};
