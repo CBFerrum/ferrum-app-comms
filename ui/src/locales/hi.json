@@ -530,6 +530,7 @@
   "Not an email address: {bad}. Fix it, or take it out, and send again.": "ईमेल पता नहीं: {bad}। इसे ठीक करें, या हटा दें, और फिर से भेजें।",
   "Not an email address: {value}": "ईमेल पता नहीं: {value}",
   "Not an email address: {value}. Fix it or take it out.": "ईमेल पता नहीं: {value}। इसे ठीक करें या हटा दें।",
+  "Not applied: the sender could not be verified.": "लागू नहीं हुआ: प्रेषक की पुष्टि नहीं हो सकी।",
   "Not applied: the sender is not on this event's guest list.": "लागू नहीं हुआ: प्रेषक इस इवेंट की अतिथि सूची में नहीं है।",
   "Not filed: {problem}": "दर्ज नहीं हुआ: {problem}",
   "Not saved to Drive: {e}": "Drive में सहेजा नहीं गया: {e}",
