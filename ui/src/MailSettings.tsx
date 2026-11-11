@@ -16,7 +16,8 @@ import { errorMessage, formatDateTime, t, isolate } from "@ferrum/client";
 import { can, useMetaIndex } from "@ferrum/records";
 import { confirmDialog, FormSkeleton, toast, placed } from "@ferrum/kit";
 import { Failure } from "./States";
-import { jmap } from "./lib/mail";
+import { readBlocked, writeBlocked } from "./lib/blocklist";
+import { byRole, jmap, type Mailbox } from "./lib/mail";
 
 interface Vacation {
   isEnabled: boolean;
@@ -32,7 +33,7 @@ interface AppPassword {
   createdAt?: string;
 }
 
-export function MailSettings({ account, me, servers, onClose }: { account: string; me: string; servers?: { imap: string; smtp: string }; onClose: () => void }) {
+export function MailSettings({ account, me, servers, boxes, onClose }: { account: string; me: string; servers?: { imap: string; smtp: string }; boxes: Mailbox[]; onClose: () => void }) {
   // Whoever manages Communication Settings can check the domain's records.
   const settings = useMetaIndex().data?.entities.find((e) => e.name === "CommsSettings");
   const manages = !!settings && can(settings.permissions, "write");
@@ -46,11 +47,15 @@ export function MailSettings({ account, me, servers, onClose }: { account: strin
         <Tabs defaultValue="vacation">
           <TabsList>
             <TabsTrigger value="vacation">{t("Vacation reply")}</TabsTrigger>
+            <TabsTrigger value="blocked">{t("Blocked senders")}</TabsTrigger>
             <TabsTrigger value="apps">{t("Mail programs")}</TabsTrigger>
             {manages && <TabsTrigger value="domain">{t("Domain")}</TabsTrigger>}
           </TabsList>
           <TabsContent value="vacation">
             <VacationForm account={account} />
+          </TabsContent>
+          <TabsContent value="blocked">
+            <BlockedSenders account={account} junkName={byRole(boxes, "junk")?.name ?? "Junk Mail"} />
           </TabsContent>
           <TabsContent value="apps">
             <AppPasswords account={account} me={me} servers={servers} />
@@ -222,3 +227,60 @@ function AppPasswords({ account, me, servers }: { account: string; me: string; s
   );
 }
 
+
+/** The addresses whose mail goes straight to Spam (one Sieve script that Mail owns), each removable. */
+function BlockedSenders({ account, junkName }: { account: string; junkName: string }) {
+  const qc = useQueryClient();
+  const key = ["mail", "blocked", account];
+  const state = useQuery({ queryKey: key, queryFn: () => readBlocked(account), retry: false });
+  const [address, setAddress] = useState("");
+  const [busy, setBusy] = useState(false);
+  const save = async (next: string[]) => {
+    if (!state.data) return;
+    setBusy(true);
+    try {
+      qc.setQueryData(key, await writeBlocked(account, next, junkName));
+    } catch (err) {
+      toast(t("The blocked list was not saved: {e}", { e: errorMessage(err) }), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const add = (e: FormEvent) => {
+    e.preventDefault();
+    const a = address.trim().toLowerCase();
+    if (!/^[^\s@<>(),;:"\\]+@[^\s@<>(),;:"\\]+\.[^\s@<>(),;:"\\]+$/.test(a)) return toast(t("That is not an email address."), "error");
+    setAddress("");
+    void save([...(state.data?.blocked ?? []), a]);
+  };
+  const s = state.data;
+  return (
+    <div className="grid gap-3 pt-2 text-sm">
+      <p className="text-muted-foreground">{t("Mail from these addresses goes to Spam instead of the inbox. Block someone from a message's menu, or add an address here.")}</p>
+      {s?.otherActive && (
+        <p role="status" className="rounded-md border bg-warning-soft px-3 py-2">
+          {t("The list is kept, but it cannot work: your mailbox runs another filter script (“{name}”), and only one can be active.", { name: s.otherActive })}
+        </p>
+      )}
+      <form onSubmit={add} className="flex gap-2">
+        <Input type="email" aria-label={t("Address to block")} placeholder={t("name@example.com")} value={address} onChange={(e) => setAddress(e.target.value)} />
+        <Button type="submit" disabled={!address.trim() || busy || !s}>
+          {t("Block")}
+        </Button>
+      </form>
+      {state.isLoading && <Skeleton className="h-(--control-h)" />}
+      {!!state.error && <Failure error={state.error} onRetry={() => void state.refetch()} title={t("The blocked list could not be read")} />}
+      <ul className="grid gap-1" aria-label={t("Blocked senders")}>
+        {s?.blocked.map((a) => (
+          <li key={a} className="flex items-center gap-2 rounded-md border px-3 py-1.5">
+            <span className="min-w-0 flex-1 truncate">{isolate(a)}</span>
+            <Button variant="ghost" size="xs" disabled={busy} onClick={() => void save(s.blocked.filter((x) => x !== a))}>
+              {t("Unblock")}
+            </Button>
+          </li>
+        ))}
+        {s && !s.blocked.length && <li className="text-muted-foreground">{t("Nobody is blocked.")}</li>}
+      </ul>
+    </div>
+  );
+}
