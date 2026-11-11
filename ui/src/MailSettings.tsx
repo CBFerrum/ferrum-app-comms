@@ -17,8 +17,14 @@ import { can, useMetaIndex } from "@ferrum/records";
 import { confirmDialog, FormSkeleton, toast, placed } from "@ferrum/kit";
 import { Failure } from "./States";
 import { readBlocked, writeBlocked } from "./lib/blocklist";
-import { byRole, jmap, refusal, type Mailbox } from "./lib/mail";
-import { fromEditor, htmlToText, saveWritePrefs, UNDO_CHOICES, writePrefs } from "./lib/compose";
+import { jmap, refusal, type Mailbox } from "./lib/mail";
+import { fromEditor, htmlToText, UNDO_CHOICES } from "./lib/compose";
+import { afterVacation, vacationOn } from "./lib/mailData";
+import type { Prefs } from "./lib/filters";
+import { prefsOf, useChangeMailData, useMailData } from "./MailData";
+import { FiltersSettings } from "./MailFilters";
+import { MailTransfer } from "./MailTransfer";
+import { MailAdmin } from "./MailAdmin";
 import { signatureOf, useIdentities, useTemplates } from "./MailCompose";
 import type { EditorHandle } from "./MailEditor";
 
@@ -38,7 +44,7 @@ interface AppPassword {
   createdAt?: string;
 }
 
-export function MailSettings({ account, me, servers, boxes, onClose }: { account: string; me: string; servers?: { imap: string; smtp: string }; boxes: Mailbox[]; onClose: () => void }) {
+export function MailSettings({ account, me, servers, boxes, own, tab, folder, onClose }: { account: string; me: string; servers?: { imap: string; smtp: string }; boxes: Mailbox[]; own: string[]; tab?: string; folder?: Mailbox; onClose: () => void }) {
   // Whoever manages Communication Settings can check the domain's records.
   const settings = useMetaIndex().data?.entities.find((e) => e.name === "CommsSettings");
   const manages = !!settings && can(settings.permissions, "write");
@@ -49,22 +55,34 @@ export function MailSettings({ account, me, servers, boxes, onClose }: { account
           <DialogTitle>{t("Mail settings")}</DialogTitle>
           <DialogDescription>{isolate(me)}</DialogDescription>
         </DialogHeader>
-        <Tabs defaultValue="writing" className="min-w-0">
+        <Tabs defaultValue={tab ?? "general"} className="min-w-0">
           <TabsList className="max-w-full justify-start overflow-x-auto">
+            <TabsTrigger value="general">{t("General")}</TabsTrigger>
             <TabsTrigger value="writing">{t("Writing")}</TabsTrigger>
+            <TabsTrigger value="filters">{t("Filters")}</TabsTrigger>
             <TabsTrigger value="vacation">{t("Vacation reply")}</TabsTrigger>
             <TabsTrigger value="blocked">{t("Blocked senders")}</TabsTrigger>
+            <TabsTrigger value="transfer">{t("Import and export")}</TabsTrigger>
             <TabsTrigger value="apps">{t("Mail programs")}</TabsTrigger>
-            {manages && <TabsTrigger value="domain">{t("Domain")}</TabsTrigger>}
+            {manages && <TabsTrigger value="domain">{t("Administration")}</TabsTrigger>}
           </TabsList>
+          <TabsContent value="general">
+            <GeneralSettings account={account} boxes={boxes} />
+          </TabsContent>
+          <TabsContent value="filters">
+            <FiltersSettings account={account} boxes={boxes} own={own} />
+          </TabsContent>
+          <TabsContent value="transfer">
+            <MailTransfer account={account} boxes={boxes} folder={folder} />
+          </TabsContent>
           <TabsContent value="writing">
             <WritingSettings account={account} boxes={boxes} />
           </TabsContent>
           <TabsContent value="vacation">
-            <VacationForm account={account} />
+            <VacationForm account={account} boxes={boxes} />
           </TabsContent>
           <TabsContent value="blocked">
-            <BlockedSenders account={account} junkName={byRole(boxes, "junk")?.name ?? "Junk Mail"} />
+            <BlockedSenders account={account} boxes={boxes} />
           </TabsContent>
           <TabsContent value="apps">
             <AppPasswords account={account} me={me} servers={servers} />
@@ -78,6 +96,7 @@ export function MailSettings({ account, me, servers, boxes, onClose }: { account
                 <Button asChild className="justify-self-start" onClick={onClose}>
                   <Link to="/mail/domain">{t("Check the mail domain")}</Link>
                 </Button>
+                <MailAdmin />
               </div>
             </TabsContent>
           )}
@@ -87,19 +106,78 @@ export function MailSettings({ account, me, servers, boxes, onClose }: { account
   );
 }
 
+/** How Mail looks and behaves for the person: kept on the mail server with the rest of Mail's data. */
+function GeneralSettings({ account, boxes }: { account: string; boxes: Mailbox[] }) {
+  const data = useMailData(account, boxes).data?.data;
+  const prefs = prefsOf(data);
+  const change = useChangeMailData(account, boxes);
+  const set = (p: Prefs) => void change((d) => ({ ...d, prefs: { ...d.prefs, ...p } }));
+  const [permission, setPermission] = useState(() => (typeof Notification === "undefined" ? "unsupported" : Notification.permission));
+  const choice = <K extends keyof Prefs>(k: K, label: string, options: [NonNullable<Prefs[K]>, string][]) => (
+    <fieldset className="grid gap-1">
+      <legend className="text-sm font-semibold">{label}</legend>
+      <div className="flex flex-wrap gap-x-4 gap-y-1">
+        {options.map(([v, l]) => (
+          <label key={String(v)} className="flex items-center gap-1.5 text-sm">
+            <input type="radio" name={`pref-${k}`} checked={prefs[k] === v} disabled={!data} onChange={() => set({ [k]: v } as Prefs)} /> {l}
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+  const toggle = (k: "conversations" | "shortcuts" | "sendArchive", label: string, hint?: string) => (
+    <label className="flex items-start gap-2 text-sm">
+      <input type="checkbox" className="mt-1" checked={!!prefs[k]} disabled={!data} onChange={(e) => set({ [k]: e.target.checked })} />
+      <span>
+        {label}
+        {hint && <span className="block text-xs text-muted-foreground">{hint}</span>}
+      </span>
+    </label>
+  );
+  return (
+    <div className="grid gap-4 pt-2">
+      {choice("replyDefault", t("Default reply"), [["reply", t("Reply")], ["replyAll", t("Reply all")]])}
+      {toggle("conversations", t("Conversation view"), t("Messages of one conversation are one line in the list."))}
+      {choice("density", t("Density"), [["comfortable", t("Comfortable")], ["compact", t("Compact")]])}
+      {choice("pane", t("Reading pane"), [["right", t("Beside the list")], ["below", t("Below the list")], ["off", t("Off: a conversation opens over the list")]])}
+      {toggle("shortcuts", t("Keyboard shortcuts"), t("Single keys such as e to archive and # to delete. Turn them off if you type into the page by accident."))}
+      {toggle("sendArchive", t("Send and archive"), t("Sending a reply also archives the conversation."))}
+      {choice("notify", t("Notify me about new mail"), [["all", t("All new mail in the inbox")], ["people", t("Only from people I have written to")], ["none", t("Nothing")]])}
+      <div className="grid gap-1 text-sm">
+        <span className="font-semibold">{t("Desktop notifications")}</span>
+        {permission === "granted" ? (
+          <p className="text-muted-foreground">{t("On in this browser. New mail shows a notification while Mail is open in a tab, even in the background.")}</p>
+        ) : permission === "denied" ? (
+          <p className="text-muted-foreground">{t("This browser blocks them for this site. Allow them in the browser's site settings to get them.")}</p>
+        ) : permission === "unsupported" ? (
+          <p className="text-muted-foreground">{t("This browser cannot show them.")}</p>
+        ) : (
+          <Button size="sm" variant="outline" className="justify-self-start" onClick={() => void Notification.requestPermission().then(setPermission)}>
+            {t("Turn on desktop notifications")}
+          </Button>
+        )}
+        <p className="text-xs text-muted-foreground">{t("Mail notices new mail while it is open in a tab. When no tab is open, nothing notifies you yet.")}</p>
+      </div>
+    </div>
+  );
+}
+
 /** The day a moment falls on, on the person's clock (the form edits days; the server keeps moments). */
 const day = (v: string | null) => (!v ? "" : /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : toZonedInput(v).slice(0, 10));
 
-function VacationForm({ account }: { account: string }) {
+function VacationForm({ account, boxes }: { account: string; boxes: Mailbox[] }) {
   const q = useQuery({
     queryKey: ["mail", "vacation", account],
     queryFn: async () => ((await jmap([["VacationResponse/get", { accountId: account, ids: ["singleton"] }, "0"]]))["0"].list as Vacation[])[0],
   });
+  // While filters run, the reply runs from Mail's script and the server's own flag reads off: on is on either way.
+  const ours = useMailData(account, boxes);
+  const qc = useQueryClient();
   const [form, setForm] = useState<Vacation | null>(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
-    if (q.data && !form) setForm(q.data);
-  }, [q.data, form]);
+    if (q.data && ours.data && !form) setForm({ ...q.data, isEnabled: vacationOn(ours.data, q.data.isEnabled) });
+  }, [q.data, ours.data, form]);
   if (q.error) return <Failure error={q.error} onRetry={() => void q.refetch()} />;
   if (!form) return <FormSkeleton fields={4} />;
   const save = async (e: FormEvent) => {
@@ -117,6 +195,9 @@ function VacationForm({ account }: { account: string }) {
       const r = await jmap([["VacationResponse/set", { accountId: account, update: { singleton: patch } }, "0"]]);
       const failed = (r["0"].notUpdated as Record<string, { description?: string }> | undefined)?.singleton;
       if (failed) throw new Error(failed.description ?? t("The mail server refused the change."));
+      // The server runs one script at a time: with filters, the reply runs from Mail's script.
+      await afterVacation(account, boxes, form.isEnabled);
+      void qc.invalidateQueries({ queryKey: ["mail", "data", account] });
       toast(form.isEnabled ? t("Your vacation reply is on.") : t("Your vacation reply is off."));
     } catch (err) {
       toast(errorMessage(err), "error");
@@ -240,7 +321,7 @@ function AppPasswords({ account, me, servers }: { account: string; me: string; s
 
 
 /** The addresses whose mail goes straight to Spam (one Sieve script that Mail owns), each removable. */
-function BlockedSenders({ account, junkName }: { account: string; junkName: string }) {
+function BlockedSenders({ account, boxes }: { account: string; boxes: Mailbox[] }) {
   const qc = useQueryClient();
   const key = ["mail", "blocked", account];
   const state = useQuery({ queryKey: key, queryFn: () => readBlocked(account), retry: false });
@@ -250,7 +331,7 @@ function BlockedSenders({ account, junkName }: { account: string; junkName: stri
     if (!state.data) return;
     setBusy(true);
     try {
-      qc.setQueryData(key, await writeBlocked(account, next, junkName));
+      qc.setQueryData(key, await writeBlocked(account, next, boxes));
     } catch (err) {
       toast(t("The blocked list was not saved: {e}", { e: errorMessage(err) }), "error");
     } finally {
@@ -299,11 +380,10 @@ function BlockedSenders({ account, junkName }: { account: string; junkName: stri
 /** How sending behaves, the signature of each address the person writes as, and their templates. */
 function WritingSettings({ account, boxes }: { account: string; boxes: Mailbox[] }) {
   const qc = useQueryClient();
-  const [prefs, setPrefs] = useState(() => writePrefs(account));
-  const set = (p: typeof prefs) => {
-    setPrefs(p);
-    saveWritePrefs(account, p);
-  };
+  const data = useMailData(account, boxes).data?.data;
+  const prefs = prefsOf(data);
+  const change = useChangeMailData(account, boxes);
+  const set = (p: Prefs) => void change((d) => ({ ...d, prefs: { ...d.prefs, ...p } }));
   const identities = useIdentities(account);
   const templates = useTemplates(account, boxes);
   const remove = async (id: string, subject: string) => {
@@ -320,19 +400,19 @@ function WritingSettings({ account, boxes }: { account: string; boxes: Mailbox[]
       <section className="grid gap-1.5" aria-labelledby="set-undo">
         <h3 id="set-undo" className="text-sm font-semibold">{t("Undo send")}</h3>
         <p className="text-sm text-muted-foreground">{t("The mail server holds a sent message this long, so Undo can call it back, even if you close the page.")}</p>
-        <select aria-labelledby="set-undo" className="h-(--control-h) w-48 rounded-md border border-input bg-card px-2 text-sm" value={prefs.undoSeconds} onChange={(e) => set({ ...prefs, undoSeconds: Number(e.target.value) })}>
+        <select aria-labelledby="set-undo" className="h-(--control-h) w-48 rounded-md border border-input bg-card px-2 text-sm" value={prefs.undoSeconds} disabled={!data} onChange={(e) => set({ undoSeconds: Number(e.target.value) })}>
           {UNDO_CHOICES.map((n) => (
             <option key={n} value={n}>
               {n ? t("{n} seconds", { n }) : t("Off")}
             </option>
           ))}
         </select>
-        <p className="text-xs text-muted-foreground">{t("Kept in this browser.")}</p>
+        <p className="text-xs text-muted-foreground">{t("Kept on the mail server with your Mail settings, so it follows you to any browser.")}</p>
       </section>
       <section className="grid gap-2" aria-labelledby="set-sig">
         <h3 id="set-sig" className="text-sm font-semibold">{t("Signature")}</h3>
         <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={prefs.signatureInReplies} onChange={(e) => set({ ...prefs, signatureInReplies: e.target.checked })} />
+          <input type="checkbox" checked={prefs.signatureInReplies} disabled={!data} onChange={(e) => set({ signatureInReplies: e.target.checked })} />
           {t("Add it to replies and forwards too, above the quoted message")}
         </label>
         {identities.error ? <Failure error={identities.error} onRetry={() => void identities.refetch()} /> : !identities.data ? <Skeleton className="h-24" /> : identities.data.map((i) => <SignatureEditor key={i.id} account={account} identity={i} />)}
@@ -366,6 +446,23 @@ function SignatureEditor({ account, identity }: { account: string; identity: { i
   const editor = useRef<EditorHandle>(null);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Pictures go in the signature itself (it is kept on the identity), small ones only; they become parts of each message sent.
+  const addPictures = async (files: File[]) => {
+    for (const f of files) {
+      if (!/^image\/(png|jpeg|gif|webp)$/.test(f.type)) toast(t("Only PNG, JPEG, GIF and WebP pictures can go into a signature."), "error");
+      else if (f.size > 200 * 1024) toast(t("“{name}” is too large for a signature: at most 200 KB.", { name: f.name }), "error");
+      else {
+        const src = await new Promise<string>((ok, no) => {
+          const r = new FileReader();
+          r.onload = () => ok(String(r.result));
+          r.onerror = () => no(r.error);
+          r.readAsDataURL(f);
+        });
+        editor.current?.insertImage({ src, name: f.name, upload: "" });
+        setDirty(true);
+      }
+    }
+  };
   const save = async () => {
     const raw = editor.current?.html() ?? "";
     const empty = !htmlToText(raw).trim();
@@ -389,7 +486,7 @@ function SignatureEditor({ account, identity }: { account: string; identity: { i
       <span className="text-sm">{isolate(identity.name ? `${identity.name} <${identity.email}>` : identity.email)}</span>
       <div className="h-40 overflow-hidden rounded-md border">
         <Suspense fallback={<Skeleton className="h-full" />}>
-          <MailEditor ref={editor} initial={signatureOf(identity as never)} label={t("Signature for {address}", { address: identity.email })} placeholder={t("Your name, role, phone")} onChange={() => setDirty(true)} onFiles={() => toast(t("Pictures cannot go into a signature yet."), "info")} onSend={() => void save()} />
+          <MailEditor ref={editor} initial={signatureOf(identity as never)} label={t("Signature for {address}", { address: identity.email })} placeholder={t("Your name, role, phone")} onChange={() => setDirty(true)} onFiles={(files) => void addPictures(files)} onSend={() => void save()} />
         </Suspense>
       </div>
       <Button size="sm" className="justify-self-end" disabled={!dirty || busy} onClick={() => void save()}>

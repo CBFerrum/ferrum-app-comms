@@ -106,7 +106,7 @@ describe("keyboard", () => {
     expect([keyAction({ key: "r", ctrlKey: true }), keyAction({ key: "r", metaKey: true }), keyAction({ key: "a", altKey: true })]).toEqual([null, null, null]);
     expect(SHORTCUTS.every((s) => s.keys.length > 0)).toBe(true);
     // Every shortcut listed is one a key reaches.
-    expect(SHORTCUTS.map((s) => s.action).sort()).toEqual([...new Set(Object.values({ j: "next", k: "previous", o: "open", u: "back", r: "reply", a: "replyAll", f: "forward", e: "archive", "#": "delete", "!": "spam", U: "unread", I: "read", x: "select", v: "move", z: "undo", s: "star", c: "compose", "/": "search", "?": "help" }))].sort());
+    expect(SHORTCUTS.map((s) => s.action).sort()).toEqual([...new Set(Object.values({ j: "next", k: "previous", o: "open", u: "back", r: "reply", a: "replyAll", f: "forward", e: "archive", "#": "delete", "!": "spam", U: "unread", I: "read", x: "select", v: "move", l: "label", z: "undo", s: "star", c: "compose", "/": "search", "?": "help" }))].sort());
   });
 
   it("stays out of the way of typing, menus and dialogs", () => {

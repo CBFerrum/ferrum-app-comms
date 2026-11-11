@@ -359,6 +359,14 @@ export function newCid(): string {
 
 const nameAddress = (a: Address) => (a.name ? `<strong>${escapeHtml(a.name)}</strong> &lt;${escapeHtml(a.email)}&gt;` : escapeHtml(a.email));
 
+/** The quote as the editor takes it when "…" is opened: the line breaks that space it out in the sent mail (before it, at the end of
+ *  "On … wrote:", after a forward's header) are paragraphs of their own in the editor, so they go; the words stay as they were. */
+export function quoteForEditor(q: string): string {
+  return q
+    .replace(/^(\s*<br\s*\/?>)+/i, "")
+    .replace(/(<div dir="auto" class="gmail_attr">[\s\S]*?)<br\s*\/?>\s*<\/div>(\s*<br\s*\/?>)?/i, "$1</div>");
+}
+
 /** The original under an answer: "On …, Priya Nair wrote:" and its words in a quote; a forward's
  *  header block and its words as they were. `when` is already in the person's zone and language. */
 export function quoteHtml(kind: "reply" | "forward", original: { from?: Address[] | null; to?: Address[] | null; cc?: Address[] | null; subject?: string | null }, when: string, html: string): string {
@@ -561,24 +569,36 @@ export interface WritePrefs {
 
 const PREFS = "ferrum.mail.write.";
 
-/** Kept in this browser per mailbox (the mail server has nowhere for them). */
+/** What the server keeps for the person (Mail's script, lib/filters.ts), once read: wins over the browser's old copy. */
+const server: Record<string, { undoSeconds?: number; signatureInReplies?: boolean }> = {};
+export const setServerWritePrefs = (account: string, p: { undoSeconds?: number; signatureInReplies?: boolean }) => void (server[account] = p);
+
+/** The choices for writing: the server's, else what wave 2 kept in this browser, else the defaults. */
 export function writePrefs(account: string): WritePrefs {
+  const kept = legacyWritePrefs(account) ?? {};
+  const s = server[account] ?? {};
+  const undo = s.undoSeconds ?? kept.undoSeconds;
+  return {
+    undoSeconds: (UNDO_CHOICES as readonly number[]).includes(undo ?? -1) ? undo! : UNDO_DEFAULT,
+    signatureInReplies: s.signatureInReplies ?? kept.signatureInReplies ?? true,
+  };
+}
+
+/** What wave 2 kept in this browser (moved to the server once, then dropped here). */
+export function legacyWritePrefs(account: string): Partial<WritePrefs> | null {
   try {
-    const raw = JSON.parse(localStorage.getItem(PREFS + account) ?? "{}") as Partial<WritePrefs>;
-    return {
-      undoSeconds: (UNDO_CHOICES as readonly number[]).includes(raw.undoSeconds ?? -1) ? raw.undoSeconds! : UNDO_DEFAULT,
-      signatureInReplies: raw.signatureInReplies ?? true,
-    };
+    const raw = localStorage.getItem(PREFS + account);
+    return raw ? (JSON.parse(raw) as Partial<WritePrefs>) : null;
   } catch {
-    return { undoSeconds: UNDO_DEFAULT, signatureInReplies: true };
+    return null;
   }
 }
 
-export function saveWritePrefs(account: string, p: WritePrefs): void {
+export function dropLegacyWritePrefs(account: string): void {
   try {
-    localStorage.setItem(PREFS + account, JSON.stringify(p));
+    localStorage.removeItem(PREFS + account);
   } catch {
-    // Not kept: the defaults apply next time.
+    // nothing kept
   }
 }
 

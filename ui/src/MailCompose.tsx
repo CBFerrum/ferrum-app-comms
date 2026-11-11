@@ -44,6 +44,7 @@ import {
   mentionsAttachment,
   newCid,
   quoteHtml,
+  quoteForEditor,
   recentRecipients,
   richOf,
   schedulePresets,
@@ -733,7 +734,7 @@ export function Composer({
           onClick={() => {
             if (w.plain) setW((x) => ({ ...x, text: `${x.text}\n\n${htmlToText(x.quote ?? "")}`, quote: null }));
             else {
-              editor.current?.append(w.quote ?? "");
+              editor.current?.append(quoteForEditor(w.quote ?? ""));
               setW((x) => ({ ...x, quote: null }));
             }
           }}

@@ -5,14 +5,22 @@
 // mail server says about a message (failed checks, why it is spam, an invitation) is in MailSafety.
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, ChevronDown, ChevronRight, FileInput, Forward, Paperclip, Reply, ReplyAll } from "lucide-react";
+import { AlarmClock, ArrowLeft, ChevronDown, ChevronRight, FileInput, Forward, Paperclip, Printer, Reply, ReplyAll } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Label, Skeleton } from "@ferrum/kit/primitives";
+import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, Input, Label, Skeleton } from "@ferrum/kit/primitives";
 import { can, LinkInput, useMetaIndex } from "@ferrum/records";
-import { api, download, errorMessage, formatDateTime, t as tr, isolate } from "@ferrum/client";
+import { api, errorMessage, formatDateTime, formatMoment, fromZonedInput, t as tr, isolate, toZonedInput } from "@ferrum/client";
 import { cn, confirmDialog, ReaderSkeleton, toast } from "@ferrum/kit";
 import { Failure } from "./States";
 import { useMailActions } from "./MailActions";
+import { prefsOf, useMailData } from "./MailData";
+import { FilterDialog } from "./MailFilters";
+import { AlsoFileMenu, FolderChips } from "./MailLabels";
+import { AttachmentList, OriginalDialog, printMessages } from "./MailTools";
+import { ensureFolder } from "./MailActions";
+import { ruleFromSender, type Rule } from "./lib/filters";
+import { SNOOZED_NAME, isSnoozed } from "./lib/folders";
+import { snoozeChoices, wakeKeys, wakeKeyword, wakeOf } from "./lib/watch";
 import { Composer, loadDraft } from "./MailCompose";
 import { InviteAnswer, ReplyCard } from "./MailInvite";
 import { ExternalMark, ImagesBar, InviteCard, MessageMenu, WarningBanner, WhySpam, useExtras } from "./MailSafety";
@@ -34,7 +42,6 @@ import {
   jmap,
   keyAction,
   messagesIn,
-  sizeLabel,
   type Draft,
   type EmailSummary,
   type Mailbox,
@@ -53,7 +60,7 @@ function useMessage(account: string, id: string | undefined, images = false) {
   });
 }
 
-export function Conversation(p: { account: string; id: string; me: string; boxes: Mailbox[]; folder: string | undefined; domains: string[]; onBack: () => void; onDraft: (d: Draft) => void }) {
+export function Conversation(p: { account: string; id: string; me: string; own: string[]; boxes: Mailbox[]; folder: string | undefined; domains: string[]; onBack: () => void; onDraft: (d: Draft) => void }) {
   const qc = useQueryClient();
   const actions = useMailActions(p.account, p.boxes);
   const thread = useQuery({
@@ -78,6 +85,12 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
   const target = [...messages].reverse().find((m) => !m.keywords?.$draft);
   const answerable = useMessage(p.account, target?.id);
   const comms = useMetaIndex().data?.entities.find((e) => e.name === "Communication");
+  const mailData = useMailData(p.account, p.boxes).data?.data;
+  const prefs = prefsOf(mailData);
+  const [labelOpen, setLabelOpen] = useState(false);
+  const [filtering, setFiltering] = useState<Rule | null>(null);
+  const [original, setOriginal] = useState<string | null>(null);
+  const [picking, setPicking] = useState(false);
   const [folded, setFolded] = useState<Record<string, boolean>>({});
   const [first, setFirst] = useState<string[] | null>(null);
   const [filing, setFiling] = useState(false);
@@ -132,6 +145,29 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
     requestAnimationFrame(() => answerAt.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
   };
   const reply = (kind: "reply" | "replyAll" | "forward") => answerable.data && answerTo({ kind, original: answerable.data });
+  const all = messages.map((m) => m.id);
+  /** Adds a folder to the whole conversation (Gmail's label): it stays where it is too. */
+  const fileUnder = (b: Mailbox) => void actions.patch(all, () => ({ [`mailboxIds/${b.id}`]: true }), tr("Also filed under {folder}", { folder: folderName(b) }));
+  /** Takes the conversation out of one of its folders (never out of its last). */
+  const unfile = (b: Mailbox) =>
+    void actions.patch(all, (s) => (s.mailboxIds?.[b.id] && Object.keys(s.mailboxIds).length > 1 ? { [`mailboxIds/${b.id}`]: null } : null), tr("Taken out of {folder}", { folder: folderName(b) }));
+  const inSnoozed = here ? isSnoozed(here) : false;
+  const wake = wakeOf(newest?.keywords);
+  const snooze = async (at: Date) => {
+    if (at.getTime() <= Date.now()) return toast(tr("Pick a time in the future."), "error");
+    try {
+      const box = await ensureFolder(p.account, p.boxes, SNOOZED_NAME);
+      const ok = await actions.patch(all, (s) => ({ mailboxIds: { [box.id]: true }, keywords: { ...Object.fromEntries(Object.entries(s.keywords ?? {}).filter(([k]) => !wakeKeys({ [k]: true }).length)), [wakeKeyword(at)]: true } }), tr("Snoozed until {when}", { when: formatMoment(at.toISOString(), { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) }));
+      if (ok) p.onBack();
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    }
+  };
+  const unsnooze = () => {
+    const inbox = role("inbox");
+    if (!inbox || !here) return;
+    void actions.patch(all, (s) => ({ [`mailboxIds/${here.id}`]: null, [`mailboxIds/${inbox.id}`]: true, ...Object.fromEntries(wakeKeys(s.keywords).map((k) => [`keywords/${k}`, null])) }), tr("Back in the inbox")).then((ok) => ok && p.onBack());
+  };
 
   // The keys of the list work on the conversation too (not while typing, or in a dialog).
   const keys = useRef<(k: NonNullable<ReturnType<typeof keyAction>>) => void>(() => undefined);
@@ -145,13 +181,14 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
     else if (k === "read") void verb("read");
     else if (k === "star") void verb(starred ? "unstar" : "star");
     else if (k === "move") o.move && setMoveOpen(true);
+    else if (k === "label") setLabelOpen(true);
     else if (k === "back") p.onBack();
   };
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
       const k = keyAction(e);
       if (!k || busyWith(e.target as HTMLElement | null, e.key)) return;
-      if (["reply", "replyAll", "forward", "archive", "delete", "spam", "unread", "read", "star", "back", "move"].includes(k)) {
+      if (["reply", "replyAll", "forward", "archive", "delete", "spam", "unread", "read", "star", "back", "move", "label"].includes(k)) {
         e.preventDefault();
         keys.current(k);
       }
@@ -165,6 +202,7 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
   if (!newest) return <Failure title={tr("That message is not here any more")} error={new Error(tr("It may have been moved or deleted."))} onRetry={p.onBack} />;
   const subject = latest.data?.subject ?? newest.subject;
   const single = messages.length === 1 && !answer;
+  const canChange = p.boxes.length > 0;
   const draftOpen = !!role("drafts") && !!newest.mailboxIds[role("drafts")!.id];
   const junkId = role("junk")?.id;
   return (
@@ -173,12 +211,17 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
         <Button variant="ghost" size="icon-sm" aria-label={tr("Back to the list")} title={tr("Back to the list (u)")} onClick={p.onBack}>
           <ArrowLeft />
         </Button>
-        <Button variant="ghost" size="sm" disabled={!answerable.data} onClick={() => reply("reply")} title={tr("Reply (r)")}>
-          <Reply aria-hidden="true" /> {tr("Reply")}
-        </Button>
-        <Button variant="ghost" size="sm" disabled={!answerable.data} onClick={() => reply("replyAll")} title={tr("Reply to all (a)")}>
-          <ReplyAll aria-hidden="true" /> {tr("Reply all")}
-        </Button>
+        {(prefs.replyDefault === "replyAll" ? (["replyAll", "reply"] as const) : (["reply", "replyAll"] as const)).map((k) =>
+          k === "reply" ? (
+            <Button key={k} variant="ghost" size="sm" disabled={!answerable.data} onClick={() => reply("reply")} title={tr("Reply (r)")}>
+              <Reply aria-hidden="true" /> {tr("Reply")}
+            </Button>
+          ) : (
+            <Button key={k} variant="ghost" size="sm" disabled={!answerable.data} onClick={() => reply("replyAll")} title={tr("Reply to all (a)")}>
+              <ReplyAll aria-hidden="true" /> {tr("Reply all")}
+            </Button>
+          ),
+        )}
         <Button variant="ghost" size="sm" disabled={!answerable.data} onClick={() => reply("forward")} title={tr("Forward (f)")}>
           <Forward aria-hidden="true" /> {tr("Forward")}
         </Button>
@@ -195,6 +238,32 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
           moveOpen={moveOpen}
           onMoveOpen={setMoveOpen}
         >
+          {canChange && (
+            <AlsoFileMenu boxes={p.boxes} inIds={Object.assign({}, ...messages.map((m) => m.mailboxIds))} onPick={fileUnder} open={labelOpen} onOpenChange={setLabelOpen} />
+          )}
+          {canChange && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon-sm" aria-label={tr("Snooze")} title={tr("Snooze")}>
+                  <AlarmClock />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {inSnoozed && <DropdownMenuItem onSelect={unsnooze}>{tr("Unsnooze: back to the inbox now")}</DropdownMenuItem>}
+                {snoozeChoices(new Date(), toZonedInput, fromZonedInput).map((c) => (
+                  <DropdownMenuItem key={c.id} onSelect={() => void snooze(c.at)}>
+                    <span className="flex-1">{c.id === "later" ? tr("Later today") : c.id === "tomorrow" ? tr("Tomorrow") : tr("Next week")}</span>
+                    <span className="text-xs text-muted-foreground">{isolate(formatMoment(c.at.toISOString(), { weekday: "short", hour: "numeric", minute: "2-digit" }))}</span>
+                  </DropdownMenuItem>
+                ))}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => setPicking(true)}>{tr("Pick a date and time…")}</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+          <Button variant="ghost" size="icon-sm" aria-label={tr("Print the conversation")} title={tr("Print the conversation")} onClick={() => void printMessages(p.account, messages.filter((m) => !m.keywords?.$draft).map((m) => m.id), subject ?? "")}>
+            <Printer />
+          </Button>
           {comms && can(comms.permissions, "create") && latest.data && (
             <Button variant="ghost" size="icon-sm" aria-label={tr("File to a record")} title={tr("File to a record")} onClick={() => setFiling(true)}>
               <FileInput />
@@ -204,6 +273,14 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
       </header>
       <div className="border-b px-4 py-2">
         <h2 className="text-lg font-semibold break-words">{subject || tr("(no subject)")}</h2>
+        <div className="flex flex-wrap items-center gap-1 empty:hidden">
+          <FolderChips mailboxIds={Object.assign({}, ...messages.map((m) => m.mailboxIds))} boxes={p.boxes} hide={p.folder} colors={mailData?.colors ?? {}} onRemove={canChange ? unfile : undefined} />
+        </div>
+        {inSnoozed && wake && (
+          <p className="text-xs text-muted-foreground">
+            {tr("Snoozed until {when}. It comes back to the inbox, unread, when Mail is next open at or after that time.", { when: formatDateTime(wake.toISOString()) })}
+          </p>
+        )}
         {!single && <p className="text-xs text-muted-foreground">{isolate(messagesIn(messages.length))} {tr("in this conversation")}</p>}
         {draftOpen && latest.data && (
           <Button size="sm" variant="outline" className="mt-1" onClick={() => void loadDraft(p.account, newest.id).then(p.onDraft, (e: unknown) => toast(errorMessage(e), "error"))}>
@@ -223,11 +300,13 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
             me={p.me}
             domains={p.domains}
             inSpam={!!junkId && !!m.mailboxIds[junkId]}
-            junkName={role("junk")?.name ?? "Junk Mail"}
             onVerb={(v) => void verb(v)}
             onDraft={p.onDraft}
             onAnswer={answerTo}
             boxes={p.boxes}
+            onFilter={(email) => setFiltering(ruleFromSender(email))}
+            onOriginal={() => setOriginal(m.id)}
+            onPrint={() => void printMessages(p.account, [m.id], m.subject ?? "")}
           />
         ))}
         {answer && (
@@ -240,6 +319,7 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
               boxes={p.boxes}
               draft={answer}
               onClose={() => setAnswer(null)}
+              onSent={() => prefs.sendArchive && answer.kind !== "forward" && offered(folderRole).archive && void verb("archive")}
               onPopOut={(d) => (setAnswer(null), p.onDraft(d))}
               open={p.onDraft}
             />
@@ -247,6 +327,9 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
         )}
       </div>
       {filing && latest.data && <FileDialog account={p.account} email={latest.data} onClose={() => setFiling(false)} />}
+      {filtering && <FilterDialog account={p.account} boxes={p.boxes} own={p.own} rule={filtering} onClose={() => setFiltering(null)} />}
+      {original && <OriginalDialog account={p.account} emailId={original} onClose={() => setOriginal(null)} />}
+      {picking && <SnoozeAt onPick={(at) => (setPicking(false), void snooze(at))} onClose={() => setPicking(false)} />}
     </article>
   );
 }
@@ -255,7 +338,7 @@ export function Conversation(p: { account: string; id: string; me: string; boxes
 function PlainText({ text }: { text: string }) {
   const parts = text.split(/(https?:\/\/[^\s<>"')]+)/g);
   return (
-    <div className="text-sm leading-relaxed break-words whitespace-pre-wrap">
+    <div dir="auto" className="text-sm leading-relaxed break-words whitespace-pre-wrap">
       {parts.map((s, i) =>
         i % 2 ? (
           <a key={i} href={s} target="_blank" rel="noopener noreferrer" className="text-primary underline underline-offset-2">
@@ -270,7 +353,7 @@ function PlainText({ text }: { text: string }) {
 }
 
 /** One message of the conversation: a line when folded, the whole message when open. */
-function Card({ account, summary, open, fill, onToggle, me, domains, inSpam, junkName, onVerb, onDraft, onAnswer, boxes }: { account: string; summary: EmailSummary; open: boolean; fill: boolean; onToggle: () => void; me: string; domains: string[]; inSpam: boolean; junkName: string; onVerb: (v: Verb) => void; onDraft: (d: Draft) => void; onAnswer: (d: Draft) => void; boxes: Mailbox[] }) {
+function Card({ account, summary, open, fill, onToggle, me, domains, inSpam, onVerb, onDraft, onAnswer, boxes, onFilter, onOriginal, onPrint }: { account: string; summary: EmailSummary; open: boolean; fill: boolean; onToggle: () => void; me: string; domains: string[]; inSpam: boolean; onVerb: (v: Verb) => void; onDraft: (d: Draft) => void; onAnswer: (d: Draft) => void; boxes: Mailbox[]; onFilter: (email: string) => void; onOriginal: () => void; onPrint: () => void }) {
   const sender = summary.from?.[0];
   const [images, setImages] = useState(() => showsImagesFrom(account, sender?.email));
   const [details, setDetails] = useState(false);
@@ -288,7 +371,7 @@ function Card({ account, summary, open, fill, onToggle, me, domains, inSpam, jun
     if (!sender) return;
     try {
       const st = await readBlocked(account);
-      const now = await writeBlocked(account, [...st.blocked, sender.email], junkName);
+      const now = await writeBlocked(account, [...st.blocked, sender.email], boxes);
       toast(
         now.otherActive
           ? tr("{sender} is on your blocked list, but it cannot work while the filter “{name}” is your active one.", { sender: sender.email, name: now.otherActive })
@@ -358,8 +441,12 @@ function Card({ account, summary, open, fill, onToggle, me, domains, inSpam, jun
                   <Button variant="outline" size="xs" onClick={() => onAnswer({ kind: "forward", original: m })}>
                     <Forward aria-hidden="true" /> {tr("Forward")}
                   </Button>
-                  {!mine && (
+                  {(
                     <MessageMenu
+                      own={mine}
+                      onFilter={() => sender && onFilter(sender.email)}
+                      onOriginal={onOriginal}
+                      onPrint={onPrint}
                       from={sender}
                       unsubscribe={extras?.unsubscribe ?? null}
                       onBlock={() => void block()}
@@ -379,25 +466,7 @@ function Card({ account, summary, open, fill, onToggle, me, domains, inSpam, jun
                     }}
                   />
                 )}
-                {shown.length > 0 && (
-                  <ul className="flex flex-wrap gap-2 pt-1" aria-label={tr("Attachments")}>
-                    {shown.map((a) => (
-                      <li key={a.blobId}>
-                        <Button
-                          variant="outline"
-                          size="xs"
-                          onClick={() =>
-                            void download(`${MAIL}/blob/${account}/${a.blobId}`, a.name ?? "attachment", { name: a.name ?? "attachment", type: a.type }).catch((e: unknown) =>
-                              toast(errorMessage(e), "error"),
-                            )
-                          }
-                        >
-                          <Paperclip aria-hidden="true" /> {a.name ?? tr("attachment")} <span className="text-muted-foreground">{isolate(sizeLabel(a.size))}</span>
-                        </Button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                {shown.length > 0 && <AttachmentList account={account} files={shown} />}
               </>
             ) : msg.error ? (
               <p role="alert" className="text-sm text-destructive">
@@ -505,6 +574,32 @@ export function FileDialog({ account, email, onClose }: { account: string; email
             </Button>
             <Button type="submit" disabled={!entity || !record || busy}>
               {tr("File")}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Snooze until a chosen moment on the person's clock. */
+function SnoozeAt({ onPick, onClose }: { onPick: (at: Date) => void; onClose: () => void }) {
+  const [v, setV] = useState("");
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-xs">
+        <form className="grid gap-4" onSubmit={(e) => (e.preventDefault(), v && fromZonedInput(v) && onPick(new Date(fromZonedInput(v)!)))}>
+          <DialogHeader>
+            <DialogTitle>{tr("Snooze until")}</DialogTitle>
+            <DialogDescription>{tr("The conversation leaves the inbox and comes back, unread, when Mail is next open at or after this time.")} {tr("Times are in your time zone.")}</DialogDescription>
+          </DialogHeader>
+          <Input type="datetime-local" aria-label={tr("Date and time")} value={v} onChange={(e) => setV(e.target.value)} required autoFocus />
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              {tr("Cancel")}
+            </Button>
+            <Button type="submit" disabled={!v}>
+              {tr("Snooze")}
             </Button>
           </DialogFooter>
         </form>

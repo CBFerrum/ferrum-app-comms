@@ -230,3 +230,16 @@ describe("before sending, and recipients", () => {
     expect(suggest("", people, recent, [])).toEqual([]);
   });
 });
+
+import { quoteForEditor, quoteHtml as quoteHtmlForEditor } from "./compose";
+describe("an opened quote", () => {
+  it("loses the breaks that would become empty lines in the editor, keeps the words", () => {
+    const reply = quoteHtmlForEditor("reply", { from: [{ name: "Priya", email: "p@x.example" }] }, "Tue", "<div>Hi<br></div>");
+    const r = quoteForEditor(reply);
+    expect(r.startsWith('<div class="gmail_quote">')).toBe(true);
+    expect(r).toContain("wrote:</div><blockquote");
+    expect(r).toContain("<div>Hi<br></div>");
+    const fwd = quoteForEditor(quoteHtmlForEditor("forward", { from: [{ email: "p@x.example" }], subject: "S" }, "Tue", "<p>body</p>"));
+    expect(fwd).toMatch(/To: <\/div><p>body<\/p>/);
+  });
+});
