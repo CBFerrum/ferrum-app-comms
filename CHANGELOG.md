@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.13.0
+
+Mail becomes a mail program people can live in. Built with Ferrum-Frontend 60402fa and tried throughout against a real Stalwart with seeded mailboxes. Nothing here needs a newer mail server; one administrator's list needs this version's own server code.
+
+**Folders.** Every folder has an icon and the names people know (Inbox, Starred, Drafts, Sent, Archive, All mail, Spam, Trash), whatever the server calls them. Archive exists for everyone. Folders of one's own can be made, renamed, nested, coloured and deleted (the mail goes to Archive), and a conversation can also be filed under a second folder, shown as chips.
+
+**The list.** A checkbox on every row, Shift+click, select all; a bar to archive, delete, mark as spam or not spam, mark read or unread, star and move, and the same on a row's hover; restore from Trash and Spam; Empty Trash and Empty Spam, which say how long mail stays (30 days). Every such action can be undone for eight seconds, exactly: folders and flags go back as they were, also for a selection. Sender names, a count for conversations, a date that is a time today and a day this week; counts and new mail arrive within seconds while Mail is open, without losing the place or the selection.
+
+**Spam and safety.** A message that failed its sender checks, or that claims this workspace's own domain without passing, carries a warning; mail from outside is marked External; a message in Spam says why it is there. Block a sender, report phishing, unsubscribe where the message offers it. Remote pictures stay blocked behind one bar, with "always show from this sender". Plain text reads on the theme's surface; HTML mail reads as a sheet in the dark theme.
+
+**Writing.** A rich-text composer: bold, italic, underline, strikethrough, colour, highlight, size, lists, quote, alignment, links (Ctrl or ⌘ K), a plain-text switch. Replies keep the original as it looked, behind a fold; forwards carry the original's attachments and pictures without re-uploading them; Reply and Reply all go where they should, and never answer one's own draft. Recipients are chips, checked as typed, with suggestions from the workspace and from people written to before. Attachments by drop, paste, the button or from Drive, with progress, cancel and retry and the limits said first; pictures inline, resized by a corner. Several messages can be open at once; on a phone one fills the screen.
+
+**Nothing written is lost.** A draft is saved a moment after the last key and says so truthfully ("Saving", "Saved to Drafts", "Could not save, retrying"); words typed in the half second before a crash come back from the browser; open messages reopen after a reload; sending leaves no stray draft; discarding can be undone.
+
+**Sending.** "Sent" appears only when the mail server has accepted the message. Undo send (off, 5 to 30 seconds) and Schedule send (tomorrow morning, Monday morning, a picked time) are held by the mail server itself, so they do not depend on the tab staying open; a Scheduled list shows what is waiting, to edit or cancel. Signatures per identity, stored on the mail server so other mail programs share them, with pictures. Templates live in a Templates folder. A message that mentions an attachment and has none, or has no subject, asks before it goes.
+
+**Finding mail.** One box searches all mail, with the operators people know (`from:`, `to:`, `subject:`, `has:attachment`, `is:unread`, `is:starred`, `in:`, `before:`, `after:`, `older_than:`, `newer_than:`, quoted phrases, `-`, `OR`), the same as chips and as a form; matches are marked; a search can be saved as a folder.
+
+**Filters.** When a message matches (from, to, subject, words, list, size) it can skip the inbox, go to a folder, be starred, marked read, forwarded, deleted, or never sent to spam; made from a message or from a search, and applied to matching mail on the spot, with Undo. They run on the mail server (Sieve) in one script Mail owns; a person's own script is never overwritten. Forwarding asks first, refuses the mailbox's own address, and shows a banner while it is on. Filters, blocked senders, saved searches, folder colours and Mail's settings are kept in that script, so they follow the person to any browser.
+
+**Reading.** Attachments preview in place (pictures, PDF) and save to Drive; print a conversation as a document; Show original with Copy and .eml; snooze until later, tomorrow, next week or a date (it returns when Mail is next open at or after that time, and says so). Largest conversations, to free space. Import .eml and .mbox files, export a folder as .mbox.
+
+**Invitations.** A message with an invitation shows the event with Yes, Maybe and No; the answer updates the calendar and mails the organiser, and a guest's emailed answer updates the organiser's event when they open it.
+
+**Keys and help.** `x`, `e`, `#`, `!`, `v`, `l`, `z`, `u`, `Shift+I` and `Shift+U`, `/` and `?`, each listed in the shortcut help.
+
+Mail's interface was read once in Arabic and corrected; 578 new words are in Arabic and Hindi. 204 interface tests. The first page stays at 125 KB; the composer, the PDF viewer and settings load when used.
+
+Not in this release: a notification for new mail when Mail is not open in any tab, and a calendar answer applied on arrival (both need a job on the server, designed but not built); snooze that returns without Mail open; shared mailboxes and send-as from the interface; quotas per mailbox, a spam summary, workspace-wide allow and block lists and retention for administrators; one-click unsubscribe by POST; "Download all" attachments as a zip; labels as Gmail has them beyond filing under a second folder; desktop notifications were not tried (they are asked for only from settings); delivery to an outside address was not tried (the test server has no outside DNS); a screen-reader audit; Chat, Calendar and Meet are unchanged apart from the invitation card.
+
 ## 0.12.1
 
 The interface follows the upgraded design system, rebuilt with Ferrum-Frontend 0a47157. Text uses the kit's type roles (nothing under 12px) and controls its height tokens; loading shows skeletons shaped like what is coming; empty, no matches, denied, offline and failed are told apart; status colours come from stored state ids. The interface check now runs the UI lint against an empty baseline. In Mail an open row, an unread one, a starred one and the keyboard cursor are distinct, a long sender no longer pushes the time off the row, and the draft line never says saved for a draft kept only in the browser. Chat fits a phone: lines wrap and the composer stays in view. Initials take one character for a Han, Kana or Hangul name and ignore a bracketed alias. In right-to-left a calendar event's title is cut at its end, and the new event's "Who sees it" shows its whole value.
