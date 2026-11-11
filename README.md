@@ -298,6 +298,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.12.1** | The redesigned interface: the upgraded design system, shaped loading, told-apart states. |
 | **0.12.0** | What meetings keep of a person (their own captions) is in their personal-data copy, goes with their erasure, and again when a restore replays it. |
 | **0.11.0** | Mail asks, as it sends, whether each recipient may be contacted for it: marketing stops where consent ends, nothing goes under a restriction. |
 | **0.10.13** | Its reports' names in Arabic and Hindi. |
