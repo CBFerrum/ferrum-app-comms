@@ -53,6 +53,35 @@ pub fn clean_line(v: &str, max: usize) -> String {
     v.chars().map(|c| if c == '\t' { ' ' } else { c }).filter(|c| !c.is_control()).take(max).collect::<String>().trim().to_string()
 }
 
+/// The addresses in a header-like value (`"Rao, Priya" <p@x.test>, q@x.test`), lower case.
+pub fn mailbox_addresses(v: &str) -> Vec<String> {
+    let (mut out, mut part, mut quoted) = (Vec::new(), String::new(), false);
+    let mut push = |part: &mut String| {
+        let item = part.trim();
+        let inner = match (item.rfind('<'), item.rfind('>')) {
+            (Some(a), Some(z)) if a < z => &item[a + 1..z],
+            _ => item,
+        };
+        let a = inner.trim().to_ascii_lowercase();
+        if a.contains('@') && !a.contains(char::is_whitespace) {
+            out.push(a);
+        }
+        part.clear();
+    };
+    for c in v.chars() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                part.push(c);
+            }
+            ',' | ';' if !quoted => push(&mut part),
+            _ => part.push(c),
+        }
+    }
+    push(&mut part);
+    out
+}
+
 /// Cuts text to `max` characters.
 pub fn cut(v: &str, max: usize) -> String {
     if v.chars().count() <= max { v.to_string() } else { v.chars().take(max).collect() }

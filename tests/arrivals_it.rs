@@ -9,7 +9,7 @@ use ferrum_kernel::{Ctx, Db, DbConfig, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::Catalog;
 use serde_json::{Value, json};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use uuid::Uuid;
@@ -19,29 +19,47 @@ const PASSWORD: &str = "Correct-Horse-9";
 /// The mail server as the step sees it: the Email state is `s1` until mail `arrived`, then `s2`
 /// with one new unread Inbox message. Each answer waits a little, so two rounds overlap.
 struct Jmap {
-    arrived: AtomicBool,
+    /// The server's state is `s{stage}`; each stage brings the messages MSGS lists for it.
+    stage: AtomicUsize,
     requests: AtomicUsize,
 }
 
+const MSGS: &[(&str, usize)] = &[("m1", 2), ("m2", 3), ("m3", 3), ("m4", 4), ("m5", 5), ("m6", 5), ("m7", 5)];
+
+/// A message as `Email/get` gives it: (mailbox, from, to, subject, keywords, Message-ID, In-Reply-To).
+fn message(id: &str) -> Value {
+    let (boxes, from, to, subject, kw, mid, irt) = match id {
+        "m1" => ("I", "ann@customer.example", "ann@acme.test", "Quote for March", json!({}), "q1@customer.example", json!(null)),
+        "m2" => ("S", "ann@acme.test", "ann@customer.example", "Re: Quote for March", json!({"$seen": true}), "s1@acme.test", json!(["q1@customer.example"])),
+        "m3" => ("I", "bo@customer.example", "ann@acme.test", "Hello", json!({}), "h1@customer.example", json!(null)),
+        "m4" => ("I", "cy@customer.example", "ann@acme.test", "While private", json!({}), "p1@customer.example", json!(null)),
+        "m5" => ("I", "dee@customer.example", "ann@acme.test", "After", json!({}), "a1@customer.example", json!(null)),
+        "m6" => ("S", "ann@acme.test", "ed@customer.example", "A draft", json!({"$draft": true, "$seen": true}), "d1@acme.test", json!(null)),
+        _ => ("J", "spam@bulk.example", "ann@acme.test", "Win", json!({"$junk": true}), "j1@bulk.example", json!(null)),
+    };
+    json!({"id": id, "threadId": format!("t-{id}"), "mailboxIds": {boxes: true}, "keywords": kw, "from": [{"name": "Ann Lee", "email": from}],
+           "to": [{"email": to}], "cc": [{"email": "Boss@customer.example"}], "messageId": [mid], "inReplyTo": irt,
+           "subject": subject, "receivedAt": "2026-11-12T08:00:00Z", "attachments": []})
+}
+
 fn answer(j: &Jmap, calls: &[Value]) -> Value {
-    let now = if j.arrived.load(Ordering::SeqCst) { "s2" } else { "s1" };
+    let stage = j.stage.load(Ordering::SeqCst);
+    let now = format!("s{stage}");
     let mut out = Vec::new();
     let mut created: Vec<&str> = vec![];
     for c in calls {
         let (method, args, id) = (c[0].as_str().unwrap_or_default(), &c[1], &c[2]);
         let body = match method {
             "Mailbox/get" => {
-                json!({"list": [{"id": "I", "role": "inbox", "name": "Inbox", "parentId": null, "totalEmails": 1}, {"id": "J", "role": "junk", "name": "Junk", "parentId": null, "totalEmails": 0}]})
+                json!({"list": [{"id": "I", "role": "inbox", "name": "Inbox", "parentId": null, "totalEmails": 1}, {"id": "J", "role": "junk", "name": "Junk", "parentId": null, "totalEmails": 0},
+                                {"id": "S", "role": "sent", "name": "Sent", "parentId": null, "totalEmails": 0}]})
             }
-            "Email/get" if args.get("#ids").is_some() => json!({"list": created.iter().map(|i| json!({
-                "id": i, "threadId": "t1", "mailboxIds": {"I": true}, "keywords": {}, "from": [{"name": "Ann Lee", "email": "ann@customer.example"}],
-                "subject": "Quote for March", "receivedAt": "2026-11-12T08:00:00Z", "attachments": []})).collect::<Vec<_>>()}),
+            "Email/get" if args.get("#ids").is_some() => json!({"list": created.iter().map(|i| message(i)).collect::<Vec<_>>()}),
             "Email/get" => json!({"state": now, "list": []}),
             "Email/changes" => {
                 let since = args["sinceState"].as_str().unwrap_or_default();
-                if since == "s1" && now == "s2" {
-                    created = vec!["m1"];
-                }
+                let from: usize = since.trim_start_matches('s').parse().unwrap_or(1);
+                created = MSGS.iter().filter(|(_, s)| *s > from && *s <= stage).map(|(m, _)| *m).collect();
                 json!({"oldState": since, "newState": now, "hasMoreChanges": false, "created": created, "updated": [], "destroyed": []})
             }
             "SieveScript/get" => json!({"list": []}),
@@ -100,7 +118,7 @@ fn new_mail_notifies_once_across_concurrent_rounds() {
 }
 
 async fn scenario() {
-    let jmap = Arc::new(Jmap { arrived: AtomicBool::new(false), requests: AtomicUsize::new(0) });
+    let jmap = Arc::new(Jmap { stage: AtomicUsize::new(1), requests: AtomicUsize::new(0) });
     let mail_url = serve(jmap.clone()).await;
     // SAFETY: set before anything reads the environment on other threads of this test binary.
     unsafe { std::env::set_var("FERRUM_MAIL_URL", &mail_url) };
@@ -164,7 +182,7 @@ async fn scenario() {
     assert_eq!(count("select count(*) from notification where kind = 'comms.newmail'").await, 0);
 
     // Mail arrives; two rounds at once (two replicas) both see it: one notification.
-    jmap.arrived.store(true, Ordering::SeqCst);
+    jmap.stage.store(2, Ordering::SeqCst);
     let before = jmap.requests.load(Ordering::SeqCst);
     let (a, b) = tokio::join!(ferrum_app_comms::maintenance(&k), ferrum_app_comms::maintenance(&k));
     a.expect("round a");
@@ -187,6 +205,86 @@ async fn scenario() {
     let mut tx = k.db.system_tx().await.unwrap();
     let failures: i32 = sqlx::query_scalar("select failures from comms_mail_cursor where mailbox_id = $1").bind(mailbox).fetch_one(&mut *tx).await.unwrap();
     assert_eq!(failures, 0);
+    drop(tx);
+
+    // ───────────── what apps may file: nothing until the owner says so, never a private mailbox ─────────────
+    let events = || {
+        let k = k.clone();
+        async move {
+            let mut tx = k.db.system_tx().await.unwrap();
+            sqlx::query_as::<_, (String, Option<Uuid>, Value)>("select topic, record_id, payload from outbox where topic like 'MailMessage.%' order by id")
+                .fetch_all(&mut *tx)
+                .await
+                .unwrap()
+        }
+    };
+    assert!(events().await.is_empty(), "by default no mail is told to apps: m1 arrived and nothing was raised");
+    let site = |ctx: Ctx, method: &str, path: &str, body: Value| {
+        let k = k.clone();
+        let (method, path) = (method.to_string(), path.to_string());
+        async move {
+            let req = ferrum_kernel::SiteRequest {
+                tenant,
+                user: Some(ctx),
+                method,
+                path,
+                query: Default::default(),
+                headers: Default::default(),
+                body: body.to_string().into_bytes(),
+                client_ip: "127.0.0.1".into(),
+            };
+            k.hooks.site("comms").unwrap().handle(&k, req).await
+        }
+    };
+    let me = k.load_ctx(tenant, ann, None, "it".into()).await.unwrap();
+    let off = site(me.clone(), "GET", "mail/filing", Value::Null).await.unwrap();
+    assert_eq!(serde_json::from_slice::<Value>(&off.body).unwrap(), json!({"apps_may_file": false, "private": false, "filed": false}));
+    // Only a manager marks a mailbox private; the owner chooses for their own.
+    assert!(site(me.clone(), "PUT", "mail/filing/private", json!({"email": "ann@acme.test", "private": true})).await.is_err());
+    site(me.clone(), "PUT", "mail/filing", json!({"apps_may_file": true})).await.unwrap();
+
+    // Mail sent and received from then on is raised once each, whichever replica sees it, and no more.
+    jmap.stage.store(3, Ordering::SeqCst);
+    let (a, b) = tokio::join!(ferrum_app_comms::maintenance(&k), ferrum_app_comms::maintenance(&k));
+    a.expect("round a");
+    b.expect("round b");
+    let found = events().await;
+    assert_eq!(
+        found.iter().map(|e| e.0.as_str()).collect::<Vec<_>>(),
+        ["MailMessage.sent", "MailMessage.received"],
+        "the sent one and the received one, once: {found:?}"
+    );
+    let sent = &found[0].2;
+    assert_eq!(
+        (sent["email"].clone(), sent["thread"].clone(), sent["message_id"].clone(), sent["in_reply_to"].clone(), sent["from"].clone(), sent["to"].clone()),
+        (json!("m2"), json!("t-m2"), json!("s1@acme.test"), json!(["q1@customer.example"]), json!("ann@acme.test"), json!(["ann@customer.example"]))
+    );
+    assert_eq!((sent["mailbox"].clone(), sent["mailbox_address"].clone(), sent["owner"].clone()), (json!(mailbox), json!("ann@acme.test"), json!(ann)));
+    let got = &found[1].2;
+    assert_eq!(
+        (got["from"].clone(), got["cc"].clone(), got["subject"].clone()),
+        (json!("bo@customer.example"), json!(["boss@customer.example"]), json!("Hello"))
+    );
+    let keys: Vec<&str> = got.as_object().unwrap().keys().map(String::as_str).collect();
+    assert!(keys.iter().all(|k| !["body", "text", "html", "content", "attachments", "preview"].contains(k)), "never what the message says: {keys:?}");
+    assert_ne!(found[0].1, found[1].1);
+
+    // A mailbox the workspace marks private is not told, whatever its owner chose.
+    let admin_site = site(admin.clone(), "PUT", "mail/filing/private", json!({"email": "Ann@acme.test", "private": true})).await.unwrap();
+    assert_eq!(serde_json::from_slice::<Value>(&admin_site.body).unwrap(), json!({"email": "ann@acme.test", "private": true}));
+    assert_eq!(serde_json::from_slice::<Value>(&site(me.clone(), "GET", "mail/filing", Value::Null).await.unwrap().body).unwrap()["filed"], json!(false));
+    jmap.stage.store(4, Ordering::SeqCst);
+    ferrum_app_comms::maintenance(&k).await.expect("round while private");
+    assert_eq!(events().await.len(), 2, "m4 arrived while private: nothing raised");
+    // Unmarked, it goes on from there: not what came while it was private, and not drafts or junk.
+    site(admin.clone(), "PUT", "mail/filing/private", json!({"email": "ann@acme.test", "private": false})).await.unwrap();
+    jmap.stage.store(5, Ordering::SeqCst);
+    ferrum_app_comms::maintenance(&k).await.expect("round after");
+    let found = events().await;
+    assert_eq!(found.len(), 3, "m5 only: {found:?}");
+    assert_eq!((found[2].0.as_str(), found[2].2["email"].clone()), ("MailMessage.received", json!("m5")));
+    // The owner turns it off again: nothing more.
+    site(me.clone(), "PUT", "mail/filing", json!({"apps_may_file": false})).await.unwrap();
 }
 
 fn ferrum_app_comms_test_obj(v: Value) -> ferrum_kernel::Doc {

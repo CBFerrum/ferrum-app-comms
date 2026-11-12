@@ -104,6 +104,10 @@ pub struct Outgoing {
     /// iCalendar invitation: (METHOD, text).
     pub ics: Option<(String, String)>,
     pub headers: Vec<(String, String)>,
+    /// Where answers go, when not to From.
+    pub reply_to: Option<Mailbox>,
+    /// The SMTP envelope sender (where bounces go), when not From's address.
+    pub envelope_from: Option<lettre::Address>,
 }
 
 /// The headers a bulk sender legitimately needs on a message (RFC 2369, RFC 8058, Feedback-ID,
@@ -166,6 +170,8 @@ pub fn build(o: Outgoing) -> std::result::Result<Message, String> {
         }
         mixed
     };
+    let envelope_from = o.envelope_from;
+    let recipients: Vec<lettre::Address> = o.to.iter().chain(&o.cc).chain(&o.bcc).map(|m| m.email.clone()).collect();
     let mut b = Message::builder().from(o.from).subject(o.subject).message_id(Some(format!("<{}>", o.message_id)));
     for m in o.to {
         b = b.to(m);
@@ -182,9 +188,15 @@ pub fn build(o: Outgoing) -> std::result::Result<Message, String> {
     if !o.references.is_empty() {
         b = b.references(o.references.iter().map(|r| format!("<{r}>")).collect::<Vec<_>>().join(" "));
     }
+    if let Some(r) = o.reply_to {
+        b = b.reply_to(r);
+    }
     for (k, v) in o.headers {
         let name = HeaderName::new_from_ascii(k).map_err(|e| e.to_string())?;
         b = b.raw_header(HeaderValue::new(name, v));
+    }
+    if let Some(from) = envelope_from {
+        b = b.envelope(lettre::address::Envelope::new(Some(from), recipients).map_err(|e| e.to_string())?);
     }
     b.multipart(body).map_err(|e| e.to_string())
 }
@@ -335,6 +347,37 @@ impl DocHook for CommunicationHook {
         if !is_outgoing_email(doc) {
             return Ok(());
         }
+        // Threading by the message ids an app gives (it answers mail it received, or one of its own): the
+        // thread and the record are the message's they name, when Mail has it.
+        if id(doc, "reply_to").is_none()
+            && let Some(irt) = s(doc, "in_reply_to").map(str::to_string)
+        {
+            let mut refs: Vec<String> = s(doc, "mail_references").unwrap_or_default().split_whitespace().map(str::to_string).collect();
+            let mut wanted = vec![irt.clone()];
+            wanted.extend(refs.iter().rev().cloned());
+            let parent: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+                "select thread_key, reference_entity, reference_id from e_communication where tenant_id = $1 and message_id = any($2) \
+                 order by communication_date desc limit 1",
+            )
+            .bind(hc.ctx.tenant)
+            .bind(&wanted)
+            .fetch_optional(&mut **hc.tx)
+            .await?;
+            if !refs.contains(&irt) {
+                refs.push(irt.clone());
+            }
+            let keep = refs.len().saturating_sub(20);
+            set(doc, "mail_references", json!(refs[keep..].join(" ")));
+            if s(doc, "thread_key").is_none() {
+                set(doc, "thread_key", json!(parent.as_ref().and_then(|p| p.0.clone()).unwrap_or(irt)));
+            }
+            if let Some((_, Some(e), Some(r))) = parent
+                && s(doc, "reference_entity").is_none()
+            {
+                set(doc, "reference_entity", json!(e));
+                set(doc, "reference_id", json!(r));
+            }
+        }
         // Threading: answer the message `reply_to` points at.
         if let Some(parent) = id(doc, "reply_to")
             && let Ok(p) = hc.kernel.get_tx(&util::sys(hc.ctx), hc.tx, "Communication", parent, false).await
@@ -402,7 +445,9 @@ impl DocHook for CommunicationHook {
 
     async fn validate(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
         let mut errors = Vec::new();
-        if let Err(m) = extra_headers(doc.get("headers")) {
+        // What a message arrived or was filed with is recorded as it was; only what goes out is checked.
+        let recorded = hc.ctx.is_system && s(doc, "channel") == Some("Email") && matches!(s(doc, "status"), Some("Received" | "Sent"));
+        if !recorded && let Err(m) = extra_headers(doc.get("headers")) {
             errors.push(FieldError::new("headers", m));
         }
         let outgoing = is_outgoing_email(doc);
@@ -674,6 +719,14 @@ async fn send_doc(k: &Kernel, doc: &Doc, account: Option<&Account>, files: Vec<F
     let text = s(doc, "text_content").map(str::to_string).unwrap_or_else(|| mail_parser::decoders::html::html_to_text(&html));
     let ics = s(doc, "ics").map(|i| (ics_method(i), i.to_string()));
     let headers = extra_headers(doc.get("headers")).map_err(SendError::permanent)?;
+    let reply_to = match s(doc, "reply_to_address") {
+        Some(a) => Some(a.parse::<Mailbox>().map_err(|_| SendError::permanent(format!("the Reply-To '{a}' is not a valid address")))?),
+        None => None,
+    };
+    let envelope_from = match s(doc, "envelope_sender") {
+        Some(a) => Some(a.parse::<lettre::Address>().map_err(|_| SendError::permanent(format!("the envelope sender '{a}' is not a valid address")))?),
+        None => None,
+    };
     match account {
         Some(acc) => {
             if !acc.enable_outgoing {
@@ -694,6 +747,8 @@ async fn send_doc(k: &Kernel, doc: &Doc, account: Option<&Account>, files: Vec<F
                 attachments: files,
                 ics,
                 headers,
+                reply_to,
+                envelope_from,
             })
             .map_err(SendError::permanent)?;
             smtp_send(server, &message).await
@@ -702,11 +757,11 @@ async fn send_doc(k: &Kernel, doc: &Doc, account: Option<&Account>, files: Vec<F
         // threading headers, attachments or invitations).
         None => {
             // The server's own mailer takes a subject and an HTML body and nothing else: the extra
-            // headers cannot go with the mail. Said in the log, never dropped silently.
-            if !headers.is_empty() {
+            // headers, a Reply-To and an envelope sender cannot go with the mail. Said in the log, never dropped silently.
+            if !headers.is_empty() || reply_to.is_some() || envelope_from.is_some() {
                 tracing::warn!(
                     communication = s(doc, "id").unwrap_or_default(),
-                    "no email account: the server's mailer cannot carry extra headers, so {} header(s) are not sent",
+                    "no email account: the server's mailer cannot carry extra headers, a Reply-To or an envelope sender, so they are not sent ({} header(s))",
                     headers.len()
                 );
             }
@@ -947,7 +1002,7 @@ pub fn present(ctx: &Ctx, mut doc: Doc, full: bool) -> Value {
     doc.remove("content");
     doc.insert("content_html".into(), json!(html));
     if !full {
-        for k in ["text_content", "mail_references", "in_reply_to"] {
+        for k in ["text_content", "mail_references", "in_reply_to", "headers"] {
             doc.remove(k);
         }
     }
@@ -969,7 +1024,10 @@ pub async fn list(k: &Kernel, ctx: &Ctx, q: &Map<String, Value>) -> Result<Value
             k.get(ctx, e, r, false).await?;
             qb.push(" and c.reference_entity = ").push_bind(e.to_string()).push(" and c.reference_id = ").push_bind(r.to_string());
         }
-        _ if manager && get("mine").is_none() => {}
+        _ if manager && get("mine").is_none() => {
+            // Mail an app took and its registration leaves out of lists stays out; a record's timeline shows it.
+            qb.push(" and not coalesce(c.hidden_from_inbox, false)");
+        }
         _ => {
             qb.push(" and c.created_by = ").push_bind(ctx.user);
         }
@@ -1065,6 +1123,8 @@ mod tests {
             attachments: vec![File { file_name: "quote.pdf".into(), content_type: "application/pdf".into(), data: b"%PDF-1.4".to_vec() }],
             ics: Some(("REQUEST".into(), "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n".into())),
             headers: vec![("List-Unsubscribe".into(), "<https://x.test/u>".into())],
+            reply_to: Some("Tickets <tickets+k3@acme.test>".parse().unwrap()),
+            envelope_from: Some("bounce+k3@acme.test".parse().unwrap()),
         })
         .unwrap();
         let raw = String::from_utf8(msg.formatted()).unwrap();
@@ -1072,6 +1132,8 @@ mod tests {
         assert!(raw.contains("In-Reply-To: <orig@cust.test>"));
         assert!(raw.contains("References: <root@cust.test> <orig@cust.test>"));
         assert!(raw.contains("List-Unsubscribe: <https://x.test/u>"));
+        assert!(raw.contains("Reply-To: Tickets <tickets+k3@acme.test>"), "{raw}");
+        assert_eq!(msg.envelope().from().map(ToString::to_string).as_deref(), Some("bounce+k3@acme.test"), "the envelope sender is not From's address");
         assert!(raw.contains("multipart/mixed") && raw.contains("multipart/alternative"));
         assert!(raw.contains("text/calendar; charset=utf-8; method=REQUEST"));
         assert!(raw.contains("filename=\"quote.pdf\"") || raw.contains("filename=quote.pdf"));

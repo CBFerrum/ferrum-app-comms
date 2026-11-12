@@ -142,6 +142,8 @@ enum Mode {
 
 #[derive(Clone, Debug)]
 struct Received {
+    /// The envelope sender (MAIL FROM).
+    from: String,
     to: Vec<String>,
     data: String,
 }
@@ -187,6 +189,7 @@ impl Smtp {
         let mut r = BufReader::new(r);
         w.write_all(b"220 sink.test ESMTP\r\n").await?;
         let mut to = Vec::new();
+        let mut from = String::new();
         loop {
             let mut line = String::new();
             if r.read_line(&mut line).await? == 0 {
@@ -202,6 +205,7 @@ impl Smtp {
                 self.0.lock().unwrap().logins.push(String::from_utf8_lossy(&raw).replace('\0', "|"));
                 b"235 2.7.0 Authentication successful\r\n"
             } else if up.starts_with("MAIL FROM") {
+                from = cmd[10..].trim().trim_start_matches(':').split_whitespace().next().unwrap_or_default().trim_matches(['<', '>']).to_string();
                 if mode == Mode::Transient { b"451 4.3.0 Try again later\r\n" } else { b"250 OK\r\n" }
             } else if up.starts_with("RCPT TO") {
                 if mode == Mode::Permanent {
@@ -223,7 +227,7 @@ impl Smtp {
                     }
                     data.push_str(l.strip_prefix('.').filter(|_| l.starts_with("..")).unwrap_or(&l));
                 }
-                self.0.lock().unwrap().mails.push(Received { to: std::mem::take(&mut to), data });
+                self.0.lock().unwrap().mails.push(Received { from: std::mem::take(&mut from), to: std::mem::take(&mut to), data });
                 b"250 2.0.0 Queued\r\n"
             } else if up == "QUIT" {
                 w.write_all(b"221 Bye\r\n").await?;
@@ -1510,6 +1514,7 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     let heard = t.ok(alice, "GET", &format!("/meet/channel/{deals_id}/transcript"), &[], Value::Null).await["segments"].clone();
     let names: Vec<&str> = heard.as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
     assert_eq!(names, ["Alice Rao"], "the meeting keeps the others' words");
+    app_inbound(&t, &admin, &users, &smtp).await;
 }
 
 /// A calendar and contacts app's session (CalDAV and CardDAV under `/dav`): discovery, an event
@@ -2911,6 +2916,294 @@ async fn hosted_mail(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>, imap: &Fa
     assert_eq!((synced["shared"].clone(), synced["lists"].clone()), (json!(1), json!(1)), "{synced}");
     assert!(shared_account(carol).await.is_none());
     assert!(shared_account(bob).await.is_some());
+}
+
+/// An app that takes mail sent to an address it registered (the fixture stands in for Helpdesk).
+struct Fixture {
+    taken: Mutex<Vec<ferrum_app_comms::routes::Received>>,
+    fail: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait]
+impl ferrum_app_comms::routes::Handler for Fixture {
+    async fn receive(&self, _k: &Kernel, ctx: &Ctx, tx: &mut ferrum_kernel::Tx, mail: &ferrum_app_comms::routes::Received) -> ferrum_kernel::Result<()> {
+        // A write of its own: it stands only when the handler succeeds.
+        sqlx::query("insert into comms_mail_notice (tenant_id, id, user_id, account_id) values ($1, $2, $3, 'fixture')")
+            .bind(ctx.tenant)
+            .bind(Uuid::now_v7())
+            .bind(Uuid::nil())
+            .execute(&mut **tx)
+            .await?;
+        if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(Error::invalid("the fixture refuses this one"));
+        }
+        self.taken.lock().unwrap().push(mail.clone());
+        Ok(())
+    }
+}
+
+/// Apps taking inbound mail: registering, routing with the headers, threading, noise markers, a failing
+/// handler, and an app sending with Reply-To and threading headers.
+async fn app_inbound(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>, smtp: &Smtp) {
+    use ferrum_app_comms::{outbound, routes};
+    let (k, tenant) = (&t.k, t.tenant);
+    let mgr = &users["mgr"];
+    let sys = Ctx::system(tenant, k.registry.schema(tenant).await.unwrap());
+    let fixture = Arc::new(Fixture { taken: Mutex::default(), fail: Default::default() });
+    routes::add_handler("fixture", fixture.clone());
+    let support =
+        k.insert(mgr, "EmailAccount", obj(json!({"account_name": "Support", "email_address": "support@acme.test", "enable_outgoing": false}))).await.unwrap();
+    let support_id = uid(&Value::Object(support));
+    let token = k.run_action(mgr, "EmailAccount", support_id, "rotate_inbound_token", json!({})).await.unwrap()["token"].as_str().unwrap().to_string();
+    let post = |raw: &str| {
+        let raw = raw.to_string();
+        let token = token.clone();
+        async move {
+            let r = t.raw(t.request(None, "POST", &format!("/inbound/{token}"), &[], raw.into_bytes(), "message/rfc822")).await.unwrap();
+            serde_json::from_slice::<Value>(&r.body).unwrap()
+        }
+    };
+    let register = |app: &'static str, address: &'static str, keep: bool| async move {
+        let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+        let r = routes::register(&mut tx, tenant, &routes::Registration { app, address, keep_in_mailbox: keep }).await;
+        match &r {
+            Ok(_) => tx.commit().await.unwrap(),
+            Err(_) => tx.rollback().await.unwrap(),
+        }
+        r
+    };
+
+    // ───────────── registering: one app per address, never a person's, only on the workspace's domains ─────────────
+    register("fixture", "support@acme.test", true).await.expect("an address on the support account's domain");
+    register("fixture", "ticket-*@acme.test", false).await.expect("a pattern, which keeps the mail out of people's lists");
+    register("fixture", "support@acme.test", true).await.expect("the same app again changes nothing");
+    for (app, address) in [("other", "support@acme.test"), ("other", "sup*@acme.test"), ("other", "ticket-9@acme.test"), ("other", "*-1@acme.test")] {
+        assert!(matches!(register(app, address, true).await, Err(Error::Conflict(_))), "{address} is the fixture's");
+    }
+    for address in ["help@elsewhere.test", "a+b@acme.test", "two*stars*@acme.test", "no-at-sign"] {
+        assert!(matches!(register("other", address, true).await, Err(Error::Invalid(_))), "{address}");
+    }
+    k.insert(&sys, "HostedMailbox", obj(json!({"email": "ann@acme.test", "user_id": users["alice"].user.to_string(), "account_id": "a1", "status": "Active"})))
+        .await
+        .unwrap();
+    assert!(matches!(register("other", "ann@acme.test", true).await, Err(Error::Conflict(_))), "a person's mailbox is theirs");
+    assert!(matches!(register("other", "an*@acme.test", true).await, Err(Error::Conflict(_))), "and so is a pattern that would take it");
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    assert_eq!(routes::registered(&mut tx, tenant, Some("fixture")).await.unwrap().len(), 2);
+    tx.commit().await.unwrap();
+
+    // ───────────── a message to the registered address reaches the handler once, with its headers ─────────────
+    let first = "From: \"Cu Stomer\" <cu@cust.test>\r\nTo: Support <support+k3j9x2@acme.test>\r\nCc: boss@cust.test\r\nReply-To: \"Cust Billing\" <billing@cust.test>\r\n\
+        Subject: Printer on fire\r\nMessage-ID: <m1@cust.test>\r\nDelivered-To: support@acme.test\r\nReturn-Path: <cu@cust.test>\r\n\
+        Authentication-Results: mx.acme.test;\r\n\tdkim=pass header.d=cust.test header.s=s1;\r\n\tdmarc=pass header.from=cust.test\r\n\
+        X-Ferrum-Helpdesk: TKT-1\r\n\r\nIt is smoking.\r\n";
+    let r = post(first).await;
+    assert_eq!(r["status"], json!("created"));
+    let comm = uid(&r);
+    assert_eq!(fixture.taken.lock().unwrap().len(), 1);
+    let got = fixture.taken.lock().unwrap()[0].clone();
+    assert_eq!((got.communication, got.from.as_str(), got.token.as_deref(), got.address.as_str()), (comm, "cu@cust.test", Some("k3j9x2"), "support@acme.test"));
+    assert_eq!(got.recipient, "support+k3j9x2@acme.test");
+    for (name, wanted) in [
+        ("message-id", "m1@cust.test"),
+        ("reply-to", "billing@cust.test"),
+        ("to", "support+k3j9x2@acme.test"),
+        ("cc", "boss@cust.test"),
+        ("delivered-to", "support@acme.test"),
+        ("return-path", "cu@cust.test"),
+        ("x-ferrum-helpdesk", "TKT-1"),
+        ("x-ferrum-auth", "verified"),
+    ] {
+        assert!(got.headers.get(name).is_some_and(|v| v.contains(wanted)), "{name}: {:?}", got.headers);
+    }
+    assert!(got.headers["authentication-results"].contains("dkim=pass"), "kept on one line: {:?}", got.headers["authentication-results"]);
+    assert!(got.headers.values().all(|v| !v.contains(['\r', '\n', '\t'])), "no line breaks in any value");
+    let stored = t.comm(comm).await;
+    assert_eq!(stored["headers"]["x-ferrum-auth"], json!("verified"));
+    assert_eq!(
+        (stored["routed_to"].clone(), stored["hidden_from_inbox"].clone(), stored["route_error"].clone()),
+        (json!("fixture"), json!(false), Value::Null)
+    );
+    assert_eq!(t.scalar::<i64>("select count(*) from comms_mail_notice where tenant_id = $1 and account_id = 'fixture' and $2::uuid is null", None).await, 1);
+    // The same mail again is the same message: not handed over twice.
+    assert_eq!(post(first).await["status"], json!("duplicate"));
+    assert_eq!(fixture.taken.lock().unwrap().len(), 1);
+    // The headers are listed with the detail, not with the list; people who see the message see them.
+    let detail = t.ok(mgr, "GET", &format!("/communications/{comm}"), &[], Value::Null).await;
+    assert_eq!(detail["headers"]["message-id"], json!("m1@cust.test"));
+    // What the mail server found is only as good as the header it wrote: no header, not verified.
+    let plain = post("From: x@cust.test\r\nTo: support@acme.test\r\nMessage-ID: <plain@cust.test>\r\nSubject: hi\r\n\r\nhi\r\n").await;
+    assert_eq!(t.comm(uid(&plain)).await["headers"]["x-ferrum-auth"], json!("unverified"));
+    // Forged lines further down never count: only the topmost Authentication-Results.
+    let forged = "From: x@cust.test\r\nTo: support@acme.test\r\nMessage-ID: <forged@cust.test>\r\nAuthentication-Results: mx.acme.test; dkim=fail header.d=cust.test\r\n\
+        Authentication-Results: evil.test; dkim=pass header.d=cust.test\r\nSubject: hi\r\n\r\nhi\r\n";
+    assert_eq!(t.comm(uid(&post(forged).await)).await["headers"]["x-ferrum-auth"], json!("unverified"));
+
+    // ───────────── a reply with In-Reply-To is delivered with the same thread ─────────────
+    let reply = "From: cu@cust.test\r\nTo: support+k3j9x2@acme.test\r\nSubject: Re: Printer on fire\r\nMessage-ID: <m2@cust.test>\r\nIn-Reply-To: <m1@cust.test>\r\n\
+        References: <m1@cust.test>\r\n\r\nStill smoking.\r\n";
+    let reply_id = uid(&post(reply).await);
+    let n = fixture.taken.lock().unwrap().len();
+    let got = fixture.taken.lock().unwrap()[n - 1].clone();
+    assert_eq!(
+        (got.in_reply_to.clone(), got.references.clone(), got.token.as_deref()),
+        (vec!["m1@cust.test".to_string()], vec!["m1@cust.test".to_string()], Some("k3j9x2"))
+    );
+    assert_eq!(got.headers["in-reply-to"], "m1@cust.test");
+    let (a, b) = (t.comm(comm).await, t.comm(reply_id).await);
+    assert_eq!(b["thread_key"], a["thread_key"], "one thread");
+    assert_eq!(b["thread_key"], json!("m1@cust.test"));
+
+    // ───────────── auto-replies, bounces and list mail carry the headers that mark them ─────────────
+    let auto = "From: robot@cust.test\r\nTo: support@acme.test\r\nSubject: Out of office\r\nMessage-ID: <ooo@cust.test>\r\nAuto-Submitted: auto-replied\r\n\
+        Precedence: auto_reply\r\nX-Autoreply: yes\r\n\r\nAway.\r\n";
+    let bounce = "From: MAILER-DAEMON@mx.cust.test\r\nTo: support@acme.test\r\nSubject: Undelivered Mail Returned to Sender\r\nMessage-ID: <bounce@mx.cust.test>\r\n\
+        Return-Path: <>\r\nAuto-Submitted: auto-replied\r\nX-Failed-Recipients: gone@cust.test\r\nContent-Type: multipart/report; report-type=delivery-status; boundary=\"x\"\r\n\r\n\
+        --x\r\nContent-Type: text/plain\r\n\r\nNo such user.\r\n--x--\r\n";
+    let list = "From: news@lists.test\r\nTo: support@acme.test\r\nSubject: [list] digest\r\nMessage-ID: <list@lists.test>\r\nList-Id: <digest.lists.test>\r\n\
+        List-Unsubscribe: <mailto:leave@lists.test>\r\nPrecedence: list\r\n\r\nNews.\r\n";
+    for (raw, marks) in [
+        (auto, vec![("auto-submitted", "auto-replied"), ("precedence", "auto_reply"), ("x-autoreply", "yes")]),
+        (
+            bounce,
+            vec![
+                ("return-path", "<>"),
+                ("auto-submitted", "auto-replied"),
+                ("x-failed-recipients", "gone@cust.test"),
+                ("content-type", "report-type=delivery-status"),
+            ],
+        ),
+        (list, vec![("list-id", "digest.lists.test"), ("list-unsubscribe", "mailto:leave@lists.test"), ("precedence", "list")]),
+    ] {
+        let id = uid(&post(raw).await);
+        let n = fixture.taken.lock().unwrap().len();
+        let got = fixture.taken.lock().unwrap()[n - 1].clone();
+        assert_eq!(got.communication, id);
+        for (name, wanted) in marks {
+            assert!(got.headers.get(name).is_some_and(|v| v.contains(wanted)), "{name} in {:?}", got.headers);
+        }
+    }
+
+    // ───────────── to a pattern, and by Bcc; an app takes a message once however many of its addresses it names ─────────────
+    let before = fixture.taken.lock().unwrap().len();
+    let twice = "From: cu@cust.test\r\nTo: support@acme.test, ticket-0042-x7@acme.test\r\nSubject: both\r\nMessage-ID: <both@cust.test>\r\n\r\nhi\r\n";
+    let both = uid(&post(twice).await);
+    assert_eq!(fixture.taken.lock().unwrap().len(), before + 1, "once");
+    let bcc = "From: cu@cust.test\r\nTo: someone@cust.test\r\nDelivered-To: ticket-77@acme.test\r\nSubject: bcc\r\nMessage-ID: <bcc@cust.test>\r\n\r\nhi\r\n";
+    let bcc_id = uid(&post(bcc).await);
+    let got = fixture.taken.lock().unwrap().last().unwrap().clone();
+    assert_eq!(
+        (got.communication, got.address.as_str(), got.token.as_deref()),
+        (bcc_id, "ticket-*@acme.test", Some("77")),
+        "found by the recipient it was delivered to"
+    );
+    // A registration that does not keep the mail leaves it out of what people list; the other is kept.
+    assert_eq!(t.comm(bcc_id).await["hidden_from_inbox"], json!(true));
+    assert_eq!(t.comm(both).await["hidden_from_inbox"], json!(false), "one of its apps keeps it");
+    let listed = t.ok(mgr, "GET", "/communications", &[("direction", "Received")], Value::Null).await.to_string();
+    assert!(!listed.contains(&bcc_id.to_string()) && listed.contains(&comm.to_string()));
+    // Mail for no registration is stored as before, and handed to nobody.
+    let before = fixture.taken.lock().unwrap().len();
+    let other = uid(&post("From: cu@cust.test\r\nTo: elsewhere@acme.test\r\nSubject: x\r\nMessage-ID: <other@cust.test>\r\n\r\nhi\r\n").await);
+    let other_row = t.comm(other).await;
+    assert_eq!((fixture.taken.lock().unwrap().len(), other_row["routed_to"].clone()), (before, Value::Null));
+
+    // ───────────── a handler that fails leaves the mail delivered, logged, and its own writes undone ─────────────
+    let writes = t.scalar::<i64>("select count(*) from comms_mail_notice where tenant_id = $1 and account_id = 'fixture' and $2::uuid is null", None).await;
+    fixture.fail.store(true, std::sync::atomic::Ordering::SeqCst);
+    let failing = uid(&post("From: cu@cust.test\r\nTo: support@acme.test\r\nSubject: fails\r\nMessage-ID: <fail@cust.test>\r\n\r\nhi\r\n").await);
+    fixture.fail.store(false, std::sync::atomic::Ordering::SeqCst);
+    let c = t.comm(failing).await;
+    assert_eq!(
+        (c["status"].clone(), c["direction"].clone(), c["routed_to"].clone(), c["hidden_from_inbox"].clone()),
+        (json!("Received"), json!("Received"), Value::Null, json!(false))
+    );
+    assert!(c["route_error"].as_str().unwrap().contains("fixture: the fixture refuses this one"), "{}", c["route_error"]);
+    assert_eq!(
+        t.scalar::<i64>("select count(*) from comms_mail_notice where tenant_id = $1 and account_id = 'fixture' and $2::uuid is null", None).await,
+        writes,
+        "its write was undone"
+    );
+    // An app that is not there (uninstalled) is the same.
+    register("gone", "old-*@acme.test", true).await.unwrap();
+    let c = t.comm(uid(&post("From: cu@cust.test\r\nTo: old-1@acme.test\r\nSubject: x\r\nMessage-ID: <gone@cust.test>\r\n\r\nhi\r\n").await)).await;
+    assert!(c["route_error"].as_str().unwrap().contains("gone"), "{}", c["route_error"]);
+    // After a failure the next message is taken as before.
+    let n = fixture.taken.lock().unwrap().len();
+    post("From: cu@cust.test\r\nTo: support@acme.test\r\nSubject: ok\r\nMessage-ID: <ok@cust.test>\r\n\r\nhi\r\n").await;
+    assert_eq!(fixture.taken.lock().unwrap().len(), n + 1);
+
+    // ───────────── an app sends with Reply-To and threading headers, and gets the Message-ID back ─────────────
+    let record = Uuid::new_v4();
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let sent = outbound::send(
+        k,
+        &sys,
+        &mut tx,
+        &outbound::Message {
+            to: vec!["cu@cust.test".into()],
+            subject: "Re: Printer on fire".into(),
+            html: "<p>On it.</p>".into(),
+            reference: Some(("Customer".into(), record)),
+            reply_to: Some("Tickets <tickets+k3j9x2@acme.test>".into()),
+            in_reply_to: Some("<m2@cust.test>".into()),
+            references: vec!["m1@cust.test".into(), "<m2@cust.test>".into()],
+            envelope_sender: Some("bounce+k3j9x2@acme.test".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    // Refused, and nothing queued: header text in place of ids, addresses or domains that are not the workspace's.
+    for bad in [
+        outbound::Message { in_reply_to: Some("m2@cust.test\r\nBcc: evil@x.test".into()), ..Default::default() },
+        outbound::Message { references: vec!["not an id".into()], ..Default::default() },
+        outbound::Message { reply_to: Some("a@b.test\r\nBcc: evil@x.test".into()), ..Default::default() },
+        outbound::Message { reply_to: Some("two@b.test, three@b.test".into()), ..Default::default() },
+        outbound::Message { envelope_sender: Some("bounce@evil.test".into()), ..Default::default() },
+    ] {
+        let mut m = bad;
+        m.to = vec!["cu@cust.test".into()];
+        m.subject = "x".into();
+        m.html = "<p>x</p>".into();
+        assert!(matches!(outbound::send(k, &sys, &mut tx, &m).await, Err(Error::Invalid(_) | Error::Validation(_))), "{m:?}");
+    }
+    tx.commit().await.unwrap();
+    assert!(sent.message_id.ends_with("@acme.test"), "{}", sent.message_id);
+    let row = t.comm(sent.communication).await;
+    assert_eq!((row["message_id"].clone(), row["thread_key"].clone()), (json!(sent.message_id), json!("m1@cust.test")), "stored, in the thread it answers");
+    assert_eq!(row["mail_references"], json!("m1@cust.test m2@cust.test"));
+    let before = smtp.count();
+    t.drain().await;
+    assert!(smtp.count() > before);
+    assert_eq!(
+        t.scalar::<i64>("select count(*) from e_communication where tenant_id = $1 and subject = 'x' and direction = 'Sent' and $2::uuid is null", None).await,
+        0,
+        "the refused ones were never queued"
+    );
+    let mail = smtp.mails().into_iter().find(|m| m.data.contains(&sent.message_id)).expect("the message went out");
+    assert_eq!(mail.from, "bounce+k3j9x2@acme.test", "the envelope sender");
+    assert!(mail.data.contains(&format!("Message-ID: <{}>", sent.message_id)), "{}", mail.data);
+    assert_eq!(header(&mail.data, "Reply-To").as_deref(), Some("Tickets <tickets+k3j9x2@acme.test>"));
+    assert_eq!(header(&mail.data, "In-Reply-To").as_deref(), Some("<m2@cust.test>"));
+    assert_eq!(header(&mail.data, "References").as_deref(), Some("<m1@cust.test> <m2@cust.test>"));
+    assert!(!mail.data.contains("evil"), "no header from anything an app passed");
+    // The customer's answer to it, to the Reply-To address, finds the message it answers.
+    let answer = format!(
+        "From: cu@cust.test\r\nTo: tickets+k3j9x2@acme.test\r\nSubject: Re: Re: Printer on fire\r\nMessage-ID: <m3@cust.test>\r\nIn-Reply-To: <{}>\r\n\r\nThanks.\r\n",
+        sent.message_id
+    );
+    let a = t.comm(uid(&post(&answer).await)).await;
+    assert_eq!(
+        (a["thread_key"].clone(), a["reference_entity"].clone(), a["reference_id"].clone()),
+        (json!("m1@cust.test"), json!("Customer"), json!(record.to_string()))
+    );
+
+    // Erasing the sender reaches the headers kept with their mail (their Reply-To, recipients and the rest).
+    assert!(t.comm(comm).await["headers"].is_object());
+    k.erase_personal_data(admin, "cu@cust.test", "Request 10").await.unwrap();
+    let erased = t.comm(comm).await;
+    assert_eq!((erased["sender"].clone(), erased["headers"].clone()), (Value::Null, Value::Null), "{erased:?}");
 }
 
 fn new_meeting(record: Uuid, host: Uuid) -> ferrum_app_comms::meetings::NewMeeting<'static> {
