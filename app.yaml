@@ -1,6 +1,6 @@
 id: comms
 name: Mail, Chat and Calendar
-version: 0.13.1
+version: 0.14.0
 publisher: cbferrum
 summary: Email accounts (SMTP/IMAP), threaded communications on any record, templates, newsletters, team chat, calendars with ICS and calendar-app sync, contacts sync and video meetings
 description: README.md
@@ -45,6 +45,9 @@ contributes:
     - {id: channel, entity: ChatChannel, path: "chat/{id}"}
     - {id: message, entity: ChatMessage, path: "chat/m/{id}"}
     - {id: event, entity: CalendarEvent, path: "calendar/e/{id}"}
+    # A new-mail notification opens the message (or the Inbox for several): not a record, a notice
+    # the server keeps for that person (src/arrivals.rs).
+    - {id: newmail, entity: MailMessage, path: "mail/n/{id}"}
   # The bar's search asks Chat for the messages the person may read (Ferrum apps-ui.md §12.8).
   shell.search:
     - {id: chat, title: Chat, endpoint: /api/app/comms/chat/search}
@@ -61,6 +64,7 @@ contributes:
     - {id: direct, label: Direct messages in Chat, default: [inapp]}
     - {id: thread, label: Replies in Chat threads you take part in, default: [inapp]}
     - {id: channel, label: Every message in the Chat channels you chose to hear in full, default: [inapp]}
+    - {id: newmail, label: New mail in your inbox (Mail's settings choose which), default: [inapp]}
     - {id: reply, label: Replies to email you sent, default: [inapp]}
     - {id: undelivered, label: Email you sent that could not be delivered, default: [inapp]}
   # Pages anyone with a link opens: a meeting's guest page, and where a guest answers an invitation.

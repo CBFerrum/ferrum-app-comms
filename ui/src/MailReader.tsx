@@ -16,14 +16,14 @@ import { useMailActions } from "./MailActions";
 import { prefsOf, useMailData } from "./MailData";
 import { FilterDialog } from "./MailFilters";
 import { AlsoFileMenu, FolderChips } from "./MailLabels";
-import { AttachmentList, OriginalDialog, printMessages } from "./MailTools";
+import { AttachmentList, DeliveryStatus, OriginalDialog, printMessages } from "./MailTools";
 import { ensureFolder } from "./MailActions";
 import { ruleFromSender, type Rule } from "./lib/filters";
 import { SNOOZED_NAME, isSnoozed } from "./lib/folders";
 import { snoozeChoices, wakeKeys, wakeKeyword, wakeOf } from "./lib/watch";
 import { Composer, loadDraft } from "./MailCompose";
 import { InviteAnswer, ReplyCard } from "./MailInvite";
-import { ExternalMark, ImagesBar, InviteCard, MessageMenu, WarningBanner, WhySpam, useExtras } from "./MailSafety";
+import { ExternalMark, ImagesBar, InviteCard, MessageMenu, WarningBanner, WhySpam, unsubscribeNow, useExtras } from "./MailSafety";
 import { ActionBar } from "./MailToolbar";
 import { offered, type Verb } from "./lib/actions";
 import { readBlocked, writeBlocked } from "./lib/blocklist";
@@ -42,6 +42,7 @@ import {
   jmap,
   keyAction,
   messagesIn,
+  useServerDoes,
   type Draft,
   type EmailSummary,
   type Mailbox,
@@ -63,6 +64,7 @@ function useMessage(account: string, id: string | undefined, images = false) {
 export function Conversation(p: { account: string; id: string; me: string; own: string[]; boxes: Mailbox[]; folder: string | undefined; domains: string[]; onBack: () => void; onDraft: (d: Draft) => void }) {
   const qc = useQueryClient();
   const actions = useMailActions(p.account, p.boxes);
+  const serverWakes = useServerDoes("arrivals");
   const thread = useQuery({
     queryKey: ["mail", "thread", p.account, p.id],
     queryFn: async () => {
@@ -278,7 +280,9 @@ export function Conversation(p: { account: string; id: string; me: string; own: 
         </div>
         {inSnoozed && wake && (
           <p className="text-xs text-muted-foreground">
-            {tr("Snoozed until {when}. It comes back to the inbox, unread, when Mail is next open at or after that time.", { when: formatDateTime(wake.toISOString()) })}
+            {serverWakes
+              ? tr("Snoozed until {when}. It comes back to the inbox, unread, at that time, within a minute or so.", { when: formatDateTime(wake.toISOString()) })
+              : tr("Snoozed until {when}. It comes back to the inbox, unread, when Mail is next open at or after that time.", { when: formatDateTime(wake.toISOString()) })}
           </p>
         )}
         {!single && <p className="text-xs text-muted-foreground">{isolate(messagesIn(messages.length))} {tr("in this conversation")}</p>}
@@ -367,6 +371,10 @@ function Card({ account, summary, open, fill, onToggle, me, domains, inSpam, onV
   const external = !mine && isExternal(sender, domains);
   // The invitation's own part is shown as the card, not as a file.
   const shown = (m?.attachments ?? []).filter((a) => !(extras?.invite && a.type === "text/calendar"));
+  const zips = useServerDoes("zip");
+  const oneClick = useServerDoes("unsubscribe") && !!extras?.oneClick && !!extras.unsubscribe?.web;
+  const sentBox = byRole(boxes, "sent")?.id;
+  const sent = mine && !!sentBox && !!summary.mailboxIds?.[sentBox];
   const block = async () => {
     if (!sender) return;
     try {
@@ -452,6 +460,7 @@ function Card({ account, summary, open, fill, onToggle, me, domains, inSpam, onV
                       onBlock={() => void block()}
                       onPhishing={() => onVerb("phishing")}
                       onUnsubscribeMail={() => extras?.unsubscribe?.mail && onDraft({ kind: "new", prefill: { to: extras.unsubscribe.mail.to, subject: extras.unsubscribe.mail.subject, body: "" } })}
+                      onOneClick={oneClick ? () => void unsubscribeNow(account, summary.id, from) : undefined}
                     />
                   )}
                 </div>
@@ -466,7 +475,8 @@ function Card({ account, summary, open, fill, onToggle, me, domains, inSpam, onV
                     }}
                   />
                 )}
-                {shown.length > 0 && <AttachmentList account={account} files={shown} />}
+                {sent && <DeliveryStatus account={account} emailId={summary.id} />}
+                {shown.length > 0 && <AttachmentList account={account} files={shown} all={zips && shown.length > 1 ? `${MAIL}/zip/${account}/${summary.id}` : undefined} subject={summary.subject} />}
               </>
             ) : msg.error ? (
               <p role="alert" className="text-sm text-destructive">
