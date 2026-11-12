@@ -299,11 +299,11 @@ export function repeatOf(rule: string | null | undefined): { kind: Repeat; until
   return { kind, until: kind !== "custom" && m?.[2] ? `${m[2]}-${m[3]}-${m[4]}` : "" };
 }
 
-/** The rule for the editor's choice; none for no repeat. */
+/** The rule for the editor's choice; none for no repeat. UNTIL is a date: that whole day in the event's zone. */
 export function ruleFor(kind: Exclude<Repeat, "custom">, until: string): string | null {
   if (kind === "none") return null;
   const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(until);
-  return day ? `${RULES[kind]};UNTIL=${day[1]}${day[2]}${day[3]}T235959Z` : RULES[kind];
+  return day ? `${RULES[kind]};UNTIL=${day[1]}${day[2]}${day[3]}` : RULES[kind];
 }
 
 /** Reminders the editor offers, minutes before. */

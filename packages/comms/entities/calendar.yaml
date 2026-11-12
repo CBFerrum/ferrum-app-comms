@@ -19,14 +19,14 @@
   kind: master
   module: communication
   title_field: subject
-  description: "Calendar event; times are stored in UTC and recurrences repeat in UTC. Attendees see the events they are invited to; only the organizer edits them."
+  description: "Calendar event; times are stored in UTC and recurrences repeat at the same wall-clock time in the event's time zone. Attendees see the events they are invited to; only the organizer edits them."
   owner_fields: [owner, attendees.email]
   fields:
     - {name: subject, type: data, required: true, in_list: true}
     - {name: starts_at, type: datetime, required: true, in_list: true}
     - {name: ends_at, type: datetime, required: true, in_list: true}
     - {name: all_day, type: check, description: "Whole days: starts_at and ends_at are midnights (UTC), ends_at exclusive"}
-    - {name: timezone, type: data, description: "IANA time zone the organizer works in (e.g. Asia/Kolkata), for display"}
+    - {name: timezone, type: data, description: "IANA time zone of the event (e.g. Asia/Kolkata): it is shown in it and repeats at the same wall-clock time in it across daylight-saving changes"}
     - {name: location, type: data}
     - {name: meeting_link, type: url}
     - {name: description, type: text}
@@ -36,8 +36,8 @@
     - {name: visibility, type: select, options: [Private, Public], default: Private, required: true, in_filter: true, description: "Public events show on everyone's calendar; private ones only to the organizer and attendees (others see busy time)"}
     - {name: status, type: select, options: [Confirmed, Tentative, Cancelled], default: Confirmed, required: true, in_list: true, in_filter: true}
     - {name: attendees, type: table, of: CalendarEventAttendee}
-    - {name: recurrence, type: data, max_length: 500, description: "RRULE: FREQ=DAILY|WEEKLY|MONTHLY|YEARLY with INTERVAL, BYDAY, BYMONTHDAY, COUNT or UNTIL, e.g. FREQ=WEEKLY;BYDAY=MO,WE;COUNT=10"}
-    - {name: recurrence_exceptions, type: json, description: "Occurrences to skip: their start dates (YYYY-MM-DD) or start times (RFC 3339)"}
+    - {name: recurrence, type: data, max_length: 500, description: "RRULE: FREQ=DAILY|WEEKLY|MONTHLY|YEARLY with INTERVAL, BYDAY, BYMONTHDAY, COUNT or UNTIL (a date: that day in the event's zone; or a UTC time), e.g. FREQ=WEEKLY;BYDAY=MO,WE;COUNT=10"}
+    - {name: recurrence_exceptions, type: json, description: "Occurrences to skip: their start dates in the event's zone (YYYY-MM-DD) or start times (RFC 3339)"}
     - {name: reminders, type: table, of: CalendarEventReminder}
     - {name: reference_entity, type: data}
     - {name: reference_id, type: data}

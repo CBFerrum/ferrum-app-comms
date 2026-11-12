@@ -2,11 +2,17 @@
 //!
 //! `FREQ=DAILY|WEEKLY|MONTHLY|YEARLY` with `INTERVAL`, `BYDAY` (`MO`..`SU`; ordinals such as
 //! `1MO` or `-1FR` with MONTHLY), `BYMONTHDAY` (MONTHLY; negative counts from the month's end),
-//! `WKST`, and `COUNT` or `UNTIL`. Occurrences repeat at the start's UTC time of day (no
-//! daylight-saving shifts); dates a month lacks (31 February) are skipped, as RFC 5545 says.
-//! DTSTART is always the first occurrence and counts towards `COUNT`.
+//! `WKST`, and `COUNT` or `UNTIL`. Dates a month lacks (31 February) are skipped, as RFC 5545
+//! says. DTSTART is always the first occurrence and counts towards `COUNT`.
+//!
+//! Occurrences repeat at the start's wall-clock time in the event's time zone (RFC 5545 §3.3.5):
+//! a weekly 09:00 in London stays 09:00 when the clocks change and its UTC instant moves. A time
+//! the spring-forward jump skips is read with the offset in force before the jump (02:30 on a
+//! one-hour jump is 03:30 new time); a time the fall-back hour repeats is the first of the two.
+//! Without a zone (and for all-day events, which are dates) occurrences repeat in UTC.
 
-use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc, Weekday};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, Offset, TimeZone, Utc, Weekday};
+use chrono_tz::Tz;
 use std::fmt;
 
 /// Periods examined at most while expanding (daily for ~270 years); guards against runaway rules.
@@ -29,11 +35,52 @@ pub struct Rule {
     pub by_month_day: Vec<i8>,
     pub count: Option<u32>,
     /// Inclusive bound on occurrence starts.
-    pub until: Option<DateTime<Utc>>,
+    pub until: Option<Until>,
     pub wkst: Weekday,
 }
 
-/// An occurrence to skip: an exact start, or every occurrence starting on that (UTC) day.
+/// `UNTIL`, inclusive: a UTC instant (`Z`), a wall-clock time in the event's zone (floating), or
+/// a whole day in the event's zone (a date).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Until {
+    At(DateTime<Utc>),
+    Local(NaiveDateTime),
+    Date(NaiveDate),
+}
+
+impl Until {
+    fn passed(&self, wall: NaiveDateTime, at: DateTime<Utc>) -> bool {
+        match self {
+            Until::At(u) => at > *u,
+            Until::Local(u) => wall > *u,
+            Until::Date(d) => wall.date() > *d,
+        }
+    }
+}
+
+/// RFC 5545 §3.3.5: a wall-clock time in `tz` as an instant. The repeated fall-back hour gives
+/// the first instant; a time skipped by the spring-forward jump is read with the offset in force
+/// before the jump, so it lands as far after the jump as it was meant to be after its start.
+pub fn resolve(tz: Tz, t: NaiveDateTime) -> DateTime<Utc> {
+    if let Some(x) = tz.from_local_datetime(&t).earliest() {
+        return x.with_timezone(&Utc);
+    }
+    // ponytail: "before the jump" = a day earlier; no zone changes its offset twice in a day.
+    let before = tz.offset_from_utc_datetime(&(t - Duration::days(1))).fix().local_minus_utc();
+    (t - Duration::seconds(before as i64)).and_utc()
+}
+
+/// `t` as wall-clock time in `zone` (UTC without one).
+pub fn wall(t: DateTime<Utc>, zone: Option<Tz>) -> NaiveDateTime {
+    zone.map(|z| t.with_timezone(&z).naive_local()).unwrap_or_else(|| t.naive_utc())
+}
+
+fn instant(t: NaiveDateTime, zone: Option<Tz>) -> DateTime<Utc> {
+    zone.map(|z| resolve(z, t)).unwrap_or_else(|| t.and_utc())
+}
+
+/// An occurrence to skip: an exact start, or every occurrence starting on that day (in the
+/// event's zone).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Exception {
     At(DateTime<Utc>),
@@ -47,6 +94,8 @@ pub struct Series {
     pub end: DateTime<Utc>,
     pub rule: Option<Rule>,
     pub exceptions: Vec<Exception>,
+    /// The zone occurrences repeat in (wall-clock time); `None` repeats in UTC (all-day events).
+    pub zone: Option<Tz>,
 }
 
 const DAYS: [(&str, Weekday); 7] =
@@ -80,14 +129,16 @@ fn parse_by_day(s: &str) -> Result<(Option<i8>, Weekday), String> {
     Ok((ord, weekday(day)?))
 }
 
-/// `UNTIL`: a UTC date-time (`Z`), a floating date-time (read as UTC) or a date (through its end).
-fn parse_until(s: &str) -> Result<DateTime<Utc>, String> {
-    let t = s.trim().trim_end_matches(['Z', 'z']);
+/// `UNTIL`: a UTC date-time (`Z`), a floating date-time or a date (through its end), the last two
+/// in the event's zone.
+fn parse_until(s: &str) -> Result<Until, String> {
+    let s = s.trim();
+    let t = s.trim_end_matches(['Z', 'z']);
     if let Ok(dt) = NaiveDateTime::parse_from_str(t, "%Y%m%dT%H%M%S") {
-        return Ok(dt.and_utc());
+        return Ok(if t.len() < s.len() { Until::At(dt.and_utc()) } else { Until::Local(dt) });
     }
     if let Ok(d) = NaiveDate::parse_from_str(t, "%Y%m%d") {
-        return Ok(d.and_time(NaiveTime::from_hms_opt(23, 59, 59).unwrap_or_default()).and_utc());
+        return Ok(Until::Date(d));
     }
     Err(format!("UNTIL '{s}' is not a date (YYYYMMDD) or UTC date-time (YYYYMMDDTHHMMSSZ)"))
 }
@@ -179,8 +230,11 @@ impl fmt::Display for Rule {
         if let Some(c) = self.count {
             write!(f, ";COUNT={c}")?;
         }
-        if let Some(u) = self.until {
-            write!(f, ";UNTIL={}", u.format("%Y%m%dT%H%M%SZ"))?;
+        match self.until {
+            Some(Until::At(u)) => write!(f, ";UNTIL={}", u.format("%Y%m%dT%H%M%SZ"))?,
+            Some(Until::Local(u)) => write!(f, ";UNTIL={}", u.format("%Y%m%dT%H%M%S"))?,
+            Some(Until::Date(d)) => write!(f, ";UNTIL={}", d.format("%Y%m%d"))?,
+            None => {}
         }
         if self.wkst != Weekday::Mon {
             write!(f, ";WKST={}", day_name(self.wkst))?;
@@ -195,6 +249,21 @@ fn days_in_month(year: i32, month: u32) -> u32 {
 }
 
 impl Rule {
+    /// The rule as another app reads it next to its DTSTART (RFC 5545 §3.3.10): UNTIL a date for
+    /// all-day events, otherwise a UTC instant (the form a DTSTART with TZID requires).
+    pub fn exported(&self, zone: Option<Tz>, all_day: bool) -> Rule {
+        let end_of = |d: NaiveDate| d.and_time(NaiveTime::from_hms_opt(23, 59, 59).unwrap_or_default());
+        let until = self.until.map(|u| match (u, all_day) {
+            (Until::At(t), true) => Until::Date(t.date_naive()),
+            (Until::Local(t), true) => Until::Date(t.date()),
+            (Until::Date(d), true) => Until::Date(d),
+            (Until::At(t), false) => Until::At(t),
+            (Until::Local(t), false) => Until::At(instant(t, zone)),
+            (Until::Date(d), false) => Until::At(instant(end_of(d), zone)),
+        });
+        Rule { until, ..self.clone() }
+    }
+
     /// Candidate days of the `k`-th period after the one containing `d0`: (period start, sorted days).
     fn period(&self, d0: NaiveDate, k: i64) -> Option<(NaiveDate, Vec<NaiveDate>)> {
         let step = k * self.interval as i64;
@@ -269,21 +338,25 @@ impl Rule {
 
     /// Occurrence starts up to `horizon` (inclusive), honouring COUNT and UNTIL: DTSTART first,
     /// then those from `after` on (all of them when the rule has a COUNT, which counts from DTSTART).
-    pub fn starts(&self, dtstart: DateTime<Utc>, after: DateTime<Utc>, horizon: DateTime<Utc>) -> Vec<DateTime<Utc>> {
-        let (d0, time) = (dtstart.date_naive(), dtstart.time());
-        let first = if self.count.is_none() && after > dtstart { self.periods_before(d0, after.date_naive()) } else { 0 };
+    /// Days and times are reckoned in `zone` (UTC without one).
+    pub fn starts(&self, dtstart: DateTime<Utc>, zone: Option<Tz>, after: DateTime<Utc>, horizon: DateTime<Utc>) -> Vec<DateTime<Utc>> {
+        let local = wall(dtstart, zone);
+        let (d0, time) = (local.date(), local.time());
+        let first = if self.count.is_none() && after > dtstart { self.periods_before(d0, wall(after, zone).date()) } else { 0 };
+        let last_day = wall(horizon, zone).date();
         let mut out = vec![dtstart];
         'periods: for k in first..first + MAX_PERIODS {
             let Some((period_start, days)) = self.period(d0, k) else { break };
-            if period_start > horizon.date_naive() {
+            if period_start > last_day {
                 break;
             }
             for day in days {
-                let s = day.and_time(time).and_utc();
+                let w = day.and_time(time);
+                let s = instant(w, zone);
                 if s <= dtstart {
                     continue;
                 }
-                if s > horizon || self.until.is_some_and(|u| s > u) || self.count.is_some_and(|c| out.len() as u32 >= c) {
+                if s > horizon || self.until.is_some_and(|u| u.passed(w, s)) || self.count.is_some_and(|c| out.len() as u32 >= c) {
                     break 'periods;
                 }
                 out.push(s);
@@ -311,11 +384,27 @@ impl Exception {
             .map_err(|_| format!("'{s}' is not a date (YYYY-MM-DD) or date-time (RFC 3339)"))
     }
 
-    fn skips(&self, start: DateTime<Utc>) -> bool {
+    /// Whether this exception removes the occurrence starting at `start`. An instant matches the
+    /// occurrence within three hours of it: occurrences are at least 21 hours apart (no rule here
+    /// repeats more often than daily), and an instant stored before occurrences followed the zone's
+    /// clock changes is up to the zone's daylight-saving shift (at most two hours) away from it.
+    fn skips(&self, start: DateTime<Utc>, zone: Option<Tz>) -> bool {
         match self {
-            Exception::At(t) => *t == start,
-            Exception::Day(d) => start.date_naive() == *d,
+            Exception::At(t) => (*t - start).abs() < Duration::hours(3),
+            Exception::Day(d) => wall(start, zone).date() == *d,
         }
+    }
+}
+
+impl Series {
+    /// The occurrence an exception removes, if it removes one (to write it as EXDATE).
+    pub fn excluded(&self, x: &Exception) -> Option<DateTime<Utc>> {
+        let rule = self.rule.as_ref()?;
+        let anchor = match x {
+            Exception::At(t) => *t,
+            Exception::Day(d) => d.and_time(NaiveTime::MIN).and_utc(),
+        };
+        rule.starts(self.start, self.zone, anchor - Duration::days(2), anchor + Duration::days(2)).into_iter().find(|s| x.skips(*s, self.zone))
     }
 }
 
@@ -325,11 +414,11 @@ pub fn occurrences(series: &Series, from: DateTime<Utc>, to: DateTime<Utc>) -> V
     let duration = (series.end - series.start).max(Duration::zero());
     let starts = match &series.rule {
         None => vec![series.start],
-        Some(rule) => rule.starts(series.start, from - duration, to),
+        Some(rule) => rule.starts(series.start, series.zone, from - duration, to),
     };
     starts
         .into_iter()
-        .filter(|s| !series.exceptions.iter().any(|x| x.skips(*s)))
+        .filter(|s| !series.exceptions.iter().any(|x| x.skips(*s, series.zone)))
         .map(|s| (s, s + duration))
         .filter(|(s, e)| *s < to && (*e > from || (*s >= from && s == e)))
         .collect()
@@ -345,7 +434,7 @@ mod tests {
 
     fn series(start: &str, minutes: i64, rule: &str) -> Series {
         let start = t(start);
-        Series { start, end: start + Duration::minutes(minutes), rule: Some(parse(rule).unwrap()), exceptions: vec![] }
+        Series { start, end: start + Duration::minutes(minutes), rule: Some(parse(rule).unwrap()), exceptions: vec![], zone: None }
     }
 
     fn starts(s: &Series, from: &str, to: &str) -> Vec<String> {
@@ -421,10 +510,152 @@ mod tests {
     }
 
     #[test]
-    fn utc_times_ignore_daylight_saving() {
-        // Europe leaves summer time on 25 Oct 2026; the occurrences stay at 09:00 UTC.
+    fn without_a_zone_times_repeat_in_utc() {
+        // No zone (as before 0.16, and all-day events): the occurrences stay at 09:00 UTC.
         let s = series("2026-10-19T09:00:00Z", 60, "FREQ=WEEKLY;COUNT=3");
         assert_eq!(starts(&s, "2026-10-01T00:00:00Z", "2026-12-01T00:00:00Z"), ["2026-10-19 09:00", "2026-10-26 09:00", "2026-11-02 09:00"]);
+    }
+
+    fn zoned(zone: &str, local_start: &str, minutes: i64, rule: &str) -> Series {
+        let tz: Tz = zone.parse().unwrap();
+        let start = resolve(tz, NaiveDateTime::parse_from_str(local_start, "%Y-%m-%d %H:%M").unwrap());
+        Series { start, end: start + Duration::minutes(minutes), rule: Some(parse(rule).unwrap()), exceptions: vec![], zone: Some(tz) }
+    }
+
+    fn utc_starts(s: &Series, n: usize) -> Vec<String> {
+        occurrences(s, s.start, s.start + Duration::days(800)).into_iter().take(n).map(|(a, _)| a.format("%Y-%m-%d %H:%M").to_string()).collect()
+    }
+
+    /// (zone, first occurrence in local time, rule, the UTC starts expected). Each row crosses a
+    /// change of the zone's clocks (or a date when it used to change).
+    const TABLE: &[(&str, &str, &str, &[&str])] = &[
+        // Europe/London: BST from 29 Mar 2026 01:00 UTC to 25 Oct 2026 01:00 UTC.
+        ("Europe/London", "2026-03-23 09:00", "FREQ=WEEKLY;COUNT=2", &["2026-03-23 09:00", "2026-03-30 08:00"]),
+        ("Europe/London", "2026-10-19 09:00", "FREQ=WEEKLY;COUNT=3", &["2026-10-19 08:00", "2026-10-26 09:00", "2026-11-02 09:00"]),
+        ("Europe/London", "2026-03-02 09:00", "FREQ=MONTHLY;BYDAY=1MO;COUNT=2", &["2026-03-02 09:00", "2026-04-06 08:00"]),
+        ("Europe/London", "2026-03-28 09:00", "FREQ=YEARLY;COUNT=2", &["2026-03-28 09:00", "2027-03-28 08:00"]),
+        // America/New_York: EDT from 8 Mar 2026 to 1 Nov 2026 (02:00 local).
+        ("America/New_York", "2026-03-03 09:00", "FREQ=WEEKLY;BYDAY=TU;COUNT=2", &["2026-03-03 14:00", "2026-03-10 13:00"]),
+        ("America/New_York", "2026-10-27 09:00", "FREQ=WEEKLY;BYDAY=TU;COUNT=2", &["2026-10-27 13:00", "2026-11-03 14:00"]),
+        ("America/New_York", "2026-10-30 09:00", "FREQ=MONTHLY;BYDAY=-1FR;COUNT=2", &["2026-10-30 13:00", "2026-11-27 14:00"]),
+        ("America/New_York", "2026-03-10 09:00", "FREQ=YEARLY;COUNT=2", &["2026-03-10 13:00", "2027-03-10 14:00"]),
+        // Australia/Sydney (southern hemisphere): AEDT ends 5 Apr 2026, starts 4 Oct 2026.
+        ("Australia/Sydney", "2026-04-01 09:00", "FREQ=WEEKLY;COUNT=2", &["2026-03-31 22:00", "2026-04-07 23:00"]),
+        ("Australia/Sydney", "2026-09-30 09:00", "FREQ=WEEKLY;COUNT=2", &["2026-09-29 23:00", "2026-10-06 22:00"]),
+        ("Australia/Sydney", "2026-03-02 09:00", "FREQ=MONTHLY;BYDAY=1MO;COUNT=2", &["2026-03-01 22:00", "2026-04-05 23:00"]),
+        ("Australia/Sydney", "2026-04-04 09:00", "FREQ=YEARLY;COUNT=2", &["2026-04-03 22:00", "2027-04-03 23:00"]),
+        // Asia/Kolkata: no daylight saving; the same UTC time all year.
+        ("Asia/Kolkata", "2026-03-23 09:00", "FREQ=WEEKLY;INTERVAL=4;COUNT=3", &["2026-03-23 03:30", "2026-04-20 03:30", "2026-05-18 03:30"]),
+        ("Asia/Kolkata", "2026-10-19 09:00", "FREQ=MONTHLY;BYDAY=1MO;COUNT=2", &["2026-10-19 03:30", "2026-11-02 03:30"]),
+        // America/Sao_Paulo: daylight saving abolished in 2019; it used to start on 4 Nov 2018.
+        ("America/Sao_Paulo", "2026-10-26 09:00", "FREQ=WEEKLY;COUNT=3", &["2026-10-26 12:00", "2026-11-02 12:00", "2026-11-09 12:00"]),
+        ("America/Sao_Paulo", "2018-10-28 09:00", "FREQ=WEEKLY;COUNT=2", &["2018-10-28 12:00", "2018-11-04 11:00"]),
+        // Australia/Lord_Howe: a 30-minute shift, +11:00 to +10:30 on 5 Apr 2026, back on 4 Oct.
+        ("Australia/Lord_Howe", "2026-04-01 09:00", "FREQ=WEEKLY;COUNT=2", &["2026-03-31 22:00", "2026-04-07 22:30"]),
+        ("Australia/Lord_Howe", "2026-09-30 09:00", "FREQ=WEEKLY;COUNT=2", &["2026-09-29 22:30", "2026-10-06 22:00"]),
+        ("Australia/Lord_Howe", "2026-04-04 09:00", "FREQ=YEARLY;COUNT=2", &["2026-04-03 22:00", "2027-04-03 22:30"]),
+    ];
+
+    #[test]
+    fn occurrences_keep_their_wall_clock_time_in_the_events_zone() {
+        for (zone, local, rule, want) in TABLE {
+            let s = zoned(zone, local, 60, rule);
+            assert_eq!(utc_starts(&s, 10), *want, "{zone} {local} {rule}");
+            // ...and every one is at the same wall-clock time.
+            let tz: Tz = zone.parse().unwrap();
+            for (a, _) in occurrences(&s, s.start, s.start + Duration::days(800)) {
+                assert_eq!(a.with_timezone(&tz).format("%H:%M").to_string(), local[11..], "{zone} {rule} {a}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_two_awkward_hours() {
+        // 02:30 does not exist on 8 Mar 2026 in New York: read with the offset before the jump
+        // (EST), it is 07:30 UTC = 03:30 EDT. The next day it is 02:30 EDT again.
+        let gap = zoned("America/New_York", "2026-03-07 02:30", 30, "FREQ=DAILY;COUNT=3");
+        assert_eq!(utc_starts(&gap, 3), ["2026-03-07 07:30", "2026-03-08 07:30", "2026-03-09 06:30"]);
+        // Lord Howe's 30-minute jump (02:00 to 02:30 on 4 Oct 2026): 02:15 becomes 02:45.
+        let half = zoned("Australia/Lord_Howe", "2026-10-03 02:15", 30, "FREQ=DAILY;COUNT=3");
+        assert_eq!(utc_starts(&half, 3), ["2026-10-02 15:45", "2026-10-03 15:45", "2026-10-04 15:15"]);
+        let tz: Tz = "Australia/Lord_Howe".parse().unwrap();
+        assert_eq!(occurrences(&half, half.start, half.start + Duration::days(3))[1].0.with_timezone(&tz).format("%H:%M").to_string(), "02:45");
+        // 01:30 happens twice on 1 Nov 2026 in New York: the first (EDT, 05:30 UTC).
+        let fold = zoned("America/New_York", "2026-10-31 01:30", 30, "FREQ=DAILY;COUNT=3");
+        assert_eq!(utc_starts(&fold, 3), ["2026-10-31 05:30", "2026-11-01 05:30", "2026-11-02 06:30"]);
+        // London's repeated hour on 25 Oct 2026: 01:30 BST (00:30 UTC), not 01:30 GMT.
+        let london = zoned("Europe/London", "2026-10-24 01:30", 30, "FREQ=DAILY;COUNT=2");
+        assert_eq!(utc_starts(&london, 2), ["2026-10-24 00:30", "2026-10-25 00:30"]);
+    }
+
+    #[test]
+    fn until_as_the_standard_reads_it() {
+        // A UTC UNTIL is an instant: 14:00 UTC is 09:00 EST on 2 Nov, so 2 Nov is in.
+        let at = zoned("America/New_York", "2026-10-26 09:00", 60, "FREQ=WEEKLY;UNTIL=20261102T140000Z");
+        assert_eq!(utc_starts(&at, 5), ["2026-10-26 13:00", "2026-11-02 14:00"]);
+        // An UNTIL computed from the first occurrence's UTC time (13:00) ends a week earlier: an
+        // instant is an instant.
+        let early = zoned("America/New_York", "2026-10-26 09:00", 60, "FREQ=WEEKLY;UNTIL=20261102T130000Z");
+        assert_eq!(utc_starts(&early, 5), ["2026-10-26 13:00"]);
+        // A date UNTIL is that whole day in the event's zone; a floating one is its wall clock.
+        for rule in ["FREQ=WEEKLY;UNTIL=20261102", "FREQ=WEEKLY;UNTIL=20261102T090000"] {
+            let s = zoned("America/New_York", "2026-10-26 09:00", 60, rule);
+            assert_eq!(utc_starts(&s, 5), ["2026-10-26 13:00", "2026-11-02 14:00"], "{rule}");
+        }
+        // A Sydney evening meeting on 2 Nov local is 2 Nov morning UTC: still in on UNTIL=20261102...
+        let syd = zoned("Australia/Sydney", "2026-10-26 20:00", 60, "FREQ=WEEKLY;UNTIL=20261102");
+        assert_eq!(utc_starts(&syd, 5), ["2026-10-26 09:00", "2026-11-02 09:00"]);
+        // ...and is written for other apps as a UTC instant (DTSTART has a TZID), or as a date for
+        // all-day events.
+        let r = parse("FREQ=WEEKLY;UNTIL=20261102").unwrap();
+        assert_eq!(r.exported(syd.zone, false).to_string(), "FREQ=WEEKLY;UNTIL=20261102T125959Z");
+        assert_eq!(r.exported(None, true).to_string(), "FREQ=WEEKLY;UNTIL=20261102");
+        assert_eq!(parse("FREQ=DAILY;UNTIL=20261102T090000Z").unwrap().exported(None, true).to_string(), "FREQ=DAILY;UNTIL=20261102");
+        // COUNT counts occurrences, whatever the clocks do.
+        let count = zoned("Europe/London", "2026-10-20 09:00", 60, "FREQ=DAILY;COUNT=7");
+        assert_eq!(utc_starts(&count, 10).len(), 7);
+    }
+
+    #[test]
+    fn exceptions_still_match_across_a_change_of_clocks() {
+        // A weekly 09:00 London meeting created in October 2026, before 0.16. Its stored
+        // exceptions were written at the old (UTC-repeating) instants: 08:00 UTC for 2 Nov,
+        // though 2 Nov 09:00 is now 09:00 UTC. They still remove their occurrences, as do exact
+        // instants (from calendar apps, which already used the zone), dates, and a RECURRENCE-ID.
+        let mut s = zoned("Europe/London", "2026-10-19 09:00", 60, "FREQ=WEEKLY;COUNT=6");
+        s.exceptions = vec![
+            Exception::parse("2026-11-02T08:00:00.000Z").unwrap(),
+            Exception::parse("2026-11-09T09:00:00Z").unwrap(),
+            Exception::parse("2026-11-16").unwrap(),
+        ];
+        assert_eq!(utc_starts(&s, 10), ["2026-10-19 08:00", "2026-10-26 09:00", "2026-11-23 09:00"]);
+        // Each names the occurrence it removes (written as EXDATE).
+        let removed: Vec<_> = s.exceptions.iter().map(|x| s.excluded(x).map(|t| t.format("%Y-%m-%d %H:%M").to_string())).collect();
+        assert_eq!(removed, [Some("2026-11-02 09:00".into()), Some("2026-11-09 09:00".into()), Some("2026-11-16 09:00".into())]);
+        assert_eq!(s.excluded(&Exception::parse("2026-11-03").unwrap()), None, "a day without an occurrence");
+        // A date is a day in the event's zone: Sydney's 08:00 on 3 Nov is 2 Nov in UTC.
+        let mut syd = zoned("Australia/Sydney", "2026-11-02 08:00", 60, "FREQ=DAILY;COUNT=3");
+        syd.exceptions = vec![Exception::parse("2026-11-03").unwrap()];
+        assert_eq!(utc_starts(&syd, 5), ["2026-11-01 21:00", "2026-11-03 21:00"]);
+    }
+
+    #[test]
+    fn an_event_made_before_the_change_is_now_right() {
+        // Stored like every event the editor made: a UTC start and the person's zone. Before 0.16
+        // this weekly 09:00 (New York) series came out at 13:00 UTC all year, so 08:00 EST from
+        // November; now it is 09:00 local on both sides of 1 Nov.
+        let tz: Tz = "America/New_York".parse().unwrap();
+        let start = t("2026-10-20T13:00:00Z");
+        let s = Series { start, end: start + Duration::minutes(30), rule: Some(parse("FREQ=WEEKLY;BYDAY=TU").unwrap()), exceptions: vec![], zone: Some(tz) };
+        let local: Vec<String> = occurrences(&s, t("2026-10-01T00:00:00Z"), t("2026-11-20T00:00:00Z"))
+            .into_iter()
+            .map(|(a, _)| a.with_timezone(&tz).format("%a %d %b %H:%M %Z").to_string())
+            .collect();
+        assert_eq!(local, ["Tue 20 Oct 09:00 EDT", "Tue 27 Oct 09:00 EDT", "Tue 03 Nov 09:00 EST", "Tue 10 Nov 09:00 EST", "Tue 17 Nov 09:00 EST"]);
+        // A window far away still skips ahead, in the zone.
+        let far = occurrences(&s, t("2040-07-01T00:00:00Z"), t("2040-07-08T00:00:00Z"));
+        assert_eq!(far.len(), 1);
+        assert_eq!(far[0].0.with_timezone(&tz).format("%a %H:%M").to_string(), "Tue 09:00");
     }
 
     #[test]
@@ -438,7 +669,7 @@ mod tests {
         c.exceptions = vec![Exception::Day(NaiveDate::from_ymd_opt(2026, 11, 3).unwrap())];
         assert_eq!(starts(&c, "2026-01-01T00:00:00Z", "2030-01-01T00:00:00Z"), ["2026-11-02 09:00", "2026-11-04 09:00"]);
         // A single event and a zero-length one.
-        let single = Series { start: t("2026-11-02T09:00:00Z"), end: t("2026-11-02T09:00:00Z"), rule: None, exceptions: vec![] };
+        let single = Series { start: t("2026-11-02T09:00:00Z"), end: t("2026-11-02T09:00:00Z"), rule: None, exceptions: vec![], zone: None };
         assert_eq!(occurrences(&single, t("2026-11-02T09:00:00Z"), t("2026-11-02T10:00:00Z")).len(), 1);
         assert!(occurrences(&single, t("2026-11-02T09:00:01Z"), t("2026-11-02T10:00:00Z")).is_empty());
         // Far-away windows of an endless rule skip ahead instead of walking every day since 1900.
@@ -456,7 +687,7 @@ mod tests {
             // Same answer as walking every period from the start (possible up to ~2170)...
             let (from, to) = (t("2150-03-01T00:00:00Z"), t("2151-03-01T00:00:00Z"));
             let walked: Vec<_> =
-                old.rule.as_ref().unwrap().starts(old.start, old.start, to).into_iter().filter(|s| *s + Duration::minutes(60) > from).collect();
+                old.rule.as_ref().unwrap().starts(old.start, None, old.start, to).into_iter().filter(|s| *s + Duration::minutes(60) > from).collect();
             assert!(!walked.is_empty(), "{rule}");
             assert_eq!(occurrences(&old, from, to).into_iter().map(|o| o.0).collect::<Vec<_>>(), walked, "{rule}");
             // ...and far beyond what walking could reach.

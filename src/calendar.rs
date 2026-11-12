@@ -19,7 +19,7 @@ pub(crate) const ATTENDEES: &str = "e_calendar_event__attendees";
 pub(crate) const REMINDERS: &str = "e_calendar_event__reminders";
 /// Changing one of these is a new version of the invitation (SEQUENCE + 1).
 const SIGNIFICANT: &[&str] =
-    &["subject", "starts_at", "ends_at", "all_day", "location", "meeting_link", "recurrence", "recurrence_exceptions", "status", "description"];
+    &["subject", "starts_at", "ends_at", "all_day", "timezone", "location", "meeting_link", "recurrence", "recurrence_exceptions", "status", "description"];
 const MAX_RANGE_DAYS: i64 = 400;
 const MAX_REMINDER_MINUTES: i64 = 40_320;
 
@@ -33,7 +33,9 @@ pub fn series(doc: &Doc) -> Option<Series> {
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(Value::as_str).filter_map(|x| Exception::parse(x).ok()).collect())
         .unwrap_or_default();
-    Some(Series { start, end, rule, exceptions })
+    // All-day events are dates (UTC midnights); timed ones repeat at their wall-clock time.
+    let zone = if b(doc, "all_day") { None } else { s(doc, "timezone").and_then(ics::zone) };
+    Some(Series { start, end, rule, exceptions, zone })
 }
 
 fn lower(v: Option<&str>) -> String {
@@ -110,8 +112,11 @@ pub fn vevent(doc: &Doc, organizer_name: Option<String>, cancelled: bool, alarms
         status: status.into(),
         private: s(doc, "visibility") != Some("Public"),
         categories: s(doc, "category").map(str::to_string),
-        rrule: sr.rule.map(|r| r.to_string()),
-        exceptions: sr.exceptions,
+        // A repeating timed event is written in its zone (DTSTART;TZID=), so other calendars
+        // repeat it at the same wall-clock time as Ferrum does.
+        tzid: sr.zone.filter(|_| sr.rule.is_some()),
+        rrule: sr.rule.as_ref().map(|r| r.exported(sr.zone, b(doc, "all_day")).to_string()),
+        exceptions: sr.exceptions.iter().map(|x| sr.excluded(x).map(Exception::At).unwrap_or(*x)).collect(),
         organizer: s(doc, "owner").map(|o| (organizer_name, o.to_string())),
         attendees: attendees(doc).into_iter().map(|(email, name, response)| Attendee { email, name, partstat: partstat(&response) }).collect(),
         alarms: if alarms { rows(doc, "reminders").iter().map(|r| int(r, "minutes_before")).collect() } else { vec![] },
@@ -839,6 +844,15 @@ pub async fn feed(k: &Kernel, tenant: Uuid, token: &str) -> Result<SiteResponse>
 
 /// An event's own fields from iCalendar, for imports and calendar apps.
 pub(crate) fn event_fields(e: &ics::ParsedEvent) -> Doc {
+    let mut doc = event_fields_without_zone(e);
+    // The zone its times were written in (kept when the app sent UTC times).
+    if let Some(z) = e.tzid.as_deref().filter(|_| !e.all_day) {
+        doc.insert("timezone".into(), json!(z));
+    }
+    doc
+}
+
+fn event_fields_without_zone(e: &ics::ParsedEvent) -> Doc {
     let status = match e.status.as_deref() {
         Some("CANCELLED") => "Cancelled",
         Some("TENTATIVE") => "Tentative",
@@ -1033,7 +1047,9 @@ mod tests {
         assert_eq!((ev.sequence, ev.status.as_str(), ev.private), (3, "CONFIRMED", true));
         assert_eq!(ev.attendees[0].partstat, "ACCEPTED");
         assert_eq!(ev.alarms, vec![10]);
-        assert_eq!(ev.exceptions, vec![Exception::Day(NaiveDate::from_ymd_opt(2026, 11, 9).unwrap())]);
+        // The date exception is written as the occurrence it removes, in the event's zone.
+        assert_eq!(ev.exceptions, vec![Exception::At("2026-11-09T03:30:00Z".parse().unwrap())]);
+        assert_eq!((ev.tzid.map(|z| z.name()), ev.rrule.as_deref()), (Some("Asia/Kolkata"), Some("FREQ=WEEKLY;COUNT=2")));
         let all_day = event(json!({"subject": "Offsite", "starts_at": "2026-12-24T00:00:00Z", "ends_at": "2026-12-26T00:00:00Z", "all_day": true}));
         assert_eq!(when(&all_day), "Thu 24 Dec 2026 – Fri 25 Dec 2026 (all day)");
         assert_eq!(merge(vec![]), vec![]);
