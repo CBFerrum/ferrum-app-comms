@@ -2489,6 +2489,55 @@ async fn calendar_proposals(t: &T, users: &HashMap<String, Ctx>, smtp: &Smtp) {
     for e in [ev, moved] {
         k.delete(alice, "CalendarEvent", e, None).await.unwrap();
     }
+
+    // Rich notes and files from Drive: kept safe, written as X-ALT-DESC, mailed as HTML, never to a free/busy viewer.
+    let notes =
+        t.ok(alice, "POST", "/calendar/calendars", &[], json!({"name": "Notes", "shares": [{"person": "carol@acme.test", "level": "Free/busy"}]})).await;
+    let file = Uuid::now_v7();
+    let rich = k
+        .insert(
+            alice,
+            "CalendarEvent",
+            obj(json!({"subject": "Plan", "calendar": notes["id"], "starts_at": "2027-03-04T09:00:00Z", "ends_at": "2027-03-04T10:00:00Z",
+            "description_html": "<p><b>Agenda</b></p><script>steal()</script><img src=\"https://t.example/p.gif\"><ul><li>Budget</li></ul>",
+            "attachments": [{"id": file.to_string(), "name": "Budget.xlsx", "size": 2048}], "attendees": [{"email": "guest@partner.test"}]})),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (rich["description_html"].as_str(), rich["description"].as_str()),
+        (Some("<p><b>Agenda</b></p><ul><li>Budget</li></ul>"), Some("Agenda\nBudget"))
+    );
+    refused(
+        k.insert(
+            alice,
+            "CalendarEvent",
+            obj(json!({"subject": "x", "starts_at": "2027-03-04T09:00:00Z", "ends_at": "2027-03-04T10:00:00Z", "attachments": [{"name": "no id"}]})),
+        )
+        .await,
+        "invalid",
+    );
+    let range = [("from", "2027-03-04"), ("to", "2027-03-05")];
+    let mine = t.ok(alice, "GET", "/calendar/events", &range, Value::Null).await;
+    let o = mine["occurrences"].as_array().unwrap().iter().find(|o| o["subject"] == json!("Plan")).unwrap().clone();
+    assert_eq!(o["attachments"][0]["name"], json!("Budget.xlsx"));
+    let theirs = t.ok(carol, "GET", "/calendar/events", &range, Value::Null).await;
+    assert!(!theirs.to_string().contains("Agenda") && !theirs.to_string().contains("Budget"), "{theirs}");
+    let (ics, content): (String, String) = {
+        let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
+        let v = sqlx::query_as(
+            "select ics, content from e_communication where tenant_id = $1 and subject like 'Invitation: Plan%' order by created_at desc limit 1",
+        )
+        .bind(t.tenant)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        v
+    };
+    assert!(ics.contains("X-ALT-DESC;FMTTYPE=text/html:<p><b>Agenda</b></p>") && ics.contains("DESCRIPTION:Agenda\\nBudget"), "{ics}");
+    assert!(content.contains("<b>Agenda</b>") && content.contains("Budget.xlsx") && !content.contains("steal()"), "{content}");
+    t.ok(alice, "DELETE", &format!("/calendar/calendars/{}", notes["id"].as_str().unwrap()), &[("events", "delete")], Value::Null).await;
 }
 
 async fn hosted_mail(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>, imap: &FakeImap) {
