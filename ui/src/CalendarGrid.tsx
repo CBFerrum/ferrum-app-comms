@@ -346,10 +346,10 @@ export function EventBar({ o, style, before, after, onOpen }: { o: Occurrence; s
       type="button"
       onClick={onOpen}
       className={cn("z-10 mx-0.5 flex min-w-0 items-center gap-1 overflow-hidden rounded-sm px-1.5 text-start text-xs font-medium text-primary-foreground hover:brightness-95 focus-visible:outline-offset-1", before && "ms-0 rounded-s-none", after && "me-0 rounded-e-none", off && "line-through opacity-60")}
-      style={{ ...style, background: color }}
+      style={{ ...style, background: o.kind === "away" ? "var(--secondary)" : color, color: o.kind === "away" ? "var(--secondary-foreground)" : undefined }}
     >
       {!o.all_day && <span dir="ltr" className="shrink-0 tabular-nums">{timeFmt(new Date(o.start))}</span>}
-      <span dir="auto" className="truncate">{o.subject}</span>
+      <span dir="auto" className="truncate">{o.kind === "away" ? t("Out of office") : o.subject}</span>
     </button>
   );
 }
