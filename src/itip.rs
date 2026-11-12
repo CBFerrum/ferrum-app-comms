@@ -12,8 +12,11 @@
 //! the From domain; mail submitted on this server by a signed-in account is its own proof. A CANCEL
 //! must also come from the organiser recorded when the event was taken from the invitation.
 //!
-//! COUNTER (a guest proposing another time) is not applied: the calendar has no proposals; the
-//! message stays in the Inbox for the organiser to read. A REQUEST is answered from the message.
+//! * a COUNTER (a guest proposing another time) to an event the owner organises is kept as that
+//!   guest's proposal (`proposals.rs`), under the same checks as a REPLY: only from a guest on the
+//!   event's list. It never moves the event; the organiser accepts or declines it in Calendar.
+//!
+//! A REQUEST is answered from the message.
 
 use crate::arrivals::Mail;
 use crate::calendar;
@@ -37,12 +40,14 @@ pub(crate) struct Itip {
     /// (address, PARTSTAT) as written.
     pub attendees: Vec<(String, String)>,
     pub occurrence: bool,
+    /// COMMENT: what a guest wrote with a COUNTER.
+    pub comment: Option<String>,
 }
 
 /// The method, UID, organiser and guests of the first event (lines unfolded; no times needed, as a
 /// REPLY need not carry them).
 pub(crate) fn read(text: &str) -> Option<Itip> {
-    let mut out = Itip { method: String::new(), uid: String::new(), organizer: None, attendees: vec![], occurrence: false };
+    let mut out = Itip { method: String::new(), uid: String::new(), organizer: None, attendees: vec![], occurrence: false, comment: None };
     let mut depth = Vec::<String>::new();
     for l in ics::unfold(text) {
         let Some((name, params, value)) = ics::content_line(&l) else { continue };
@@ -59,6 +64,7 @@ pub(crate) fn read(text: &str) -> Option<Itip> {
             "UID" => out.uid = value.trim().to_string(),
             "ORGANIZER" => out.organizer = ics::mailto(&value),
             "RECURRENCE-ID" => out.occurrence = true,
+            "COMMENT" => out.comment = Some(value.replace("\\n", "\n").replace("\\N", "\n").replace("\\,", ",").replace("\\;", ";").replace("\\\\", "\\")),
             "ATTENDEE" => {
                 if let Some(email) = ics::mailto(&value) {
                     out.attendees.push((email, ics::get(&params, "PARTSTAT").unwrap_or("NEEDS-ACTION").to_ascii_uppercase()));
@@ -179,6 +185,20 @@ pub(crate) async fn apply(k: &Kernel, tenant: Uuid, me: &str, from: &str, text: 
                 None => Applied::Unsupported,
             }
         }
+        "COUNTER" => {
+            if it.organizer.as_deref().is_some_and(|o| o != me) {
+                return Ok(Applied::Refused);
+            }
+            let guests = calendar::attendees(&doc);
+            let Some(guest) = guests.iter().find(|g| g.0 == from) else { return Ok(Applied::Refused) };
+            match counter(&doc, &it, text) {
+                None => Applied::Unsupported,
+                Some(p) => {
+                    let name = guest.1.clone().or_else(|| it.attendees.iter().find(|a| a.0 == from).map(|_| from.to_string()));
+                    if crate::proposals::record(&mut tx, tenant, &doc, from, name.as_deref(), &p, true).await? { Applied::Updated } else { Applied::Same }
+                }
+            }
+        }
         _ => Applied::Unsupported,
     };
     tx.commit().await?;
@@ -200,6 +220,14 @@ fn cancel_patch(doc: &Doc, it: &Itip, text: &str) -> Option<Doc> {
     }
     list.push(json!(skip));
     Some(util::obj(json!({"recurrence_exceptions": list})))
+}
+
+/// The time a COUNTER proposes (and the occurrence it is for), checked against the event; none when
+/// it cannot be read or makes no sense.
+fn counter(doc: &Doc, it: &Itip, text: &str) -> Option<crate::proposals::Proposal> {
+    let e = ics::parse(text).ok()?.events.into_iter().next()?;
+    let p = crate::proposals::Proposal { start: e.start, end: e.end, occurrence: e.recurrence_id.map(|(at, _)| at), note: it.comment.clone() };
+    crate::proposals::checked(doc, p).ok()
 }
 
 /// The calendar part of message `email` in `account` (as `mail` reaches it), applied for `me` and
@@ -348,7 +376,7 @@ mod tests {
         assert_eq!(it.uid, "0192-abc@ferrum");
         assert_eq!(it.organizer.as_deref(), Some("ann@acme.test"));
         assert_eq!(it.attendees, [("bob@out.example".to_string(), "ACCEPTED".to_string()), ("carol@out.example".to_string(), "DECLINED".to_string())]);
-        assert!(!it.occurrence);
+        assert!(!it.occurrence && it.comment.is_none());
         assert_eq!(read("BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:x\r\nEND:VEVENT\r\nEND:VCALENDAR"), None, "no method: not iTIP");
         assert_eq!(read("hello"), None);
     }
@@ -372,6 +400,21 @@ mod tests {
         assert_eq!(ferrum_event("01a1cbf3-d117-71d2-b08c-48cd9d8bacac@ferrum"), Some("01a1cbf3-d117-71d2-b08c-48cd9d8bacac".parse().unwrap()));
         assert_eq!(ferrum_event("abc@google.com"), None);
         assert!(is_calendar("text/calendar; method=REPLY") && is_calendar("application/ics") && !is_calendar("text/plain"));
+    }
+
+    #[test]
+    fn a_counter_proposes_a_time_for_the_event_or_one_occurrence() {
+        let text = "BEGIN:VCALENDAR\r\nMETHOD:COUNTER\r\nBEGIN:VEVENT\r\nUID:0192d3b1-0000-7000-8000-000000000001@ferrum\r\nORGANIZER:mailto:ann@acme.test\r\n\
+            ATTENDEE;PARTSTAT=TENTATIVE:mailto:bob@out.example\r\nRECURRENCE-ID:20270308T090000Z\r\nDTSTART:20270309T140000Z\r\nDTEND:20270309T150000Z\r\n\
+            COMMENT:Monday is full\\, Tuesday?\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let it = read(text).unwrap();
+        assert_eq!((it.method.as_str(), it.occurrence, it.comment.as_deref()), ("COUNTER", true, Some("Monday is full, Tuesday?")));
+        let weekly = util::obj(
+            json!({"id": "0192d3b1-0000-7000-8000-000000000001", "starts_at": "2027-03-01T09:00:00Z", "ends_at": "2027-03-01T10:00:00Z", "recurrence": "FREQ=WEEKLY;COUNT=4"}),
+        );
+        let p = counter(&weekly, &it, text).unwrap();
+        assert_eq!((util::ts(p.start), p.occurrence.map(util::ts)), ("2027-03-09T14:00:00.000Z".to_string(), Some("2027-03-08T09:00:00.000Z".to_string())));
+        assert!(counter(&weekly, &it, &text.replace("RECURRENCE-ID:20270308T090000Z", "RECURRENCE-ID:20270308T100000Z")).is_none(), "no such occurrence");
     }
 
     #[test]

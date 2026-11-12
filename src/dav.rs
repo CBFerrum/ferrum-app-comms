@@ -6,13 +6,18 @@
 //! |---|---|
 //! | `/` | the root: who is signed in |
 //! | `/u/{user}/` | the person (principal) |
-//! | `/u/{user}/calendars/default/` | their calendar: events they organize, or are invited to and have not declined |
+//! | `/u/{user}/calendars/default/` | their default calendar: its events, and those they are invited to and have not declined |
+//! | `/u/{user}/calendars/{id}/` | another calendar of theirs (or the name an app gave it on MKCALENDAR) |
+//! | `/u/{user}/calendars/{id}/` | a calendar shared with them: read-write for "make changes", read-only for "all details", and for "free and busy" each event as "Busy" with its times only |
 //! | `/u/{user}/addressbooks/colleagues/` | the workspace's people, read-only |
 //! | `/u/{user}/addressbooks/contacts/` | CRM contacts they may read, read-only (where CRM is installed) |
 //!
-//! Apps sync by collection tags (`getctag`) and ETags; both are hashes of what GET returns.
+//! Apps sync by collection tags (`getctag`), sync tokens (`sync-collection`, RFC 6578: an unchanged
+//! token answers "nothing new"; any other answers `valid-sync-token`, so the app lists again) and
+//! ETags; all are hashes of what GET returns. A calendar subscribed to from outside is read-only.
 
 use crate::calendar;
+use crate::calendars::{self, Level};
 use crate::ics::{self, ParsedEvent};
 use crate::util::{self, s};
 use ferrum_kernel::{Access, Action, Ctx, Doc, Error, Filter, Kernel, ListQuery, Op, Result, SiteRequest, SiteResponse, Tx};
@@ -58,21 +63,140 @@ impl Book {
     }
 }
 
+/// A calendar as calendar apps see it: one of mine, or one shared with me.
+#[derive(Debug, Clone)]
+struct Coll {
+    /// Its path segment: `default` for my default calendar, else the name an app gave it, or its id.
+    seg: String,
+    id: Uuid,
+    name: String,
+    tone: String,
+    /// Its owner: the organizer of the events made in it.
+    owner: String,
+    /// What I may do in it: Owner and Edit write; Details reads; FreeBusy reads each event as "Busy".
+    level: Level,
+    default: bool,
+    /// Subscribed to from outside: read-only even to its owner.
+    fetched: bool,
+}
+
+impl Coll {
+    fn writable(&self) -> bool {
+        self.level >= Level::Edit && !self.fetched
+    }
+}
+
 #[derive(Debug)]
 enum Res {
     Root,
     Principal,
     CalendarHome,
-    Calendar,
-    Event(String),
+    Calendar(Coll),
+    Event(Coll, String),
+    /// A calendar path that names no calendar (yet: MKCALENDAR makes one there).
+    NoCalendar(String),
     BookHome,
     Book(Book),
     Card(Book, String),
 }
 
+/// The colour apps show for a calendar's tone (`#RRGGBBAA`).
+fn color(tone: &str) -> &'static str {
+    match tone {
+        "green" => "#16A34AFF",
+        "amber" => "#D97706FF",
+        "red" => "#DC2626FF",
+        "purple" => "#7C3AEDFF",
+        "neutral" => "#6B7280FF",
+        _ => "#2563EBFF",
+    }
+}
+
+/// The calendars apps see: mine (the default first, as `default`) and those shared with me.
+async fn collections(k: &Kernel, ctx: &Ctx) -> Result<Vec<Coll>> {
+    let me = ctx.email.to_lowercase();
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let default = calendars::ensure_default(k, &mut tx, ctx, &me).await?;
+    let shared = calendars::shared_with(&mut tx, ctx.tenant, &me).await?;
+    let ids: Vec<Uuid> = shared.keys().copied().collect();
+    let rows: Vec<(Uuid, String, Option<String>, String, Option<String>, Option<bool>)> = sqlx::query_as(
+        "select id, calendar_name, tone, owner, dav_path, is_subscription from e_calendar where tenant_id = $1 and (owner = $2 or id = any($3)) \
+         order by (id = $4) desc, created_at",
+    )
+    .bind(ctx.tenant)
+    .bind(&me)
+    .bind(&ids)
+    .bind(default)
+    .fetch_all(&mut *tx)
+    .await?;
+    let mut out = Vec::new();
+    for (id, name, tone, owner, path, fetched) in rows {
+        let mine = owner == me;
+        let level = if mine { Level::Owner } else { shared.get(&id).copied().unwrap_or(Level::None) };
+        let owner_email = owner.clone();
+        let name = if mine {
+            name
+        } else {
+            let by = calendar::display_name(&mut tx, ctx.tenant, &owner).await?.unwrap_or(owner);
+            format!("{name} ({by})")
+        };
+        let seg = if id == default { "default".to_string() } else { path.filter(|_| mine).unwrap_or_else(|| id.to_string()) };
+        out.push(Coll {
+            seg,
+            id,
+            name,
+            tone: tone.unwrap_or_else(|| "blue".into()),
+            owner: owner_email,
+            level,
+            default: id == default,
+            fetched: fetched.unwrap_or(false),
+        });
+    }
+    tx.commit().await?;
+    Ok(out)
+}
+
+/// The path's resource, with its calendar read when it names one.
+async fn resolve(k: &Kernel, ctx: &Ctx, path: &[&str]) -> Result<Res> {
+    let r = resource(ctx, path)?;
+    let (seg, name) = match &r {
+        Res::NoCalendar(seg) => (seg.clone(), None),
+        Res::Event(c, n) => (c.seg.clone(), Some(n.clone())),
+        _ => return Ok(r),
+    };
+    let found = collections(k, ctx).await?.into_iter().find(|c| c.seg == seg || c.id.to_string() == seg);
+    Ok(match (found, name) {
+        (Some(c), None) => Res::Calendar(c),
+        (Some(c), Some(n)) => Res::Event(c, n),
+        (None, None) => Res::NoCalendar(seg),
+        (None, Some(_)) => return Err(Error::NotFound("calendar".into())),
+    })
+}
+
+/// A calendar not yet read: only its path segment.
+fn unread(seg: &str) -> Coll {
+    Coll {
+        seg: seg.to_string(),
+        id: Uuid::nil(),
+        name: String::new(),
+        tone: String::new(),
+        owner: String::new(),
+        level: Level::None,
+        default: false,
+        fetched: false,
+    }
+}
+
 /// `/api/dav/comms/…`
 pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> Result<SiteResponse> {
-    let res = resource(ctx, path)?;
+    let res = resolve(k, ctx, path).await?;
+    if let Res::NoCalendar(seg) = &res {
+        return match req.method.as_str() {
+            "MKCALENDAR" => mkcalendar(k, ctx, req, seg).await,
+            "OPTIONS" => Ok(options()),
+            _ => Err(Error::NotFound("calendar".into())),
+        };
+    }
     if let Res::Book(Book::Contacts) | Res::Card(Book::Contacts, _) = res
         && !crm(ctx)
     {
@@ -86,6 +210,7 @@ pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> 
         "PUT" => put(k, ctx, req, &res).await,
         "DELETE" => delete(k, ctx, req, &res).await,
         "PROPPATCH" => proppatch(ctx, req, &res),
+        "MKCALENDAR" => Ok(refuse(405, "D:resource-must-be-null", "a calendar is already there")),
         _ => {
             let mut r = SiteResponse::text(405, "text/plain; charset=utf-8", "calendar and contacts apps cannot do that here");
             r.headers.push(("allow".into(), ALLOW.into()));
@@ -94,7 +219,7 @@ pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> 
     }
 }
 
-const ALLOW: &str = "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, REPORT";
+const ALLOW: &str = "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, REPORT, MKCALENDAR";
 
 fn options() -> SiteResponse {
     let mut r = SiteResponse::text(200, "text/plain; charset=utf-8", "");
@@ -123,8 +248,8 @@ fn resource(ctx: &Ctx, path: &[&str]) -> Result<Res> {
         ["u", u, rest @ ..] if *u == me => match rest {
             [] => Res::Principal,
             ["calendars"] => Res::CalendarHome,
-            ["calendars", "default"] => Res::Calendar,
-            ["calendars", "default", n] => Res::Event(n.to_string()),
+            ["calendars", c] => Res::NoCalendar(c.to_string()),
+            ["calendars", c, n] => Res::Event(unread(c), n.to_string()),
             ["addressbooks"] => Res::BookHome,
             ["addressbooks", b] => Res::Book(book(b)?),
             ["addressbooks", b, n] => Res::Card(book(b)?, n.to_string()),
@@ -144,8 +269,9 @@ fn href(ctx: &Ctx, r: &Res) -> String {
         Res::Root => format!("{BASE}/"),
         Res::Principal => p,
         Res::CalendarHome => format!("{p}calendars/"),
-        Res::Calendar => format!("{p}calendars/default/"),
-        Res::Event(n) => format!("{p}calendars/default/{}", enc(n)),
+        Res::Calendar(c) => format!("{p}calendars/{}/", enc(&c.seg)),
+        Res::NoCalendar(seg) => format!("{p}calendars/{}/", enc(seg)),
+        Res::Event(c, n) => format!("{p}calendars/{}/{}", enc(&c.seg), enc(n)),
         Res::BookHome => format!("{p}addressbooks/"),
         Res::Book(b) => format!("{p}addressbooks/{}/", b.slug()),
         Res::Card(b, n) => format!("{p}addressbooks/{}/{}", b.slug(), enc(n)),
@@ -361,8 +487,15 @@ fn all_props(r: &Res) -> Vec<Prop> {
     let p = |ns: &str, n: &str| (ns.to_string(), n.to_string());
     let mut out = vec![p(D, "resourcetype"), p(D, "displayname"), p(D, "current-user-principal")];
     match r {
-        Res::Event(_) | Res::Card(..) => out.extend([p(D, "getetag"), p(D, "getcontenttype")]),
-        Res::Calendar => out.extend([p(CS, "getctag"), p(C, "supported-calendar-component-set"), p(D, "current-user-privilege-set")]),
+        Res::Event(..) | Res::Card(..) => out.extend([p(D, "getetag"), p(D, "getcontenttype")]),
+        Res::Calendar(_) => out.extend([
+            p(CS, "getctag"),
+            p(D, "sync-token"),
+            p(C, "supported-calendar-component-set"),
+            p(D, "current-user-privilege-set"),
+            p(A, "calendar-color"),
+        ]),
+        Res::NoCalendar(_) => {}
         Res::Book(_) => out.extend([p(CS, "getctag"), p(D, "current-user-privilege-set")]),
         Res::Root | Res::Principal => out.extend([p(C, "calendar-home-set"), p(CR, "addressbook-home-set")]),
         Res::CalendarHome | Res::BookHome => {}
@@ -378,12 +511,16 @@ fn privileges(names: &[&str]) -> String {
 fn prop(ctx: &Ctx, r: &Res, (ns, name): &Prop, tag: Option<&str>, item: Option<&Item>) -> Option<String> {
     let href_of = |r: &Res| format!("<D:href>{}</D:href>", x(&href(ctx, r)));
     let is_book = matches!(r, Res::Book(_));
+    let cal = match r {
+        Res::Calendar(c) => Some(c),
+        _ => None,
+    };
     Some(match (ns.as_str(), name.as_str()) {
         (D, "resourcetype") => match r {
             Res::Principal => "<D:collection/><D:principal/>".into(),
-            Res::Calendar => "<D:collection/><C:calendar/>".into(),
+            Res::Calendar(_) => "<D:collection/><C:calendar/>".into(),
             Res::Book(_) => "<D:collection/><CR:addressbook/>".into(),
-            Res::Event(_) | Res::Card(..) => String::new(),
+            Res::Event(..) | Res::Card(..) | Res::NoCalendar(_) => String::new(),
             _ => "<D:collection/>".into(),
         },
         (D, "displayname") => x(&match r {
@@ -396,10 +533,10 @@ fn prop(ctx: &Ctx, r: &Res, (ns, name): &Prop, tag: Option<&str>, item: Option<&
                 }
             }
             Res::CalendarHome => "Calendars".into(),
-            Res::Calendar => "Calendar".into(),
+            Res::Calendar(c) => c.name.clone(),
             Res::BookHome => "Address books".into(),
             Res::Book(b) => b.title().into(),
-            Res::Event(n) | Res::Card(_, n) => n.clone(),
+            Res::Event(_, n) | Res::Card(_, n) | Res::NoCalendar(n) => n.clone(),
         }),
         (D, "current-user-principal") => href_of(&Res::Principal),
         (D, "principal-URL") | (D, "owner") if !matches!(r, Res::Root) => href_of(&Res::Principal),
@@ -409,34 +546,45 @@ fn prop(ctx: &Ctx, r: &Res, (ns, name): &Prop, tag: Option<&str>, item: Option<&
             format!("<D:href>mailto:{}</D:href>{}", x(&ctx.email.to_lowercase()), href_of(&Res::Principal))
         }
         (D, "current-user-privilege-set") => match r {
-            Res::Calendar | Res::Event(_) => privileges(&["read", "write", "write-content", "bind", "unbind", "read-current-user-privilege-set"]),
+            Res::Calendar(c) | Res::Event(c, _) if c.writable() => {
+                privileges(&["read", "write", "write-content", "bind", "unbind", "read-current-user-privilege-set"])
+            }
             _ => privileges(&["read", "read-current-user-privilege-set"]),
         },
-        (D, "supported-report-set") if matches!(r, Res::Calendar) => "<D:supported-report><D:report><C:calendar-multiget/></D:report></D:supported-report>\
-             <D:supported-report><D:report><C:calendar-query/></D:report></D:supported-report>"
+        (D, "supported-report-set") if cal.is_some() => "<D:supported-report><D:report><C:calendar-multiget/></D:report></D:supported-report>\
+             <D:supported-report><D:report><C:calendar-query/></D:report></D:supported-report>\
+             <D:supported-report><D:report><D:sync-collection/></D:report></D:supported-report>"
             .into(),
+        (D, "sync-token") if cal.is_some() => x(&sync_token(tag?)),
         (D, "supported-report-set") if is_book => "<D:supported-report><D:report><CR:addressbook-multiget/></D:report></D:supported-report>\
              <D:supported-report><D:report><CR:addressbook-query/></D:report></D:supported-report>"
             .into(),
-        (C, "supported-calendar-component-set") if matches!(r, Res::Calendar) => "<C:comp name=\"VEVENT\"/>".into(),
-        (C, "supported-calendar-data") if matches!(r, Res::Calendar) => "<C:calendar-data content-type=\"text/calendar\" version=\"2.0\"/>".into(),
+        (C, "supported-calendar-component-set") if cal.is_some() => "<C:comp name=\"VEVENT\"/>".into(),
+        (C, "supported-calendar-data") if cal.is_some() => "<C:calendar-data content-type=\"text/calendar\" version=\"2.0\"/>".into(),
         (CR, "supported-address-data") if is_book => "<CR:address-data-type content-type=\"text/vcard\" version=\"3.0\"/>".into(),
-        (C, "max-resource-size") if matches!(r, Res::Calendar) => MAX_EVENT.to_string(),
-        (C, "calendar-description") if matches!(r, Res::Calendar) => "Events you organize or are invited to in Ferrum".into(),
+        (C, "max-resource-size") if cal.is_some() => MAX_EVENT.to_string(),
+        (C, "calendar-description") => x(match cal?.level {
+            _ if cal?.fetched => "Subscribed from outside: read-only",
+            _ if cal?.default => "Events in your default calendar and those you are invited to, in Ferrum",
+            Level::Owner => "Your calendar in Ferrum",
+            Level::Edit => "Shared with you to make changes",
+            Level::Details => "Shared with you to see all details",
+            _ => "Shared with you to see only when it is busy",
+        }),
         (CR, "addressbook-description") => match r {
             Res::Book(Book::Colleagues) => "The people of your workspace".into(),
             Res::Book(Book::Contacts) => "Contacts from CRM that you may see".into(),
             _ => return None,
         },
-        (A, "calendar-color") if matches!(r, Res::Calendar) => "#2563EBFF".into(),
+        (A, "calendar-color") => color(&cal?.tone).into(),
         (CS, "getctag") => x(tag?),
         (D, "getetag") => x(&item?.etag),
         (D, "getcontenttype") => match r {
-            Res::Event(_) => "text/calendar; charset=utf-8; component=VEVENT".into(),
+            Res::Event(..) => "text/calendar; charset=utf-8; component=VEVENT".into(),
             Res::Card(..) => "text/vcard; charset=utf-8".into(),
             _ => return None,
         },
-        (C, "calendar-data") if matches!(r, Res::Event(_)) => x(&item?.data),
+        (C, "calendar-data") if matches!(r, Res::Event(..)) => x(&item?.data),
         (CR, "address-data") if matches!(r, Res::Card(..)) => x(&item?.data),
         _ => return None,
     })
@@ -461,7 +609,7 @@ async fn propfind(k: &Kernel, ctx: &Ctx, req: &SiteRequest, r: &Res) -> Result<S
     let tagged = asks(&wanted, &[(CS, "getctag")]);
     let mut m = Multi::new();
     match r {
-        Res::Calendar | Res::Book(_) => {
+        Res::Calendar(_) | Res::Book(_) => {
             let items = items(k, ctx, r, None).await?;
             m.add(&href(ctx, r), props(ctx, r, &wanted, Some(&ctag(&items)), None));
             if children {
@@ -471,7 +619,7 @@ async fn propfind(k: &Kernel, ctx: &Ctx, req: &SiteRequest, r: &Res) -> Result<S
                 }
             }
         }
-        Res::Event(n) | Res::Card(_, n) => {
+        Res::Event(_, n) | Res::Card(_, n) => {
             let collection = parent(r);
             let item = items(k, ctx, &collection, Some(std::slice::from_ref(n))).await?.into_iter().next().ok_or_else(|| Error::NotFound("item".into()))?;
             m.add(&href(ctx, r), props(ctx, r, &wanted, None, Some(&item)));
@@ -480,7 +628,7 @@ async fn propfind(k: &Kernel, ctx: &Ctx, req: &SiteRequest, r: &Res) -> Result<S
             m.add(&href(ctx, r), props(ctx, r, &wanted, None, None));
             if children {
                 let collections = match r {
-                    Res::CalendarHome => vec![Res::Calendar],
+                    Res::CalendarHome => collections(k, ctx).await?.into_iter().map(Res::Calendar).collect(),
                     _ if crm(ctx) => vec![Res::Book(Book::Colleagues), Res::Book(Book::Contacts)],
                     _ => vec![Res::Book(Book::Colleagues)],
                 };
@@ -490,7 +638,7 @@ async fn propfind(k: &Kernel, ctx: &Ctx, req: &SiteRequest, r: &Res) -> Result<S
                 }
             }
         }
-        Res::Root | Res::Principal => m.add(&href(ctx, r), props(ctx, r, &wanted, None, None)),
+        Res::Root | Res::Principal | Res::NoCalendar(_) => m.add(&href(ctx, r), props(ctx, r, &wanted, None, None)),
     }
     Ok(m.done())
 }
@@ -498,15 +646,22 @@ async fn propfind(k: &Kernel, ctx: &Ctx, req: &SiteRequest, r: &Res) -> Result<S
 fn child(r: &Res, name: &str) -> Res {
     match r {
         Res::Book(b) => Res::Card(*b, name.to_string()),
-        _ => Res::Event(name.to_string()),
+        Res::Calendar(c) | Res::Event(c, _) => Res::Event(c.clone(), name.to_string()),
+        _ => Res::NoCalendar(name.to_string()),
     }
 }
 
 fn parent(r: &Res) -> Res {
     match r {
         Res::Card(b, _) => Res::Book(*b),
-        _ => Res::Calendar,
+        Res::Event(c, _) => Res::Calendar(c.clone()),
+        _ => Res::NoCalendar(String::new()),
     }
+}
+
+/// A sync token for a collection's tag (RFC 6578 tokens are URIs).
+fn sync_token(tag: &str) -> String {
+    format!("http://ferrum.invalid/sync/{}", tag.trim_matches('"'))
 }
 
 /// Apps may set a calendar's colour or order; nothing here keeps them, so each is refused.
@@ -533,9 +688,26 @@ async fn report(k: &Kernel, ctx: &Ctx, req: &SiteRequest, r: &Res) -> Result<Sit
     let els = elements(&req.body)?;
     let Some(root) = els.first() else { return Err(Error::invalid("an empty REPORT")) };
     let wanted = wanted(&els).unwrap_or_else(|| all_props(&child(r, "")));
-    let calendar = matches!(r, Res::Calendar);
+    let calendar = matches!(r, Res::Calendar(_));
     let book = matches!(r, Res::Book(_));
     let mut m = Multi::new();
+    if root.is(D, "sync-collection") && (calendar || book) {
+        // Nothing new since the token: say so; any other token: the app lists the collection again.
+        let items = items(k, ctx, r, None).await?;
+        let token = sync_token(&ctag(&items));
+        let given = els.iter().find(|e| e.is(D, "sync-token")).map(|e| e.text.trim().to_string()).unwrap_or_default();
+        if !given.is_empty() && given != token {
+            return Ok(refuse(403, "D:valid-sync-token", "the calendar changed; list it again"));
+        }
+        if given.is_empty() {
+            for i in &items {
+                let c = child(r, &i.name);
+                m.add(&href(ctx, &c), props(ctx, &c, &wanted, None, Some(i)));
+            }
+        }
+        m.0 += &format!("<D:sync-token>{}</D:sync-token>", x(&token));
+        return Ok(m.done());
+    }
     if (calendar && root.is(C, "calendar-multiget")) || (book && root.is(CR, "addressbook-multiget")) {
         let hrefs: Vec<String> = els.iter().filter(|e| e.is(D, "href")).map(|e| e.text.trim().to_string()).collect();
         let named = names_in(&hrefs, &href(ctx, r));
@@ -555,9 +727,10 @@ async fn report(k: &Kernel, ctx: &Ctx, req: &SiteRequest, r: &Res) -> Result<Sit
             Res::Book(b) => cards(k, ctx, *b, None).await?,
             _ => {
                 let range = els.iter().find(|e| e.is(C, "time-range")).map(|e| (e.attr("start").and_then(ical_time), e.attr("end").and_then(ical_time)));
+                let Res::Calendar(c) = r else { return Ok(refuse(403, "D:supported-report", "not a calendar")) };
                 let list: Vec<(Doc, String)> =
-                    events(k, ctx, None).await?.into_iter().filter(|(doc, _)| range.is_none_or(|(from, to)| overlaps(doc, from, to))).collect();
-                event_items(k, ctx, list).await?
+                    events(k, ctx, c, None).await?.into_iter().filter(|(doc, _)| range.is_none_or(|(from, to)| overlaps(doc, from, to))).collect();
+                event_items(k, ctx, c, list).await?
             }
         };
         for i in found {
@@ -589,7 +762,7 @@ fn ical_time(v: &str) -> Option<chrono::DateTime<chrono::Utc>> {
 /// A collection's items, or those of them named in `only`.
 async fn items(k: &Kernel, ctx: &Ctx, r: &Res, only: Option<&[String]>) -> Result<Vec<Item>> {
     match r {
-        Res::Calendar => {
+        Res::Calendar(c) => {
             let ids = match only {
                 Some(names) => {
                     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
@@ -599,32 +772,52 @@ async fn items(k: &Kernel, ctx: &Ctx, r: &Res, only: Option<&[String]>) -> Resul
                 }
                 None => None,
             };
-            event_items(k, ctx, events(k, ctx, ids.as_deref()).await?).await
+            event_items(k, ctx, c, events(k, ctx, c, ids.as_deref()).await?).await
         }
         Res::Book(b) => cards(k, ctx, *b, only).await,
         _ => Ok(vec![]),
     }
 }
 
-/// My calendar's events (or those of `only`) as (document, resource name).
-async fn events(k: &Kernel, ctx: &Ctx, only: Option<&[Uuid]>) -> Result<Vec<(Doc, String)>> {
+/// A calendar's events (or those of `only`) as (document, resource name): for my default one, its
+/// events and those I am invited to and have not declined; for another, the events in it that the
+/// access rule lets me see.
+async fn events(k: &Kernel, ctx: &Ctx, c: &Coll, only: Option<&[Uuid]>) -> Result<Vec<(Doc, String)>> {
     let sql = format!(
         "select to_jsonb(e) || jsonb_build_object('attendees', (select coalesce(jsonb_agg(to_jsonb(a) order by a.idx), '[]') from {att} a \
             where a.tenant_id = e.tenant_id and a.parent_id = e.id), 'reminders', (select coalesce(jsonb_agg(to_jsonb(r) order by r.idx), '[]') \
             from {rem} r where r.tenant_id = e.tenant_id and r.parent_id = e.id)), coalesce(n.name, e.id::text || '.ics') \
          from e_calendar_event e left join comms_dav_name n on n.tenant_id = e.tenant_id and n.event_id = e.id \
-         where e.tenant_id = $1 and (e.owner = $2 or exists (select 1 from {att} a where a.tenant_id = e.tenant_id and a.parent_id = e.id \
-              and a.email = $2 and a.response <> 'Declined')) \
+         where e.tenant_id = $1 and (case when $5 then (e.owner = $2 and (e.calendar = $4 or e.calendar is null)) or (e.owner <> $2 and exists (select 1 \
+              from {att} a where a.tenant_id = e.tenant_id and a.parent_id = e.id and a.email = $2 and a.response <> 'Declined')) else e.calendar = $4 end) \
          and (e.recurrence is not null or e.ends_at > now() - interval '{DAYS_BACK} days' or e.starts_at > now() - interval '{DAYS_BACK} days') \
          and ($3::uuid[] is null or e.id = any($3)) order by e.starts_at, e.id limit {MAX_ITEMS}",
         att = calendar::ATTENDEES,
         rem = calendar::REMINDERS,
     );
+    let me = ctx.email.to_lowercase();
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let rows: Vec<(Value, String)> =
-        sqlx::query_as(sqlx::AssertSqlSafe(sql)).bind(ctx.tenant).bind(ctx.email.to_lowercase()).bind(only).fetch_all(&mut *tx).await?;
+        sqlx::query_as(sqlx::AssertSqlSafe(sql)).bind(ctx.tenant).bind(&me).bind(only).bind(c.id).bind(c.default).fetch_all(&mut *tx).await?;
     tx.commit().await?;
-    Ok(rows.into_iter().map(|(v, n)| (calendar::normalize(util::obj(v)), n)).collect())
+    let shared = calendars::Shared::from([(c.id, c.level)]);
+    Ok(rows
+        .into_iter()
+        .map(|(v, n)| (calendar::normalize(util::obj(v)), n))
+        .filter(|(doc, _)| c.level == Level::Owner || calendars::level(&me, doc, &shared) > Level::None)
+        .collect())
+}
+
+/// What a viewer who may see only when an event is busy gets of it: its times as "Busy".
+fn busy_only(doc: &Doc) -> Doc {
+    let mut out = Doc::new();
+    for f in ["id", "ical_uid", "starts_at", "ends_at", "all_day", "timezone", "recurrence", "recurrence_exceptions", "status", "updated_at"] {
+        if let Some(v) = doc.get(f) {
+            out.insert(f.into(), v.clone());
+        }
+    }
+    out.insert("subject".into(), json!("Busy"));
+    out
 }
 
 /// The ids of the events these names point at.
@@ -640,17 +833,30 @@ async fn event_ids(tx: &mut Tx, ctx: &Ctx, names: &[String]) -> Result<Vec<Uuid>
 
 /// Events as calendar objects: iCalendar with the event's last change as its DTSTAMP, so the same
 /// event always reads the same.
-async fn event_items(k: &Kernel, ctx: &Ctx, list: Vec<(Doc, String)>) -> Result<Vec<Item>> {
+async fn event_items(k: &Kernel, ctx: &Ctx, c: &Coll, list: Vec<(Doc, String)>) -> Result<Vec<Item>> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let mut names: BTreeMap<String, Option<String>> = BTreeMap::new();
     let mut out = Vec::with_capacity(list.len());
+    let me = ctx.email.to_lowercase();
+    let shared = calendars::Shared::from([(c.id, c.level)]);
     for (doc, name) in list {
+        // Free and busy (a share, or a "busy only" event in a shared calendar): the times, as "Busy", and nothing else.
+        if c.level != Level::Owner && calendars::level(&me, &doc, &shared) == Level::FreeBusy {
+            let mut ev = calendar::vevent(&busy_only(&doc), None, false, false);
+            if let (Some(ev), Some(t)) = (ev.as_mut(), util::time(&doc, "updated_at")) {
+                ev.stamp = t;
+            }
+            out.extend(ev.map(|ev| Item::new(name, ics::calendar(None, None, &[ev]))));
+            continue;
+        }
         let owner = s(&doc, "owner").unwrap_or_default().to_lowercase();
         if !names.contains_key(&owner) {
             let n = calendar::display_name(&mut tx, ctx.tenant, &owner).await?;
             names.insert(owner.clone(), n);
         }
-        let Some(mut ev) = calendar::vevent(&doc, names.get(&owner).cloned().flatten(), false, true) else { continue };
+        // Reminders are the organizer's and the guests' own, not a shared viewer's.
+        let alarms = c.level == Level::Owner || calendar::attendees(&doc).iter().any(|a| a.0 == me);
+        let Some(mut ev) = calendar::vevent(&doc, names.get(&owner).cloned().flatten(), false, alarms) else { continue };
         if let Some(t) = util::time(&doc, "updated_at") {
             ev.stamp = t;
         }
@@ -664,7 +870,7 @@ async fn event_items(k: &Kernel, ctx: &Ctx, list: Vec<(Doc, String)>) -> Result<
 
 async fn get(k: &Kernel, ctx: &Ctx, r: &Res, head: bool) -> Result<SiteResponse> {
     let (name, ctype) = match r {
-        Res::Event(n) => (n, "text/calendar; charset=utf-8"),
+        Res::Event(_, n) => (n, "text/calendar; charset=utf-8"),
         Res::Card(_, n) => (n, "text/vcard; charset=utf-8"),
         _ => return Ok(SiteResponse::text(200, "text/plain; charset=utf-8", "Ferrum's address for calendar and contacts apps.\n")),
     };
@@ -685,24 +891,33 @@ fn precondition(req: &SiteRequest, etag: Option<&str>) -> Option<SiteResponse> {
     failed.then(|| SiteResponse::text(412, "text/plain; charset=utf-8", "the item changed or exists"))
 }
 
-/// One of my calendar's events, by resource name, with its current ETag.
-async fn find(k: &Kernel, ctx: &Ctx, name: &str) -> Result<Option<(Uuid, Doc, String)>> {
+/// One of a calendar's events, by resource name, with its current ETag.
+async fn find(k: &Kernel, ctx: &Ctx, c: &Coll, name: &str) -> Result<Option<(Uuid, Doc, String)>> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let ids = event_ids(&mut tx, ctx, &[name.to_string()]).await?;
     tx.commit().await?;
     let Some(id) = ids.first() else { return Ok(None) };
-    let list = events(k, ctx, Some(&[*id])).await?;
+    let list = events(k, ctx, c, Some(&[*id])).await?;
     let Some((doc, n)) = list.first().cloned() else { return Ok(None) };
-    let item = event_items(k, ctx, list).await?.into_iter().next();
+    let item = event_items(k, ctx, c, list).await?.into_iter().next();
     Ok(item.filter(|_| n == name).map(|i| (*id, doc, i.etag)))
 }
 
+/// Who writes a calendar app's change: the person in their own calendar; in a calendar shared with
+/// them to make changes, the engine for them (its owner stays the organizer; the record names them).
+fn writer(ctx: &Ctx, c: &Coll) -> Ctx {
+    if c.level == Level::Owner { ctx.clone() } else { util::elevated(ctx) }
+}
+
 async fn put(k: &Kernel, ctx: &Ctx, req: &SiteRequest, r: &Res) -> Result<SiteResponse> {
-    let name = match r {
-        Res::Event(n) => n,
+    let (c, name) = match r {
+        Res::Event(c, n) => (c, n),
         Res::Card(..) => return Ok(refuse(403, "D:need-privileges", "address books here are read-only: change contacts in Ferrum")),
-        _ => return Ok(refuse(403, "D:need-privileges", "calendar apps can add events to the calendar only")),
+        _ => return Ok(refuse(403, "D:need-privileges", "calendar apps can add events to a calendar only")),
     };
+    if !c.writable() {
+        return Ok(refuse(403, "D:need-privileges", "this calendar is read-only here"));
+    }
     if req.body.len() > MAX_EVENT {
         return Ok(refuse(403, "C:max-resource-size", "the event is too large"));
     }
@@ -719,10 +934,13 @@ async fn put(k: &Kernel, ctx: &Ctx, req: &SiteRequest, r: &Res) -> Result<SiteRe
     let Some(main) = list.next() else { return invalid("there is no event (VEVENT) in it") };
     let detached: Vec<ParsedEvent> = list.collect();
     let me = ctx.email.to_lowercase();
+    // The organizer of what is made here: the calendar's owner.
+    let organizer = c.owner.to_lowercase();
+    let acting = writer(ctx, c);
 
-    let mut existing = find(k, ctx, name).await?;
+    let mut existing = find(k, ctx, c, name).await?;
     if existing.is_none() {
-        // An event of mine with this UID, from an import or another app: this name now points at it.
+        // An event of the organizer's with this UID, from an import or another app: this name now points at it.
         let mut tx = k.db.tenant_tx(ctx.tenant).await?;
         let bound: bool = sqlx::query_scalar("select exists (select 1 from comms_dav_name where tenant_id = $1 and name = $2)")
             .bind(ctx.tenant)
@@ -739,7 +957,7 @@ async fn put(k: &Kernel, ctx: &Ctx, req: &SiteRequest, r: &Res) -> Result<SiteRe
                  where e.tenant_id = $1 and e.owner = $2 and e.ical_uid = $3",
                 )
                 .bind(ctx.tenant)
-                .bind(&me)
+                .bind(&organizer)
                 .bind(util::cut(uid, 990))
                 .fetch_optional(&mut *tx)
                 .await?
@@ -749,7 +967,7 @@ async fn put(k: &Kernel, ctx: &Ctx, req: &SiteRequest, r: &Res) -> Result<SiteRe
         tx.commit().await?;
         match mine {
             Some((_, Some(other))) => return Ok(refuse(409, "C:no-uid-conflict", &format!("this event is already in the calendar as {other}"))),
-            Some((id, None)) => existing = find(k, ctx, &format!("{id}.ics")).await?,
+            Some((id, None)) => existing = find(k, ctx, c, &format!("{id}.ics")).await?,
             None => {}
         }
     }
@@ -758,8 +976,8 @@ async fn put(k: &Kernel, ctx: &Ctx, req: &SiteRequest, r: &Res) -> Result<SiteRe
     }
 
     match existing {
-        // A guest's copy: their answer is the only thing they change.
-        Some((id, doc, _)) if s(&doc, "owner").unwrap_or_default().to_lowercase() != me => {
+        // A guest's copy in their own calendar: their answer is the only thing they change.
+        Some((id, doc, _)) if c.level == Level::Owner && s(&doc, "owner").unwrap_or_default().to_lowercase() != me => {
             if let Some(a) = main.attendees.iter().find(|a| a.email == me) {
                 let answer = response(&a.partstat);
                 let stored = calendar_attendees(&doc).into_iter().find(|(e, _, _)| *e == me).map(|(_, _, r)| r);
@@ -770,21 +988,22 @@ async fn put(k: &Kernel, ctx: &Ctx, req: &SiteRequest, r: &Res) -> Result<SiteRe
             Ok(SiteResponse::text(204, "text/plain", ""))
         }
         Some((id, doc, _)) => {
-            let patch = fields(&main, Some(&doc), &me);
-            k.update(ctx, "CalendarEvent", id, patch, None).await?;
+            let patch = fields(&main, Some(&doc), &organizer);
+            k.update(&acting, "CalendarEvent", id, patch, None).await?;
             bind(k, ctx, id, name).await?;
-            save_detached(k, ctx, &detached, &me).await?;
+            save_detached(k, &acting, &detached, &organizer, c.id).await?;
             Ok(SiteResponse::text(204, "text/plain", ""))
         }
         None => {
             ctx.require("CalendarEvent", Action::Create)?;
-            let mut doc = fields(&main, None, &me);
+            let mut doc = fields(&main, None, &organizer);
             let uid = main.uid.clone().unwrap_or_else(|| name.trim_end_matches(".ics").to_string());
             doc.insert("ical_uid".into(), json!(util::cut(&uid, 990)));
-            doc.insert("owner".into(), json!(me));
+            doc.insert("owner".into(), json!(organizer));
+            doc.insert("calendar".into(), json!(c.id));
             let created = k.insert(&util::elevated(ctx), "CalendarEvent", doc).await?;
             bind(k, ctx, util::doc_id(&created)?, name).await?;
-            save_detached(k, ctx, &detached, &me).await?;
+            save_detached(k, &acting, &detached, &organizer, c.id).await?;
             Ok(SiteResponse::text(201, "text/plain", ""))
         }
     }
@@ -860,52 +1079,75 @@ async fn bind(k: &Kernel, ctx: &Ctx, id: Uuid, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Occurrences an organizer changed on their own, as events of their own (same UID, same event).
-async fn save_detached(k: &Kernel, ctx: &Ctx, list: &[ParsedEvent], me: &str) -> Result<()> {
+/// Occurrences an organizer changed on their own, as events of their own (same UID, same event), in the same calendar.
+async fn save_detached(k: &Kernel, acting: &Ctx, list: &[ParsedEvent], organizer: &str, calendar: Uuid) -> Result<()> {
     for e in list {
         let Some(uid) = e.uid.as_deref().map(|u| util::cut(u, 990)) else { continue };
-        let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+        let mut tx = k.db.tenant_tx(acting.tenant).await?;
         let id: Option<Uuid> = sqlx::query_scalar("select id from e_calendar_event where tenant_id = $1 and owner = $2 and ical_uid = $3")
-            .bind(ctx.tenant)
-            .bind(me)
+            .bind(acting.tenant)
+            .bind(organizer)
             .bind(&uid)
             .fetch_optional(&mut *tx)
             .await?;
         tx.commit().await?;
         match id {
             Some(id) => {
-                let doc = k.get(ctx, "CalendarEvent", id, false).await?;
-                k.update(ctx, "CalendarEvent", id, fields(e, Some(&doc), me), None).await?;
+                let doc = k.get(&util::sys(acting), "CalendarEvent", id, false).await?;
+                k.update(acting, "CalendarEvent", id, fields(e, Some(&doc), organizer), None).await?;
             }
             None => {
-                let mut doc = fields(e, None, me);
+                let mut doc = fields(e, None, organizer);
                 doc.insert("ical_uid".into(), json!(uid));
-                doc.insert("owner".into(), json!(me));
-                k.insert(&util::elevated(ctx), "CalendarEvent", doc).await?;
+                doc.insert("owner".into(), json!(organizer));
+                doc.insert("calendar".into(), json!(calendar));
+                k.insert(&util::elevated(acting), "CalendarEvent", doc).await?;
             }
         }
     }
     Ok(())
 }
 
-/// Deleting an event the person organizes cancels it for everyone; deleting an invitation
-/// declines it.
+/// Deleting an event the person organizes (or may change, in a calendar shared with them) cancels
+/// it for everyone; deleting an invitation declines it.
 async fn delete(k: &Kernel, ctx: &Ctx, req: &SiteRequest, r: &Res) -> Result<SiteResponse> {
-    let name = match r {
-        Res::Event(n) => n,
+    let (c, name) = match r {
+        Res::Event(c, n) => (c, n),
         Res::Card(..) => return Ok(refuse(403, "D:need-privileges", "address books here are read-only: change contacts in Ferrum")),
         _ => return Ok(refuse(403, "D:need-privileges", "calendars and address books cannot be deleted here")),
     };
-    let Some((id, doc, etag)) = find(k, ctx, name).await? else { return Err(Error::NotFound("event".into())) };
+    if !c.writable() {
+        return Ok(refuse(403, "D:need-privileges", "this calendar is read-only here"));
+    }
+    let Some((id, doc, etag)) = find(k, ctx, c, name).await? else { return Err(Error::NotFound("event".into())) };
     if let Some(resp) = precondition(req, Some(&etag)) {
         return Ok(resp);
     }
-    if s(&doc, "owner").unwrap_or_default().eq_ignore_ascii_case(&ctx.email) {
-        k.delete(ctx, "CalendarEvent", id, None).await?;
+    if c.level == Level::Edit || s(&doc, "owner").unwrap_or_default().eq_ignore_ascii_case(&ctx.email) {
+        k.delete(&writer(ctx, c), "CalendarEvent", id, None).await?;
     } else {
         calendar::rsvp(k, ctx, id, util::obj(json!({"response": "Declined"}))).await?;
     }
     Ok(SiteResponse::text(204, "text/plain", ""))
+}
+
+/// `MKCALENDAR /u/{me}/calendars/{name}/`: a new calendar of mine at the path the app chose, with
+/// the name and colour it sent (`displayname`, Apple's `calendar-color`) when it sent them.
+async fn mkcalendar(k: &Kernel, ctx: &Ctx, req: &SiteRequest, seg: &str) -> Result<SiteResponse> {
+    ctx.require("CalendarEvent", Action::Create)?;
+    if seg.is_empty() || seg.len() > 200 || seg == "default" || seg.parse::<Uuid>().is_ok() {
+        return Ok(refuse(403, "D:need-privileges", "choose another name for the calendar's address"));
+    }
+    let els = if req.body.iter().all(u8::is_ascii_whitespace) { vec![] } else { elements(&req.body)? };
+    let name = els.iter().find(|e| e.is(D, "displayname")).map(|e| e.text.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Calendar".into());
+    let wanted = els.iter().find(|e| e.is(A, "calendar-color")).map(|e| e.text.trim().to_ascii_uppercase());
+    let tone = calendars::TONES.iter().find(|t| wanted.as_deref().is_some_and(|w| color(t).starts_with(w.get(..7).unwrap_or(w)))).copied().unwrap_or("green");
+    let doc = util::obj(json!({"calendar_name": util::cut(&name, 100), "owner": ctx.email.to_lowercase(), "tone": tone, "dav_path": seg}));
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    calendars::ensure_default(k, &mut tx, ctx, &ctx.email.to_lowercase()).await?;
+    k.insert_tx(&util::sys(ctx), &mut tx, "Calendar", doc).await?;
+    tx.commit().await?;
+    Ok(SiteResponse::text(201, "text/plain", ""))
 }
 
 // ───────────────────────────── address books ─────────────────────────────

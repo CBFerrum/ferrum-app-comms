@@ -19,8 +19,45 @@ use uuid::Uuid;
 pub(crate) const ATTENDEES: &str = "e_calendar_event__attendees";
 pub(crate) const REMINDERS: &str = "e_calendar_event__reminders";
 /// Changing one of these is a new version of the invitation (SEQUENCE + 1).
-const SIGNIFICANT: &[&str] =
-    &["subject", "starts_at", "ends_at", "all_day", "timezone", "location", "meeting_link", "recurrence", "recurrence_exceptions", "status", "description"];
+const SIGNIFICANT: &[&str] = &[
+    "subject",
+    "starts_at",
+    "ends_at",
+    "all_day",
+    "timezone",
+    "location",
+    "meeting_link",
+    "recurrence",
+    "recurrence_exceptions",
+    "status",
+    "description",
+    "description_html",
+    "attachments",
+];
+/// The largest rich-text notes kept.
+const MAX_NOTES: usize = 200_000;
+/// The most files an event refers to.
+const MAX_ATTACHMENTS: usize = 20;
+
+/// Notes as rich text made safe as Mail makes outgoing mail safe (`mail::safe_html`), without
+/// pictures (an event has nowhere to keep them); none when nothing is left.
+pub(crate) fn notes_html(html: &str) -> Option<String> {
+    static IMG: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?is)<img\b[^>]*>").expect("a pattern"));
+    let clean = IMG.replace_all(&crate::mail::safe_html(html), "").trim().to_string();
+    let words = notes_text(&clean);
+    (!words.is_empty() || clean.contains("<a ")).then_some(clean)
+}
+
+/// The words of HTML notes, line by line: for DESCRIPTION and for programs that read only text.
+pub(crate) fn notes_text(html: &str) -> String {
+    static BREAK: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)<br\s*/?>|</p>|</div>|</li>|</blockquote>|</h[1-6]>").expect("a pattern"));
+    let lines = BREAK.replace_all(html, "\n");
+    let text = ammonia::Builder::empty().clean(&lines).to_string();
+    let text = text.replace("&nbsp;", " ").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&");
+    // One line per paragraph or list item: an editor's empty paragraphs and nested blocks add none.
+    text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect::<Vec<_>>().join("\n")
+}
 const MAX_RANGE_DAYS: i64 = 400;
 const MAX_REMINDER_MINUTES: i64 = 40_320;
 
@@ -108,6 +145,7 @@ pub fn vevent(doc: &Doc, organizer_name: Option<String>, cancelled: bool, alarms
         all_day: b(doc, "all_day"),
         summary: s(doc, "subject").unwrap_or("(no title)").to_string(),
         description: s(doc, "description").map(str::to_string),
+        html: s(doc, "description_html").map(str::to_string),
         location: s(doc, "location").map(str::to_string),
         url: s(doc, "meeting_link").map(str::to_string),
         status: status.into(),
@@ -126,6 +164,10 @@ pub fn vevent(doc: &Doc, organizer_name: Option<String>, cancelled: bool, alarms
 
 /// Queues an invitation (REQUEST) or cancellation (CANCEL) email to one outside guest.
 async fn queue_invitation(hc: &mut HookCtx<'_>, doc: &Doc, to: &str, method: &str, updated: bool) -> Result<()> {
+    // A room or a resource answers in Ferrum; nothing is mailed to its reserved address.
+    if crate::rooms::is_room(to) {
+        return Ok(());
+    }
     let organizer = s(doc, "owner").map(str::to_string);
     let organizer_name = match &organizer {
         Some(o) => display_name(hc.tx, hc.ctx.tenant, o).await?,
@@ -165,8 +207,16 @@ async fn queue_invitation(hc: &mut HookCtx<'_>, doc: &Doc, to: &str, method: &st
             e(&base)
         ));
     }
-    if let Some(d) = s(doc, "description") {
-        html.push_str(&format!("<p>{}</p>", e(d).replace('\n', "<br>")));
+    // The notes as they were written (already made safe), else their plain words.
+    match (s(doc, "description_html"), s(doc, "description")) {
+        (Some(h), _) => html.push_str(&format!("<div>{h}</div>")),
+        (None, Some(d)) => html.push_str(&format!("<p>{}</p>", e(d).replace('\n', "<br>"))),
+        _ => {}
+    }
+    let files = rows(doc, "attachments");
+    if !files.is_empty() {
+        let names: Vec<String> = files.iter().filter_map(|f| s(f, "name")).map(e).collect();
+        html.push_str(&format!("<p>Files in Ferrum Drive: {}</p>", names.join(", ")));
     }
     if let Some(o) = &organizer {
         html.push_str(&format!("<p>Organizer: {} &lt;{}&gt;</p>", e(organizer_name.as_deref().unwrap_or(o)), e(o)));
@@ -214,6 +264,19 @@ impl DocHook for EventHook {
         if let Some(rule) = s(doc, "recurrence").and_then(|r| recur::parse(r).ok()) {
             doc.insert("recurrence".into(), json!(rule.to_string()));
         }
+        // Rich-text notes are kept safe, and their words are the plain notes calendar programs read.
+        if let Some(html) = s(doc, "description_html").map(str::to_string) {
+            if html.len() > MAX_NOTES {
+                return Err(Error::field("description_html", "the notes are too long"));
+            }
+            let safe = notes_html(&html);
+            if let Some(h) = &safe
+                && s(doc, "description").is_none_or(|d| d.trim().is_empty())
+            {
+                doc.insert("description".into(), json!(notes_text(h)));
+            }
+            doc.insert("description_html".into(), json!(safe));
+        }
         if !doc.contains_key("created_at") {
             if (s(doc, "owner").is_none() || !hc.ctx.is_system) && !hc.ctx.user.is_nil() {
                 doc.insert("owner".into(), json!(hc.ctx.email.to_lowercase()));
@@ -235,6 +298,8 @@ impl DocHook for EventHook {
         crate::calendars::place_event(hc.kernel, hc.tx, hc.ctx, doc).await?;
         // Guests away then who chose so decline at once, with their message.
         crate::hours::decline_away(hc.tx, hc.ctx.tenant, doc).await?;
+        // Rooms and resources answer at once: free, inside their hours, and the organizer may book them.
+        crate::rooms::answer(hc.tx, hc.ctx.tenant, doc).await?;
         let missing: Vec<String> = attendees(doc).into_iter().filter(|a| a.1.is_none()).map(|a| a.0).collect();
         if !missing.is_empty() {
             let names: BTreeMap<String, String> = util::users(hc.tx, hc.ctx.tenant, &missing).await?.into_iter().map(|u| (u.email, u.full_name)).collect();
@@ -288,6 +353,19 @@ impl DocHook for EventHook {
         }
         if rows(doc, "reminders").len() > 5 {
             errors.push(FieldError::new("reminders", "at most 5 reminders"));
+        }
+        match doc.get("attachments") {
+            None | Some(Value::Null) => {}
+            Some(Value::Array(list)) if list.len() <= MAX_ATTACHMENTS => {
+                let ok = |a: &Value| {
+                    a.get("id").and_then(Value::as_str).is_some_and(|i| i.parse::<Uuid>().is_ok())
+                        && a.get("name").and_then(Value::as_str).is_some_and(|n| !n.trim().is_empty() && n.len() <= 255)
+                };
+                if !list.iter().all(ok) {
+                    errors.push(FieldError::new("attachments", "each file is {id, name} from Drive"));
+                }
+            }
+            Some(_) => errors.push(FieldError::new("attachments", format!("at most {MAX_ATTACHMENTS} files from Drive"))),
         }
         if !errors.is_empty() {
             return Err(Error::Validation(errors));
@@ -361,6 +439,9 @@ impl DocHook for EventHook {
     }
 
     async fn before_delete(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        if b(doc, "fetched") && !hc.ctx.user.is_nil() {
+            return Err(Error::Forbidden("a subscribed calendar's events come from its address; remove the subscription instead".into()));
+        }
         if !is_organizer(hc.ctx, doc) {
             return Err(Error::Forbidden("only the organizer can delete this event".into()));
         }
@@ -399,7 +480,9 @@ impl DocHook for EventHook {
 
 // ───────────────────────────── queries ─────────────────────────────
 
-/// Events of `who` (organizer or attendee who has not declined) that may overlap the range.
+/// Events of `who` (organizer or attendee who has not declined) that may overlap the range. Without
+/// `include_public` (free/busy, the feed and export, invitations) events fetched from a subscription
+/// are left out: they are someone else's calendar, not the person's time.
 async fn events_of(
     tx: &mut Tx,
     tenant: Uuid,
@@ -416,6 +499,7 @@ async fn events_of(
             from {REMINDERS} r where r.tenant_id = e.tenant_id and r.parent_id = e.id)), \
          (select a.response from {ATTENDEES} a where a.tenant_id = e.tenant_id and a.parent_id = e.id and a.email = $2 limit 1) \
          from e_calendar_event e where e.tenant_id = $1 \
+         and ($5 or not coalesce(e.fetched, false)) \
          and (e.owner = $2 or ($5 and e.visibility = 'Public') or e.calendar = any($7) or exists (select 1 from {ATTENDEES} a where a.tenant_id = e.tenant_id \
               and a.parent_id = e.id and a.email = $2 and ($6 or a.response <> 'Declined'))) \
          and e.starts_at < $4 and (e.recurrence is not null or e.ends_at > $3 or (e.ends_at = e.starts_at and e.starts_at >= $3)) \
@@ -472,6 +556,9 @@ async fn my_calendar(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> 
     let shared = crate::calendars::shared_with(&mut tx, ctx.tenant, &me).await?;
     let ids: Vec<Uuid> = shared.keys().copied().collect();
     let events = events_of(&mut tx, ctx.tenant, &me, from, to, true, true, &ids).await?;
+    // Which of my events (or their occurrences) have a time proposed by a guest.
+    let own: Vec<Uuid> = events.iter().filter(|(d, _)| lower(s(d, "owner")) == me).filter_map(|(d, _)| id(d, "id")).collect();
+    let proposed = crate::proposals::pending(&mut tx, ctx.tenant, &own).await?;
     tx.commit().await?;
     let mut out = Vec::new();
     for (doc, response) in events {
@@ -496,6 +583,8 @@ async fn my_calendar(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> 
                 "location": doc.get("location"),
                 "meeting_link": doc.get("meeting_link"),
                 "description": doc.get("description"),
+                "description_html": doc.get("description_html"),
+                "attachments": doc.get("attachments"),
                 "status": doc.get("status"),
                 "visibility": doc.get("visibility"),
                 "category": doc.get("category"),
@@ -509,6 +598,8 @@ async fn my_calendar(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> 
                 "reference_id": doc.get("reference_id"),
                 "calendar": doc.get("calendar"),
                 "level": level.word(),
+                "fetched": b(&doc, "fetched"),
+                "proposed": proposed.iter().any(|(e, at)| Some(*e) == id(&doc, "id") && at.is_none_or(|at| at == start)),
             }));
             if level == Level::FreeBusy
                 && let Some(Value::Object(o)) = out.last_mut()
@@ -608,7 +699,9 @@ async fn free_busy(k: &Kernel, ctx: &Ctx, body: Map<String, Value>) -> Result<Va
     for u in users {
         let mut intervals = Vec::new();
         for (doc, _) in events_of(&mut tx, ctx.tenant, &u, from, to, false, false, &[]).await? {
-            if s(&doc, "status") == Some("Cancelled") || (exclude.is_some() && id(&doc, "id") == exclude) {
+            // An all-day event (a stock count, an offsite, a holiday) shows as free, as Google Calendar
+            // has it by default: it is a day's label, not time someone cannot meet.
+            if s(&doc, "status") == Some("Cancelled") || b(&doc, "all_day") || (exclude.is_some() && id(&doc, "id") == exclude) {
                 continue;
             }
             if let Some(sr) = series(&doc) {
@@ -717,10 +810,18 @@ async fn event_detail(k: &Kernel, ctx: &Ctx, event: Uuid) -> Result<Value> {
     };
     let owner = lower(s(&doc, "owner"));
     let owner_name = display_name(&mut tx, ctx.tenant, &owner).await?;
+    // Made by someone with "make changes" on the organizer's calendar: who.
+    let creator: Option<(String, String)> = sqlx::query_as("select lower(email::text), full_name from app_user where tenant_id = $1 and id = $2")
+        .bind(ctx.tenant)
+        .bind(id(&doc, "created_by"))
+        .fetch_optional(&mut *tx)
+        .await?;
+    let created_by = creator.filter(|(e, _)| *e != owner).map(|(e, n)| if n.trim().is_empty() { e } else { n });
+    // Other times guests proposed: for the organizer's eyes only.
+    let proposals = if organizer { crate::proposals::list(&mut tx, ctx.tenant, event).await? } else { vec![] };
     tx.commit().await?;
-    Ok(
-        json!({"id": event, "version": doc.get("version"), "attendees": guests, "owner": owner, "owner_name": owner_name, "level": level.word(), "calendar": doc.get("calendar")}),
-    )
+    Ok(json!({"id": event, "version": doc.get("version"), "attendees": guests, "owner": owner, "owner_name": owner_name, "level": level.word(),
+        "calendar": doc.get("calendar"), "created_by": created_by, "proposals": proposals}))
 }
 
 // ───────────────────────────── answering from the invitation ─────────────────────────────
@@ -953,6 +1054,7 @@ fn event_fields_without_zone(e: &ics::ParsedEvent) -> Doc {
         "ends_at": util::ts(e.end),
         "all_day": e.all_day,
         "description": e.description,
+        "description_html": e.html,
         "location": e.location.as_deref().map(|l| util::clean_line(l, 990)),
         "meeting_link": e.url.as_deref().filter(|u| u.starts_with("https://") || u.starts_with("http://")),
         "category": e.categories.as_deref().map(|c| util::clean_line(c, 990)),
@@ -1108,26 +1210,136 @@ pub async fn fire_reminders(k: &Kernel, tenant: Uuid) -> Result<usize> {
     Ok(fired)
 }
 
-/// `PATCH /calendar/events/{id}`: a change by someone the event's calendar is shared with at
-/// "make changes" (its organizer changes it through the records API). Times, title, place and notes.
-async fn shared_edit(k: &Kernel, ctx: &Ctx, event: Uuid, body: Map<String, Value>) -> Result<Value> {
-    const FIELDS: &[&str] = &["subject", "starts_at", "ends_at", "all_day", "timezone", "location", "description", "recurrence", "recurrence_exceptions"];
-    let me = ctx.email.to_lowercase();
-    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let doc = k.get_tx(&util::sys(ctx), &mut tx, "CalendarEvent", event, false).await.map_err(|_| Error::NotFound("Event".into()))?;
-    let shared = crate::calendars::shared_with(&mut tx, ctx.tenant, &me).await?;
-    match crate::calendars::level(&me, &doc, &shared) {
-        Level::None | Level::FreeBusy => return Err(Error::NotFound("Event".into())),
-        Level::Details => return Err(Error::Forbidden("you may see this calendar, not change it".into())),
-        Level::Edit | Level::Owner => {}
-    }
-    if let Some(k) = body.keys().find(|k| !FIELDS.contains(&k.as_str())) {
+// ───────────────────────────── in a calendar shared to "make changes" ─────────────────────────────
+
+/// What someone with "make changes" on a calendar may set on an event in it (its organizer, and
+/// what only the organizer's records API sets, stay as they are).
+const DELEGATE_FIELDS: &[&str] = &[
+    "subject",
+    "starts_at",
+    "ends_at",
+    "all_day",
+    "timezone",
+    "location",
+    "description",
+    "meeting_link",
+    "visibility",
+    "status",
+    "recurrence",
+    "recurrence_exceptions",
+    "attendees",
+    "reminders",
+    "calendar",
+    "category",
+    "color",
+    "description_html",
+    "attachments",
+];
+
+fn delegate_body(body: Map<String, Value>) -> Result<Doc> {
+    if let Some(k) = body.keys().find(|k| !DELEGATE_FIELDS.contains(&k.as_str())) {
         return Err(Error::field(k, "cannot be changed here"));
     }
-    let version = doc.get("version").and_then(Value::as_i64);
-    let saved = k.update_tx(&util::sys(ctx), &mut tx, "CalendarEvent", event, body, version).await?;
+    Ok(body)
+}
+
+/// A calendar's owner and my level on it (through the same rule as its events).
+async fn calendar_level(tx: &mut Tx, ctx: &Ctx, calendar: Uuid) -> Result<(String, Level)> {
+    let me = ctx.email.to_lowercase();
+    let owner: Option<String> =
+        sqlx::query_scalar("select owner from e_calendar where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(calendar).fetch_optional(&mut **tx).await?;
+    let Some(owner) = owner.map(|o| o.to_lowercase()) else { return Err(Error::NotFound("Calendar".into())) };
+    if owner == me {
+        return Ok((owner, Level::Owner));
+    }
+    let level = crate::calendars::shared_with(tx, ctx.tenant, &me).await?.get(&calendar).copied().unwrap_or(Level::None);
+    Ok((owner, level))
+}
+
+/// An event I may change through Calendar's own routes (organizer, or "make changes" on its calendar).
+async fn changeable(k: &Kernel, tx: &mut Tx, ctx: &Ctx, event: Uuid) -> Result<(Doc, Level)> {
+    let me = ctx.email.to_lowercase();
+    let doc = k.get_tx(&util::sys(ctx), tx, "CalendarEvent", event, true).await.map_err(|_| Error::NotFound("Event".into()))?;
+    let shared = crate::calendars::shared_with(tx, ctx.tenant, &me).await?;
+    match crate::calendars::level(&me, &doc, &shared) {
+        Level::None | Level::FreeBusy => Err(Error::NotFound("Event".into())),
+        Level::Details => Err(Error::Forbidden("you may see this calendar, not change it".into())),
+        l => Ok((doc, l)),
+    }
+}
+
+/// The writer of a change: the organizer as themself; someone with "make changes" with the engine's
+/// privileges, so the organizer stays the organizer, while the record's `created_by`/`updated_by`
+/// and its history name who did it.
+fn writer(ctx: &Ctx, level: Level) -> Ctx {
+    if level == Level::Owner { ctx.clone() } else { util::elevated(ctx) }
+}
+
+/// A move to another calendar stays with the organizer's calendars that I may change.
+async fn check_target(tx: &mut Tx, ctx: &Ctx, doc: &Doc, body: &Doc) -> Result<()> {
+    let Some(to) = body.get("calendar").filter(|c| !c.is_null() && *c != doc.get("calendar").unwrap_or(&Value::Null)) else { return Ok(()) };
+    let to: Uuid = to.as_str().and_then(|c| c.parse().ok()).ok_or_else(|| Error::field("calendar", "a calendar id"))?;
+    let (owner, level) = calendar_level(tx, ctx, to).await?;
+    if owner != lower(s(doc, "owner")) || level < Level::Edit {
+        return Err(Error::field("calendar", "an event moves only between its organizer's calendars that you may change"));
+    }
+    Ok(())
+}
+
+/// `POST /calendar/events`: an event in one of my calendars, or in one shared with me to "make
+/// changes", where its owner is the organizer (invitations and reminders are theirs, as in Google
+/// Calendar) and the event records that I made it (`created_by`).
+async fn create_event(k: &Kernel, ctx: &Ctx, body: Map<String, Value>) -> Result<Value> {
+    let mut doc = delegate_body(body)?;
+    let calendar: Uuid =
+        doc.get("calendar").and_then(Value::as_str).and_then(|c| c.parse().ok()).ok_or_else(|| Error::field("calendar", "say which calendar it goes in"))?;
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let (owner, level) = calendar_level(&mut tx, ctx, calendar).await?;
+    let saved = match level {
+        Level::None | Level::FreeBusy => return Err(Error::NotFound("Calendar".into())),
+        Level::Details => return Err(Error::Forbidden("you may see this calendar, not add to it".into())),
+        Level::Owner => k.insert_tx(ctx, &mut tx, "CalendarEvent", doc).await?,
+        Level::Edit => {
+            ctx.require("CalendarEvent", Action::Create)?;
+            doc.insert("owner".into(), json!(owner));
+            k.insert_tx(&util::elevated(ctx), &mut tx, "CalendarEvent", doc).await?
+        }
+    };
     tx.commit().await?;
     Ok(Value::Object(saved))
+}
+
+/// `GET /calendar/events/{id}/record`: the whole event, for its organizer and for someone with
+/// "make changes" on its calendar (what the editor and the series changes read).
+async fn event_record(k: &Kernel, ctx: &Ctx, event: Uuid) -> Result<Value> {
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let (doc, level) = changeable(k, &mut tx, ctx, event).await?;
+    tx.commit().await?;
+    let mut doc = normalize(doc);
+    doc.insert("level".into(), json!(level.word()));
+    Ok(Value::Object(doc))
+}
+
+/// `PATCH /calendar/events/{id}` (`If-Match: {version}` optional): a change by its organizer or by
+/// someone its calendar is shared with to "make changes".
+async fn shared_edit(k: &Kernel, ctx: &Ctx, event: Uuid, body: Map<String, Value>, version: Option<i64>) -> Result<Value> {
+    let body = delegate_body(body)?;
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let (doc, level) = changeable(k, &mut tx, ctx, event).await?;
+    check_target(&mut tx, ctx, &doc, &body).await?;
+    let version = version.or_else(|| doc.get("version").and_then(Value::as_i64));
+    let saved = k.update_tx(&writer(ctx, level), &mut tx, "CalendarEvent", event, body, version).await?;
+    tx.commit().await?;
+    Ok(Value::Object(saved))
+}
+
+/// `DELETE /calendar/events/{id}`: as the organizer would (its guests are told).
+async fn shared_delete(k: &Kernel, ctx: &Ctx, event: Uuid) -> Result<Value> {
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let (_, level) = changeable(k, &mut tx, ctx, event).await?;
+    k.delete_tx(&writer(ctx, level), &mut tx, "CalendarEvent", event, None).await?;
+    tx.commit().await?;
+    Ok(json!({"deleted": event}))
 }
 
 /// Whether a reminder for the occurrence at `start` already went out for one at another instant of
@@ -1188,6 +1400,8 @@ pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> 
         ("POST", ["freebusy"]) => free_busy(k, ctx, util::body_json(req)?).await?,
         ("GET", ["events", e]) => event_detail(k, ctx, uuid(e)?).await?,
         ("POST", ["events", e, "rsvp"]) => rsvp(k, ctx, uuid(e)?, util::body_json(req)?).await?,
+        ("POST", ["events", e, "propose"]) => crate::proposals::propose(k, ctx, uuid(e)?, util::body_json(req)?).await?,
+        ("POST", ["events", e, "proposals", p]) => crate::proposals::decide(k, ctx, uuid(e)?, uuid(p)?, util::body_json(req)?).await?,
         (m, ["feed"]) => feed_token(k, ctx, m).await?,
         ("POST", ["import"]) => import(k, ctx, req).await?,
         ("GET", ["export"]) => return export(k, ctx).await,
@@ -1198,7 +1412,17 @@ pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> 
             let body = if m == "PATCH" { util::body_json(req)? } else { Map::new() };
             crate::calendars::change(k, ctx, m, Some(uuid(c)?), body, util::param(req, "events")).await?
         }
-        ("PATCH", ["events", e]) => shared_edit(k, ctx, uuid(e)?, util::body_json(req)?).await?,
+        ("POST", ["events"]) => create_event(k, ctx, util::body_json(req)?).await?,
+        ("GET", ["events", e, "record"]) => event_record(k, ctx, uuid(e)?).await?,
+        ("PATCH", ["events", e]) => {
+            let version = util::header(req, "if-match").and_then(|v| v.trim().trim_matches('"').parse().ok());
+            shared_edit(k, ctx, uuid(e)?, util::body_json(req)?, version).await?
+        }
+        ("DELETE", ["events", e]) => shared_delete(k, ctx, uuid(e)?).await?,
+        ("GET", ["groups"]) => crate::calendars::groups(k, ctx).await?,
+        (_, ["rooms", rest @ ..]) => crate::rooms::handle(k, ctx, req, rest).await?,
+        ("POST", ["subscriptions"]) => crate::subscribe::subscribe(k, ctx, util::body_json(req)?, false).await?,
+        ("POST", ["subscriptions", c, "refresh"]) => crate::calendars::refresh(k, ctx, uuid(c)?).await?,
         ("GET", ["hours"]) => crate::hours::handle(k, ctx, "GET", None).await?,
         ("PUT", ["hours"]) => crate::hours::handle(k, ctx, "PUT", Some(util::body_json(req)?)).await?,
         _ => return Err(Error::NotFound("calendar endpoint".into())),
@@ -1242,6 +1466,16 @@ mod tests {
         assert!(found(&d, "board ASHA") && found(&d, "guest@partner") && found(&d, "Guest") && !found(&d, "board lunch"));
         assert_eq!(merge(vec![]), vec![]);
         let t = |h: u32| NaiveDate::from_ymd_opt(2026, 11, 2).unwrap().and_hms_opt(h, 0, 0).unwrap().and_utc();
+        // Rich notes: made safe (no script, no handlers, no pictures), and their words for DESCRIPTION.
+        let html = notes_html(
+            r#"<p onclick="x()"><b>Agenda</b> &amp; notes</p><script>alert(1)</script><img src="https://t.example/p.gif"><ul><li>One</li><li>Two</li></ul>"#,
+        )
+        .unwrap();
+        assert!(!html.contains("script") && !html.contains("onclick") && !html.contains("<img") && html.contains("<b>Agenda</b>"), "{html}");
+        assert_eq!(notes_text(&html), "Agenda & notes\nOne\nTwo");
+        assert_eq!(notes_html("<p> </p><img src=x>"), None);
+        // What the editor writes: list items hold paragraphs, and an empty paragraph ends it.
+        assert_eq!(notes_text("<p><strong>Agenda</strong></p><ul><li><p>Stock</p></li><li><p>Trucks</p></li></ul><p></p>"), "Agenda\nStock\nTrucks");
         assert_eq!(merge(vec![(t(9), t(10)), (t(12), t(13)), (t(9), t(11))]), vec![(t(9), t(11)), (t(12), t(13))]);
     }
 }

@@ -7,14 +7,14 @@
 // for. Every change waits for the server before it shows as done, and offers Undo.
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarDays, ChevronLeft, ChevronRight, Clock, Download, Keyboard, Link2, MapPin, MoreHorizontal, Plus, Repeat, Search, Upload, Video, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CalendarDays, ChevronLeft, DoorOpen, Paperclip, ChevronRight, Clock, Download, Keyboard, Link2, MapPin, MoreHorizontal, Plus, Repeat, Search, Upload, Video, X } from "lucide-react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { Badge, Button, Input, Label, Skeleton, Textarea } from "@ferrum/kit/primitives";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@ferrum/kit/primitives";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@ferrum/kit/primitives";
-import { api, docPath, errorMessage, isolate, t } from "@ferrum/client";
-import { announce, cn, ListSkeleton, StatePanel, toast, useDismiss, useLiveEntity } from "@ferrum/kit";
+import { api, docPath, errorMessage, isolate, shell, t } from "@ferrum/client";
+import { announce, cn, ListSkeleton, StatePanel, toast, useCanIntent, useDismiss, useLiveEntity } from "@ferrum/kit";
 import { meetLink, meetPath, openCall, useMeetAvailable } from "./lib/meet";
 import {
   AGENDA_DAYS,
@@ -22,10 +22,15 @@ import {
   barsAcross as barsOf,
   byDay,
   CALENDAR,
+  changeable,
+  fileKind,
+  isRoom,
+  type Attachment,
   dayFrom,
   daysShown,
   firstDayOf,
   fromInputIn,
+  toInputIn,
   isoDay,
   matches,
   monthGrid,
@@ -47,9 +52,11 @@ import {
   type View,
   userLocale,
 } from "./lib/calendar";
-import { changeTimes, removeOccurrence, type Undo } from "./lib/calendarChanges";
-import { EventBar, TimeGrid, timeFmt, useNow, type WorkHours } from "./CalendarGrid";
+import { changeTimes, removeOccurrence, routesFor, type Undo } from "./lib/calendarChanges";
+import { EventBar, ProposedMark, TimeGrid, timeFmt, useNow, type WorkHours } from "./CalendarGrid";
 import { CalendarList, levelName, useCalendars } from "./CalendarList";
+import { RoomsDialog, useRooms } from "./CalendarRooms";
+import { usePeople } from "@ferrum/records";
 import { Failure } from "./States";
 
 const VIEW_KEY = "ferrum.calendar.view";
@@ -119,6 +126,8 @@ export function CalendarPage() {
   const mine = useQuery({ queryKey: ["calendar", "hours"], queryFn: ({ signal }) => api.get<{ saved: boolean; hours: PersonHours }>(`${CALENDAR}/hours`, undefined, signal), retry: false, staleTime: 300_000 });
   const work = useMemo(() => workHours(weekend, mine.data?.saved ? mine.data.hours : undefined), [weekend, mine.data]);
   const [hoursOpen, setHoursOpen] = useState(false);
+  const [roomsOpen, setRoomsOpen] = useState(false);
+  const rooms = useRooms();
   // On a phone the side panel's calendars open from the menu.
   const [calsOpen, setCalsOpen] = useState(false);
   const [params, setParams] = useSearchParams();
@@ -400,6 +409,11 @@ export function CalendarPage() {
               <DropdownMenuItem onSelect={() => setFeed(true)}>
                 <Link2 /> {t("Secret address for other calendars")}
               </DropdownMenuItem>
+              {(rooms.data?.manager || (rooms.data?.rooms.length ?? 0) > 0) && (
+                <DropdownMenuItem onSelect={() => setRoomsOpen(true)}>
+                  <DoorOpen /> {t("Rooms and resources")}
+                </DropdownMenuItem>
+              )}
               <DropdownMenuSeparator />
               <DropdownMenuItem onSelect={() => setKeys(true)}>
                 <Keyboard /> {t("Keyboard shortcuts")}
@@ -436,6 +450,7 @@ export function CalendarPage() {
           </DialogContent>
         </Dialog>
       )}
+      {roomsOpen && <RoomsDialog onClose={() => setRoomsOpen(false)} />}
       {hoursOpen && <HoursDialog current={mine.data?.hours} missing={!!mine.error} first={first} onClose={() => setHoursOpen(false)} onSaved={() => void qc.invalidateQueries({ queryKey: ["calendar"] })} />}
     </div>
   );
@@ -715,6 +730,7 @@ function OccurrenceChip({ o, onOpen, large }: { o: Occurrence; onOpen: () => voi
       <span dir="auto" className="min-w-0 truncate text-start" title={o.subject}>
         {o.subject}
       </span>
+      <ProposedMark o={o} />
       {large && o.location && <span className="ms-auto hidden min-w-0 truncate text-xs text-muted-foreground sm:inline">{isolate(o.location)}</span>}
       {large && o.recurring && <Repeat className="size-3.5 shrink-0 text-muted-foreground" aria-label={t("Repeats")} />}
     </button>
@@ -731,6 +747,10 @@ function QuickCreate({ draft, onClose, onSaved }: { draft: { start: Date; end: D
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const opener = useRef(document.activeElement as HTMLElement | null);
+  // Mine and those shared with me to make changes (not a subscription: it is read-only); my default first.
+  const writable = (useCalendars().cals ?? []).filter((c) => (c.level === "owner" && !c.subscription) || c.level === "edit");
+  const [calendar, setCalendar] = useState<string>("");
+  const target = writable.find((c) => c.id === calendar) ?? writable.find((c) => c.is_default);
   const close = () => {
     onClose();
     opener.current?.focus?.();
@@ -744,6 +764,7 @@ function QuickCreate({ draft, onClose, onSaved }: { draft: { start: Date; end: D
     const q = new URLSearchParams({ ...times, subject });
     if (guests.trim()) q.set("guests", guests);
     if (allDay) q.set("all_day", "1");
+    if (target && !target.is_default) q.set("calendar", target.id);
     navigate(`/calendar/e/new?${q}`);
   };
   const save = async (e: React.FormEvent) => {
@@ -753,7 +774,9 @@ function QuickCreate({ draft, onClose, onSaved }: { draft: { start: Date; end: D
     setBusy(true);
     setProblem(null);
     try {
-      const made = await api.post<{ id: string }>(docPath("CalendarEvent"), {
+      const routes = routesFor(target?.level);
+      const made = await routes.create({
+        ...(target ? { calendar: target.id } : {}),
         subject: subject.trim() || t("(no title)"),
         ...times,
         all_day: allDay,
@@ -768,7 +791,7 @@ function QuickCreate({ draft, onClose, onSaved }: { draft: { start: Date; end: D
         action: {
           label: t("Undo"),
           onSelect: () =>
-            void api.del(docPath("CalendarEvent", made.id)).then(
+            void routes.del(made.id).then(
               () => {
                 onSaved();
                 toast(t("Event removed"));
@@ -807,6 +830,20 @@ function QuickCreate({ draft, onClose, onSaved }: { draft: { start: Date; end: D
         </Label>
         <Input id="qc-guests" value={guests} placeholder={t("name@example.com, …")} onChange={(e) => setGuests(e.target.value)} />
       </div>
+      {writable.length > 1 && (
+        <div className="grid gap-1">
+          <Label htmlFor="qc-calendar" className="text-xs text-muted-foreground">
+            {t("Calendar")}
+          </Label>
+          <select id="qc-calendar" className="h-(--control-h) w-full min-w-0 rounded-md border border-input bg-card px-2 text-sm" value={target?.id ?? ""} onChange={(e) => setCalendar(e.target.value)}>
+            {writable.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.level === "owner" ? c.name : t("{name} ({owner})", { name: c.name, owner: c.owner_name || c.owner })}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       {problem && (
         <p role="alert" className="text-xs text-destructive">
           {isolate(problem)}
@@ -1130,6 +1167,20 @@ interface Detail {
   attendees: Guest[];
   owner: string;
   owner_name?: string | null;
+  /** Who made it, when someone with "make changes" made it in the organizer's calendar. */
+  created_by?: string | null;
+  /** Other times guests proposed: for the organizer only. */
+  proposals?: Proposal[];
+}
+
+interface Proposal {
+  id: string;
+  email: string;
+  name?: string | null;
+  start: string;
+  end: string;
+  occurrence?: string | null;
+  note?: string | null;
 }
 
 function OccurrenceDialog({ o, onClose, onChanged, onEdit, onDelete }: { o: Occurrence; onClose: () => void; onChanged: () => void; onEdit: () => void; onDelete: () => void }) {
@@ -1148,6 +1199,12 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit, onDelete }: { o: Occu
   const meeting = meetPath(link);
   const cancelled = o.status === "Cancelled";
   const guests = detail.data?.attendees ?? [];
+  const closeButton = useRef<HTMLButtonElement>(null);
+  // How each guest heard of it: colleagues in Ferrum (in the app, or by email if that is how they
+  // chose to get calendar notifications), anyone else by an invitation email they answer from.
+  const people = usePeople().data?.users ?? [];
+  const told = (email: string) =>
+    isRoom(email) ? t("a room: answers itself") : people.some((p) => p.email.toLowerCase() === email.toLowerCase()) ? t("told in Ferrum") : t("invited by email");
   const by = detail.data?.owner_name || detail.data?.owner || o.owner;
   const lang = userLocale();
   const mine = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -1187,7 +1244,14 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit, onDelete }: { o: Occu
   };
   return (
     <Dialog open onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-h-[92dvh] overflow-y-auto sm:max-w-md">
+      <DialogContent
+        className="max-h-[92dvh] overflow-y-auto sm:max-w-md"
+        // Focus starts on Close, never on Delete: Enter or Space straight after opening does nothing harmful.
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          closeButton.current?.focus();
+        }}
+      >
         <DialogHeader>
           <DialogTitle className={cn(cancelled && "line-through")}>{isolate(o.subject)}</DialogTitle>
           <DialogDescription>
@@ -1199,7 +1263,7 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit, onDelete }: { o: Occu
             )}
           </DialogDescription>
         </DialogHeader>
-        <div className="grid gap-2 text-sm">
+        <div className="grid grid-cols-1 gap-2 text-sm">
           {o.calendarName && (
             <p className="flex items-center gap-1.5 text-muted-foreground">
               <span className="size-2.5 rounded-sm" style={{ background: colorOf(o) }} aria-hidden="true" />
@@ -1216,6 +1280,8 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit, onDelete }: { o: Occu
               </Badge>
             )}
             {o.category && <Badge variant="outline">{isolate(o.category)}</Badge>}
+            {o.proposed && <Badge variant="outline" className="border-warning bg-warning-soft">{t("New time proposed")}</Badge>}
+            {o.fetched && <Badge variant="outline">{t("Subscribed: read-only")}</Badge>}
           </div>
           {o.location && (
             <p className="flex items-center gap-1.5">
@@ -1259,8 +1325,15 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit, onDelete }: { o: Occu
               <Video /> {t("Add video meeting")}
             </Button>
           )}
-          {o.description && <p className="whitespace-pre-line text-muted-foreground">{isolate(o.description)}</p>}
+          {o.description_html ? (
+            // Made safe on the server (Mail's own cleaner, no pictures) before it was stored.
+            <div className="event-notes text-muted-foreground" dir="auto" dangerouslySetInnerHTML={{ __html: o.description_html }} />
+          ) : (
+            o.description && <p className="whitespace-pre-line text-muted-foreground">{isolate(o.description)}</p>
+          )}
+          {(o.attachments?.length ?? 0) > 0 && <EventFiles files={o.attachments!} by={o.is_organizer ? null : by} />}
           {by && !o.is_organizer && <p className="text-xs text-muted-foreground">{t("Organized by {by}", { by })}</p>}
+          {detail.data?.created_by && <p className="text-xs text-muted-foreground">{t("Created by {who}", { who: detail.data.created_by })}</p>}
           {response !== null && !cancelled && (
             <div className="grid gap-2 border-t pt-2">
               <span className="text-xs font-medium text-muted-foreground">{response === "Needs Action" ? t("Will you go? You have not answered yet.") : t("Will you go?")}</span>
@@ -1279,6 +1352,11 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit, onDelete }: { o: Occu
               )}
             </div>
           )}
+          {response !== null && !cancelled && !o.is_organizer && <ProposeTime o={o} by={by} onSent={() => void qc.invalidateQueries({ queryKey: ["calendar", "detail", o.event] })} />}
+          {(detail.data?.proposals?.length ?? 0) > 0 && <Proposals o={o} list={detail.data!.proposals!} onDone={() => {
+            onChanged();
+            void qc.invalidateQueries({ queryKey: ["calendar", "detail", o.event] });
+          }} />}
           {guests.length > 0 && (
             <div className="grid gap-1 border-t pt-2">
               <span className="text-xs font-medium text-muted-foreground">
@@ -1289,6 +1367,7 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit, onDelete }: { o: Occu
                   <li key={g.email} className="grid">
                     <span className="flex items-baseline gap-2">
                       <span className="min-w-0 flex-1 truncate">{g.name || g.email}</span>
+                      {o.is_organizer && <span className="shrink-0 text-xs text-muted-foreground">{told(g.email)}</span>}
                       <span className={cn("shrink-0 text-xs", g.response === "Accepted" ? "text-success" : g.response === "Declined" ? "text-destructive" : "text-muted-foreground")}>{answerLabel((g.response))}</span>
                     </span>
                     {g.comment && <span className="border-s-2 ps-2 text-xs text-muted-foreground">{isolate(g.comment)}</span>}
@@ -1299,17 +1378,177 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit, onDelete }: { o: Occu
           )}
         </div>
         <DialogFooter>
-          {o.is_organizer && (
+          {changeable(o) && (
             <Button variant="ghost" className="sm:me-auto" onClick={onDelete}>
               {t("Delete")}
             </Button>
           )}
-          <Button variant="outline" onClick={onClose}>
+          <Button ref={closeButton} variant="outline" onClick={onClose}>
             {t("Close")}
           </Button>
-          {o.is_organizer && <Button onClick={onEdit}>{t("Edit event")}</Button>}
+          {changeable(o) && <Button onClick={onEdit}>{t("Edit event")}</Button>}
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+const localZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
+const inputOf = (iso: string) => toInputIn(new Date(iso), localZone());
+
+/** A guest's "Propose a new time": the time that suits them (on their own clock) and a note for the organizer. */
+function ProposeTime({ o, by, onSent }: { o: Occurrence; by: string | null | undefined; onSent: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [start, setStart] = useState(() => inputOf(o.start));
+  const [end, setEnd] = useState(() => inputOf(o.end));
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const id = useId();
+  if (!open)
+    return (
+      <Button size="sm" variant="outline" className="justify-self-start" onClick={() => setOpen(true)}>
+        {t("Propose a new time")}
+      </Button>
+    );
+  const send = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const a = fromInputIn(start, localZone());
+    const z = fromInputIn(end, localZone());
+    if (!a || !z || z <= a) return setProblem(t("The time must end after it starts."));
+    setBusy(true);
+    setProblem(null);
+    try {
+      await api.post(`${CALENDAR}/events/${o.event}/propose`, { start: a.toISOString(), end: z.toISOString(), note: note.trim() || undefined, ...(o.recurring ? { occurrence: o.start } : {}) });
+      const said = t("Your proposal was sent to {by}. Nothing moves unless they accept it.", { by: by || t("the organizer") });
+      toast(said);
+      announce(said);
+      setOpen(false);
+      onSent();
+    } catch (err) {
+      setProblem(t("Not sent: {e}", { e: errorMessage(err) }));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <form onSubmit={send} className="grid gap-2 border-t pt-2" aria-label={t("Propose a new time")}>
+      <span className="text-xs font-medium text-muted-foreground">{o.recurring ? t("Propose a new time for this occurrence") : t("Propose a new time")}</span>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <div className="grid gap-1">
+          <Label htmlFor={`${id}-s`}>{t("Starts")}</Label>
+          <Input id={`${id}-s`} type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)} />
+        </div>
+        <div className="grid gap-1">
+          <Label htmlFor={`${id}-e`}>{t("Ends")}</Label>
+          <Input id={`${id}-e`} type="datetime-local" value={end} onChange={(e) => setEnd(e.target.value)} />
+        </div>
+      </div>
+      <Textarea value={note} rows={2} maxLength={500} aria-label={t("A note for the organizer")} placeholder={t("A note for the organizer (optional)")} onChange={(e) => setNote(e.target.value)} />
+      {problem && (
+        <p role="alert" className="text-xs text-destructive">
+          {isolate(problem)}
+        </p>
+      )}
+      <div className="flex gap-2">
+        <Button type="submit" size="sm" disabled={busy}>
+          {busy ? t("Sending…") : t("Send proposal")}
+        </Button>
+        <Button type="button" size="sm" variant="ghost" onClick={() => setOpen(false)}>
+          {t("Cancel")}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+/** The organizer's view of the times guests proposed: who, when (on the organizer's clock), their note; Accept or Decline. */
+function Proposals({ o, list, onDone }: { o: Occurrence; list: Proposal[]; onDone: () => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const lang = userLocale();
+  const at = (iso: string) => new Date(iso).toLocaleString(lang, { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+  const decide = async (p: Proposal, action: "accept" | "decline") => {
+    setBusy(p.id + action);
+    try {
+      await api.post(`${CALENDAR}/events/${o.event}/proposals/${p.id}`, { action });
+      const who = p.name || p.email;
+      const said = action === "accept" ? t("Moved to {when}. Your guests are told.", { when: at(p.start) }) : t("{who} is told the time stays.", { who });
+      toast(said);
+      announce(said);
+      onDone();
+    } catch (e) {
+      toast(t("Not done: {e}", { e: errorMessage(e) }), "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <div className="grid gap-2 border-t pt-2">
+      <span className="text-xs font-medium text-muted-foreground">{t("New times proposed")}</span>
+      <ul className="grid gap-2" aria-label={t("New times proposed")}>
+        {list.map((p) => (
+          <li key={p.id} className="grid gap-1 rounded-md border p-2 text-sm">
+            <span>
+              <span className="font-medium">{isolate(p.name || p.email)}</span> {t("proposes")} <span className="tabular-nums">{isolate(`${at(p.start)} – ${timeFmt(new Date(p.end))}`)}</span>
+            </span>
+            {p.occurrence && <span className="text-xs text-muted-foreground">{t("Instead of {when} only", { when: at(p.occurrence) })}</span>}
+            {p.note && <span className="border-s-2 ps-2 text-xs text-muted-foreground">{isolate(p.note)}</span>}
+            <span className="flex gap-2">
+              <Button size="xs" disabled={!!busy} onClick={() => void decide(p, "accept")}>
+                {busy === p.id + "accept" ? t("Moving…") : t("Accept")}
+              </Button>
+              <Button size="xs" variant="outline" disabled={!!busy} onClick={() => void decide(p, "decline")}>
+                {t("Decline")}
+              </Button>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** An event's files from Drive: each opens in Drive's preview, for those Drive lets open it; anyone
+ *  else reads why not, rather than a link that fails. */
+function EventFiles({ files, by }: { files: Attachment[]; by: string | null | undefined }) {
+  const preview = useCanIntent("preview", "file");
+  return (
+    <div className="grid min-w-0 grid-cols-1 gap-1 border-t pt-2">
+      <span className="text-xs font-medium text-muted-foreground">{t("Files")}</span>
+      <ul className="grid min-w-0 grid-cols-1 gap-1" aria-label={t("Files")}>
+        {files.map((f) => (
+          <EventFile key={f.id} f={f} by={by} preview={preview} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function EventFile({ f, by, preview }: { f: Attachment; by: string | null | undefined; preview: boolean }) {
+  // Whether Drive lets me open it (and whether Drive is there at all).
+  const access = useQuery({ queryKey: ["drive", "item", f.id], queryFn: ({ signal }) => api.get<{ id: string }>("/api/app/drive/item_info", { item: f.id }, signal), retry: false, staleTime: 60_000 });
+  const open = () => {
+    if (preview) void shell().intent({ action: "preview", type: "file", data: { id: f.id } }).catch((e: unknown) => toast(errorMessage(e), "error"));
+    else window.open(`/drive/item/${f.id}`, "_blank", "noopener");
+  };
+  return (
+    <li className="grid min-w-0 grid-cols-1 text-sm">
+      <span className="flex min-w-0 items-center gap-2">
+        <Paperclip className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+        {access.data ? (
+          <button type="button" className="min-w-0 flex-1 truncate text-start text-primary underline underline-offset-2" onClick={open}>
+            {isolate(f.name)}
+          </button>
+        ) : (
+          <span className="min-w-0 flex-1 truncate">{isolate(f.name)}</span>
+        )}
+        <span className="shrink-0 text-xs text-muted-foreground">{isolate(fileKind(f.name))}</span>
+      </span>
+      {access.isError && (
+        <span className="ps-6 text-xs text-muted-foreground">
+          {by ? t("You cannot open this file in Drive. Ask {by} to share it with you.", { by }) : t("You cannot open this file in Drive: it is not shared with you.")}
+        </span>
+      )}
+    </li>
   );
 }

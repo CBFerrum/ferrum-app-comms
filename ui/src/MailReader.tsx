@@ -22,7 +22,7 @@ import { ruleFromSender, type Rule } from "./lib/filters";
 import { SNOOZED_NAME, isSnoozed } from "./lib/folders";
 import { snoozeChoices, wakeKeys, wakeKeyword, wakeOf } from "./lib/watch";
 import { Composer, loadDraft } from "./MailCompose";
-import { InviteAnswer, ReplyCard } from "./MailInvite";
+import { CounterCard, InviteAnswer, ReplyCard } from "./MailInvite";
 import { ExternalMark, ImagesBar, InviteCard, MessageMenu, WarningBanner, WhySpam, unsubscribeNow, useExtras } from "./MailSafety";
 import { ActionBar } from "./MailToolbar";
 import { offered, type Verb } from "./lib/actions";
@@ -437,6 +437,7 @@ function Card({ account, summary, open, fill, onToggle, me, domains, inSpam, onV
                 {warning && <WarningBanner warning={warning} />}
                 {inSpam && extras && <WhySpam extras={extras} />}
                 {extras?.invite && extras.invite.method !== "REPLY" && <InviteCard invite={extras.invite} cancelled={extras.invite.method === "CANCEL"} />}
+                {extras?.invite?.method === "COUNTER" && <CounterCard account={account} emailId={summary.id} />}
                 {extras?.ics && extras.invite?.method === "REQUEST" && <InviteAnswer account={account} emailId={summary.id} keywords={summary.keywords} ics={extras.ics} me={me} boxes={boxes} title={extras.invite.title} />}
                 {extras?.ics && extras.invite?.method === "REPLY" && <ReplyCard account={account} emailId={summary.id} keywords={summary.keywords} ics={extras.ics} me={me} />}
                 <div className={cn("flex flex-wrap items-center gap-1", summary.keywords?.$draft && "hidden")}>

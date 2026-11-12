@@ -93,15 +93,34 @@ vi.mock("@ferrum/client", async (orig) => {
     recurrence_exceptions: ["2026-11-30T09:00:00.000Z"],
     attendees: [{ email: "bo@acme.test", attendee_name: "Bo", response: "Accepted" }],
     reminders: [{ minutes_before: 10 }],
+    calendar: "c9",
   };
   const record = (m: string) => async (path: string, body?: unknown) => {
     calls.push([m, path, body]);
-    if (m === "GET" && path.includes("/calendar/events")) return { occurrences: [{ id: "a", event: "s1", start: "2026-11-02T09:00:00Z" }, { id: "b", event: "s1", start: "2026-11-09T09:00:00Z" }] };
+    if (m === "GET" && path.endsWith("/calendar/events")) return { occurrences: [{ id: "a", event: "s1", start: "2026-11-02T09:00:00Z" }, { id: "b", event: "s1", start: "2026-11-09T09:00:00Z" }] };
     if (m === "GET") return series;
     if (m === "POST") return { id: "n1" };
     return { version: 5 };
   };
   return { ...real, api: { get: record("GET"), post: record("POST"), patch: record("PATCH"), del: record("DELETE") }, docPath: (e: string, id?: string) => `/api/r/${e}${id ? `/${id}` : ""}` };
+});
+
+describe("changing a repeating event in a calendar shared to make changes", () => {
+  afterEach(() => void (calls.length = 0));
+  it("reads and writes through Calendar's routes, keeping the event in its calendar", async () => {
+    const { changeTimes, removeOccurrence } = await import("./calendarChanges");
+    const o: Occurrence = { id: "s1/x", event: "s1", start: "2026-11-16T09:00:00.000Z", end: "2026-11-16T09:15:00.000Z", all_day: false, subject: "Stand-up", recurring: true, level: "edit", calendar: "c9" };
+    await changeTimes(o, new Date("2026-11-16T10:00:00Z"), new Date("2026-11-16T10:30:00Z"), "this");
+    expect(calls.map((c) => [c[0], c[1]])).toEqual([
+      ["GET", "/api/app/comms/calendar/events/s1/record"],
+      ["POST", "/api/app/comms/calendar/events"],
+      ["PATCH", "/api/app/comms/calendar/events/s1"],
+    ]);
+    expect(calls[1]![2]).toEqual(expect.objectContaining({ calendar: "c9" }));
+    calls.length = 0;
+    await removeOccurrence(o, "all");
+    expect(calls.map((c) => [c[0], c[1]])).toEqual([["GET", "/api/app/comms/calendar/events/s1/record"], ["DELETE", "/api/app/comms/calendar/events/s1"]]);
+  });
 });
 
 describe("changing a repeating event", () => {
@@ -185,8 +204,35 @@ describe("several calendars", () => {
     expect(colorOf({ color: "#123456", tone: "red" })).toBe("#123456");
     expect([toneVar("purple", true), toneVar("nonsense")]).toEqual(["var(--purple-soft)", "var(--primary)"]);
   });
-  it("lets 'make changes' move a single event, not a series, and never a free/busy one", () => {
+  it("lets 'make changes' move an event or a series, and never a free/busy or details one", () => {
     const base = o("x", "team");
-    expect([canMove({ ...base, level: "edit" }), canMove({ ...base, level: "edit", recurring: true }), canMove({ ...base, level: "free_busy" }), canMove({ ...base, level: "details" })]).toEqual([true, false, false, false]);
+    expect([canMove({ ...base, level: "edit" }), canMove({ ...base, level: "edit", recurring: true }), canMove({ ...base, level: "free_busy" }), canMove({ ...base, level: "details" }), canMove({ ...base, level: "edit", status: "Cancelled" })]).toEqual([true, true, false, false, false]);
+  });
+});
+
+import { changeable, fileKind, isRoom, subscriptionState } from "./calendar";
+
+describe("wave 3 helpers", () => {
+  it("never lets a subscribed event be changed, and lets 'make changes' change one", () => {
+    expect([changeable({ is_organizer: true, fetched: true }), changeable({ level: "edit" }), changeable({ level: "details" }), changeable({ is_organizer: true })]).toEqual([false, true, false, true]);
+  });
+  it("says how a subscription's last fetch went", () => {
+    expect(subscriptionState({ failures: 2, result: "failed: its server answered 500" }, () => "x")).toEqual({ failed: true, text: "its server answered 500" });
+    expect(subscriptionState({ failures: 0, fetched_at: "2027-03-01T00:00:00Z", result: "up to date" }, (at) => `at ${at}`)).toEqual({ failed: false, text: "at 2027-03-01T00:00:00Z" });
+  });
+  it("names a file's kind and knows a room's address", () => {
+    expect([fileKind("Budget.XLSX"), fileKind("notes.pdf"), fileKind("photo.heic"), fileKind("README")]).toEqual(["Spreadsheet", "PDF", "HEIC", ""]);
+    expect([isRoom("board-1a2b3c@rooms.ferrum.invalid"), isRoom("ana@acme.test")]).toEqual([true, false]);
+  });
+});
+
+import { stretch } from "./calendar";
+
+describe("busy spans in words", () => {
+  it("says a whole day as such, not as midnight to midnight", () => {
+    const at = (y: number, m: number, d: number, h = 0, mi = 0) => new Date(y, m, d, h, mi).toISOString();
+    expect(stretch({ start: at(2026, 10, 12), end: at(2026, 10, 13) })).toBe("all day");
+    expect(stretch({ start: at(2026, 10, 12), end: at(2026, 10, 14) })).toMatch(/12.*–.*13/);
+    expect(stretch({ start: at(2026, 10, 12, 9), end: at(2026, 10, 12, 10) })).not.toMatch(/all day/);
   });
 });

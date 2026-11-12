@@ -21,9 +21,12 @@ mod mailadmin;
 pub(crate) mod meet;
 pub mod meetings;
 mod newsletter;
+mod proposals;
 pub mod recur;
 mod reports;
+mod rooms;
 mod site;
+pub mod subscribe;
 mod template;
 mod util;
 mod webmail;
@@ -44,6 +47,8 @@ const POLL_BUDGET: Duration = Duration::from_secs(40);
 const SEND_BUDGET: Duration = Duration::from_secs(30);
 /// New hosted mail (`arrivals.rs`): looked at first, so a notification waits at most about a round.
 const ARRIVALS_BUDGET: Duration = Duration::from_secs(20);
+/// Calendars subscribed to by their address (`subscribe.rs`): each due one fetched while this lasts.
+const SUBSCRIBE_BUDGET: Duration = Duration::from_secs(30);
 
 /// Registers this package's document hooks, its mail sender and its endpoints.
 pub fn register(hooks: &mut HookRegistry) {
@@ -100,6 +105,7 @@ pub async fn maintenance_with(k: &Kernel, mailboxes: &dyn MailboxConnector) -> R
             ("mail polling", inbound::poll_due(k, tenant, mailboxes, POLL_BUDGET).await),
             ("newsletters", newsletter::run(k, tenant, SEND_BUDGET).await),
             ("reminders", calendar::fire_reminders(k, tenant).await),
+            ("calendar subscriptions", subscribe::run(k, tenant, SUBSCRIBE_BUDGET).await),
             ("meeting attendance", meetings::upkeep(k, tenant).await),
             ("hosted mail", hosted::reconcile_due(k, tenant).await.map(|_| 0)),
             ("purge", purge(k, tenant).await),
@@ -114,19 +120,27 @@ pub async fn maintenance_with(k: &Kernel, mailboxes: &dyn MailboxConnector) -> R
     first_error.map_or(Ok(()), Err)
 }
 
-/// Old reminder bookkeeping, what old new-mail notifications opened, and meeting rooms nobody joined for 90 days.
+/// Old reminder bookkeeping, what old new-mail notifications opened, proposals for deleted events, and meeting rooms nobody joined for 90 days.
 async fn purge(k: &Kernel, tenant: Uuid) -> Result<usize> {
     let mut tx = k.db.tenant_tx(tenant).await?;
     let mut n = 0;
     for sql in [
         "delete from comms_reminder_log where tenant_id = $1 and fired_at < now() - interval '60 days'",
         "delete from comms_mail_notice where tenant_id = $1 and created_at < now() - interval '60 days'",
+        "delete from comms_event_proposal p where tenant_id = $1 and not exists (select 1 from e_calendar_event e where e.tenant_id = p.tenant_id and e.id = p.event_id)",
         "delete from comms_meeting where tenant_id = $1 and coalesce(used_at, created_at) < now() - interval '90 days' and (source_entity is null or coalesce(ends_at, created_at) < now() - interval '90 days')",
     ] {
         n += sqlx::query(sql).bind(tenant).execute(&mut *tx).await?.rows_affected();
     }
     tx.commit().await?;
     Ok(n as usize)
+}
+
+/// Applies a calendar message found in `me`'s mailbox, sent by `from` (what happens when it arrives,
+/// `itip.rs`): the outcome's word. For tests, which have no mail server.
+#[doc(hidden)]
+pub async fn apply_calendar_mail(k: &Kernel, tenant: Uuid, me: &str, from: &str, text: &str) -> Result<&'static str> {
+    itip::apply(k, tenant, me, from, text).await.map(|a| a.word())
 }
 
 include!(concat!(env!("OUT_DIR"), "/packages.rs"));

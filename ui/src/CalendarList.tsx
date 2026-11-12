@@ -9,9 +9,9 @@ import { useState } from "react";
 import { Button, Input, Label } from "@ferrum/kit/primitives";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@ferrum/kit/primitives";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@ferrum/kit/primitives";
-import { api, errorMessage, isolate, t } from "@ferrum/client";
+import { api, errorMessage, isolate, relativeTime, t } from "@ferrum/client";
 import { announce, cn, toast } from "@ferrum/kit";
-import { CALENDAR, parseGuests, TONES, toneVar, type Cal } from "./lib/calendar";
+import { CALENDAR, parseGuests, subscriptionState, TONES, toneVar, type Cal } from "./lib/calendar";
 
 const HIDDEN_KEY = "ferrum.calendar.hidden-shared";
 export const toneName = (tone: string) => ({ blue: t("Blue"), green: t("Green"), amber: t("Amber"), red: t("Red"), purple: t("Purple"), neutral: t("Grey") })[tone] ?? tone;
@@ -42,7 +42,22 @@ export function useCalendars() {
 
 export function CalendarList({ cals, hidden, sharedHidden, hideShared, failed }: { cals: Cal[]; hidden: Set<string>; sharedHidden: Set<string>; hideShared: (ids: Set<string>) => void; failed: boolean }) {
   const qc = useQueryClient();
-  const [dialog, setDialog] = useState<{ kind: "new" | "rename" | "share" | "delete"; cal?: Cal } | null>(null);
+  const [dialog, setDialog] = useState<{ kind: Kind; cal?: Cal } | null>(null);
+  const [refreshing, setRefreshing] = useState<string | null>(null);
+  const refreshNow = async (c: Cal) => {
+    setRefreshing(c.id);
+    try {
+      const r = await api.post<{ ok: boolean; result: string }>(`${CALENDAR}/subscriptions/${c.id}/refresh`);
+      refresh();
+      const said = r.ok ? t("{name} is up to date", { name: c.name }) : t("{name} could not be updated: {why}", { name: c.name, why: r.result });
+      toast(said, r.ok ? undefined : "error");
+      announce(said);
+    } catch (e) {
+      toast(t("Not updated: {e}", { e: errorMessage(e) }), "error");
+    } finally {
+      setRefreshing(null);
+    }
+  };
   const mine = cals.filter((c) => c.level === "owner");
   const others = cals.filter((c) => c.level !== "owner");
   const refresh = () => void qc.invalidateQueries({ queryKey: ["calendar"] });
@@ -93,6 +108,7 @@ export function CalendarList({ cals, hidden, sharedHidden, hideShared, failed }:
         </span>
         {c.level !== "owner" && <span className="sr-only">{`, ${c.owner_name || c.owner}, ${levelName(c.level)}`}</span>}
       </label>
+      {refreshing === c.id && <span className="text-xs text-muted-foreground">{t("Updating…")}</span>}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button variant="ghost" size="icon-xs" aria-label={t("Options for {name}", { name: c.name })}>
@@ -104,12 +120,21 @@ export function CalendarList({ cals, hidden, sharedHidden, hideShared, failed }:
           {c.level === "owner" && (
             <>
               <DropdownMenuItem onSelect={() => setDialog({ kind: "rename", cal: c })}>{t("Rename and colour")}</DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setDialog({ kind: "share", cal: c })}>{t("Share")}</DropdownMenuItem>
-              {!c.is_default && <DropdownMenuItem onSelect={() => void patch(c, { is_default: true }, t("New events go in {name}", { name: c.name }))}>{t("Make it the default for new events")}</DropdownMenuItem>}
+              {c.subscription ? (
+                <>
+                  <DropdownMenuItem disabled={refreshing === c.id} onSelect={() => void refreshNow(c)}>{t("Update now")}</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => void patch(c, { remind: !c.subscription!.remind }, c.subscription!.remind ? t("Its events no longer remind you") : t("Its events remind you, as the calendar sets"))}>
+                    {c.subscription.remind ? t("Turn its reminders off") : t("Turn its reminders on")}
+                  </DropdownMenuItem>
+                </>
+              ) : (
+                <DropdownMenuItem onSelect={() => setDialog({ kind: "share", cal: c })}>{t("Share")}</DropdownMenuItem>
+              )}
+              {!c.is_default && !c.subscription && <DropdownMenuItem onSelect={() => void patch(c, { is_default: true }, t("New events go in {name}", { name: c.name }))}>{t("Make it the default for new events")}</DropdownMenuItem>}
               {!c.is_default && (
                 <>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem onSelect={() => setDialog({ kind: "delete", cal: c })}>{t("Delete")}</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => setDialog({ kind: "delete", cal: c })}>{c.subscription ? t("Unsubscribe") : t("Delete")}</DropdownMenuItem>
                 </>
               )}
             </>
@@ -123,11 +148,33 @@ export function CalendarList({ cals, hidden, sharedHidden, hideShared, failed }:
       <section className="grid gap-1">
         <div className="flex items-center">
           <h2 className="flex-1 text-xs font-medium text-muted-foreground">{t("My calendars")}</h2>
-          <Button variant="ghost" size="icon-xs" aria-label={t("New calendar")} onClick={() => setDialog({ kind: "new" })}>
-            <Plus />
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon-xs" aria-label={t("Add a calendar")}>
+                <Plus />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={() => setDialog({ kind: "new" })}>{t("New calendar")}</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setDialog({ kind: "subscribe" })}>{t("Subscribe by address")}</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setDialog({ kind: "holidays" })}>{t("Add holidays")}</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
-        <ul className="grid">{mine.map(row)}</ul>
+        <ul className="grid">
+          {mine.map((c) => {
+            if (!c.subscription) return row(c);
+            const state = subscriptionState(c.subscription, (at) => t("Updated {when}", { when: relativeTime(at) }));
+            return (
+              <div key={c.id}>
+                {row(c)}
+                <p className={cn("ps-9 text-xs", state.failed ? "text-destructive" : "text-muted-foreground")} title={c.subscription.label ?? undefined}>
+                  {state.failed ? t("Could not update: {why}", { why: state.text }) : isolate(state.text || (c.subscription.label ?? ""))}
+                </p>
+              </div>
+            );
+          })}
+        </ul>
       </section>
       {others.length > 0 && (
         <section className="grid gap-1">
@@ -147,11 +194,18 @@ export function CalendarList({ cals, hidden, sharedHidden, hideShared, failed }:
   );
 }
 
-function CalendarDialog({ kind, cal, mine, onClose, onDone }: { kind: "new" | "rename" | "share" | "delete"; cal?: Cal; mine: Cal[]; onClose: () => void; onDone: () => void }) {
-  const [name, setName] = useState(cal?.name ?? "");
-  const [tone, setTone] = useState(cal?.tone ?? "green");
+type Kind = "new" | "rename" | "share" | "delete" | "subscribe" | "holidays";
+
+function CalendarDialog({ kind, cal, mine, onClose, onDone }: { kind: Kind; cal?: Cal; mine: Cal[]; onClose: () => void; onDone: () => void }) {
+  const subscribing = kind === "subscribe" || kind === "holidays";
+  const [name, setName] = useState(cal?.name ?? (kind === "holidays" ? t("Holidays") : ""));
+  const [tone, setTone] = useState(cal?.tone ?? (subscribing ? "purple" : "green"));
+  const [url, setUrl] = useState("");
   const [shares, setShares] = useState(cal?.shares ?? []);
   const [person, setPerson] = useState("");
+  const [group, setGroup] = useState("");
+  // The workspace's groups (its roles); a server before Comms 0.18 has none, and the choice is not offered.
+  const groups = useQuery({ queryKey: ["calendar", "groups"], queryFn: ({ signal }) => api.get<{ groups: { name: string; members: number }[] }>(`${CALENDAR}/groups`, undefined, signal).then((r) => r.groups), enabled: kind === "share", retry: false, staleTime: 300_000 });
   const [moveTo, setMoveTo] = useState(mine.find((m) => m.is_default)?.id ?? "");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
@@ -160,13 +214,14 @@ function CalendarDialog({ kind, cal, mine, onClose, onDone }: { kind: "new" | "r
     setBusy(true);
     setProblem(null);
     try {
-      if (kind === "new") await api.post(`${CALENDAR}/calendars`, { name, tone });
+      if (subscribing) await api.post(`${CALENDAR}/subscriptions`, { url: url.trim(), name: name.trim() || undefined, tone });
+      else if (kind === "new") await api.post(`${CALENDAR}/calendars`, { name, tone });
       else if (kind === "rename") await api.patch(`${CALENDAR}/calendars/${cal!.id}`, { name, tone });
       else if (kind === "share") await api.patch(`${CALENDAR}/calendars/${cal!.id}`, { shares });
       else await api.del(`${CALENDAR}/calendars/${cal!.id}?events=${moveTo === "delete" ? "delete" : `move:${moveTo}`}`);
       onDone();
       onClose();
-      const said = kind === "delete" ? t("Calendar deleted") : kind === "share" ? t("Sharing saved") : t("Calendar saved");
+      const said = kind === "delete" ? (cal?.subscription ? t("Unsubscribed") : t("Calendar deleted")) : kind === "share" ? t("Sharing saved") : subscribing ? t("Subscribed. Its events are on your calendar.") : t("Calendar saved");
       toast(said);
       announce(said);
     } catch (err) {
@@ -177,11 +232,25 @@ function CalendarDialog({ kind, cal, mine, onClose, onDone }: { kind: "new" | "r
   const add = () => {
     const got = parseGuests(person);
     if (got.bad.length || !got.emails.length) return setProblem(t("Not an email address: {value}", { value: person }));
-    setShares((s) => [...s.filter((x) => !got.emails.includes(x.person)), ...got.emails.map((p) => ({ person: p, level: "Details" as const }))]);
+    setShares((s) => [...s.filter((x) => !x.person || !got.emails.includes(x.person)), ...got.emails.map((p) => ({ person: p, level: "Details" as const }))]);
     setPerson("");
     setProblem(null);
   };
-  const title = { new: t("New calendar"), rename: t("Rename and colour"), share: t("Share {name}", { name: cal?.name ?? "" }), delete: t("Delete {name}", { name: cal?.name ?? "" }) }[kind];
+  const addGroup = () => {
+    if (!group) return;
+    setShares((s) => [...s.filter((x) => x.role !== group), { role: group, level: "Details" as const }]);
+    setGroup("");
+  };
+  const who = (s: { person?: string; role?: string }) => (s.role ? t("Group: {name}", { name: s.role }) : (s.person ?? ""));
+  const same = (a: { person?: string; role?: string }, b: { person?: string; role?: string }) => (a.role ? a.role === b.role : !b.role && a.person === b.person);
+  const title = {
+    new: t("New calendar"),
+    rename: t("Rename and colour"),
+    share: t("Share {name}", { name: cal?.name ?? "" }),
+    delete: cal?.subscription ? t("Unsubscribe from {name}", { name: cal.name }) : t("Delete {name}", { name: cal?.name ?? "" }),
+    subscribe: t("Subscribe by address"),
+    holidays: t("Add holidays"),
+  }[kind];
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-h-[92dvh] overflow-y-auto sm:max-w-md">
@@ -189,14 +258,31 @@ function CalendarDialog({ kind, cal, mine, onClose, onDone }: { kind: "new" | "r
           <DialogHeader>
             <DialogTitle>{isolate(title)}</DialogTitle>
             <DialogDescription>
-              {kind === "share" ? t("People you share it with see it under Other calendars. Removing someone takes their access away at once.") : kind === "delete" ? t("Its events go to another of your calendars, or are deleted (their guests are told).") : t("Its colour shows on its events in every view.")}
+              {kind === "share"
+                ? t("People you share it with see it under Other calendars. Removing someone takes their access away at once.")
+                : kind === "delete"
+                  ? cal?.subscription
+                    ? t("Its events go from your calendar. The calendar at its address is not changed.")
+                    : t("Its events go to another of your calendars, or are deleted (their guests are told).")
+                  : kind === "holidays"
+                    ? t("Paste the public address (.ics) of a holidays calendar: your country's, or one another calendar service publishes. It is checked every hour.")
+                    : kind === "subscribe"
+                      ? t("Paste the address (.ics or webcal://) of a calendar someone publishes. Its events show here, read-only, and are checked every hour.")
+                      : t("Its colour shows on its events in every view.")}
             </DialogDescription>
           </DialogHeader>
-          {(kind === "new" || kind === "rename") && (
+          {subscribing && (
+            <div className="grid gap-1.5">
+              <Label htmlFor="cal-url">{t("Address")}</Label>
+              <Input id="cal-url" type="url" inputMode="url" autoFocus required dir="ltr" placeholder="https://… .ics" value={url} maxLength={2000} onChange={(e) => setUrl(e.target.value)} />
+              <p className="text-xs text-muted-foreground">{t("If the address has a private key in it, keep it to yourself: after this it is shown only by its site.")}</p>
+            </div>
+          )}
+          {(kind === "new" || kind === "rename" || subscribing) && (
             <>
               <div className="grid gap-1.5">
                 <Label htmlFor="cal-name">{t("Name")}</Label>
-                <Input id="cal-name" autoFocus value={name} maxLength={100} onChange={(e) => setName(e.target.value)} />
+                <Input id="cal-name" autoFocus={!subscribing} value={name} maxLength={100} placeholder={subscribing ? t("The site's name, if left empty") : undefined} onChange={(e) => setName(e.target.value)} />
               </div>
               <fieldset className="grid gap-1.5">
                 <legend className="mb-1 text-sm font-medium">{t("Colour")}</legend>
@@ -217,16 +303,16 @@ function CalendarDialog({ kind, cal, mine, onClose, onDone }: { kind: "new" | "r
               <ul className="grid gap-1.5" aria-label={t("People with access")}>
                 {shares.length === 0 && <li className="text-sm text-muted-foreground">{t("Only you.")}</li>}
                 {shares.map((s) => (
-                  <li key={s.person} className="flex items-center gap-2 text-sm">
-                    <span className="min-w-0 flex-1 truncate">{isolate(s.person)}</span>
-                    <select aria-label={t("What {person} may do", { person: s.person })} className="h-8 rounded-md border border-input bg-card px-2 text-sm" value={s.level} onChange={(e) => setShares((all) => all.map((x) => (x.person === s.person ? { ...x, level: e.target.value as typeof s.level } : x)))}>
+                  <li key={s.role ? `g:${s.role}` : `p:${s.person}`} className="flex items-center gap-2 text-sm">
+                    <span className="min-w-0 flex-1 truncate">{isolate(who(s))}</span>
+                    <select aria-label={t("What {person} may do", { person: who(s) })} className="h-8 rounded-md border border-input bg-card px-2 text-sm" value={s.level} onChange={(e) => setShares((all) => all.map((x) => (same(x, s) ? { ...x, level: e.target.value as typeof s.level } : x)))}>
                       {(["Free/busy", "Details", "Edit"] as const).map((l) => (
                         <option key={l} value={l}>
                           {levelName(l)}
                         </option>
                       ))}
                     </select>
-                    <Button type="button" variant="ghost" size="icon-xs" aria-label={t("Remove {person}", { person: s.person })} onClick={() => setShares((all) => all.filter((x) => x.person !== s.person))}>
+                    <Button type="button" variant="ghost" size="icon-xs" aria-label={t("Remove {person}", { person: who(s) })} onClick={() => setShares((all) => all.filter((x) => !same(x, s)))}>
                       <X />
                     </Button>
                   </li>
@@ -249,9 +335,25 @@ function CalendarDialog({ kind, cal, mine, onClose, onDone }: { kind: "new" | "r
                   {t("Add")}
                 </Button>
               </div>
+              {(groups.data?.length ?? 0) > 0 && (
+                <div className="flex gap-2">
+                  <select aria-label={t("Add a group")} className="h-(--control-h) min-w-0 flex-1 rounded-md border border-input bg-card px-2 text-sm" value={group} onChange={(e) => setGroup(e.target.value)}>
+                    <option value="">{t("Add a group…")}</option>
+                    {groups.data!.filter((g) => !shares.some((s) => s.role === g.name)).map((g) => (
+                      <option key={g.name} value={g.name}>
+                        {g.members === 1 ? t("{name} (1 person)", { name: g.name }) : t("{name} ({count} people)", { name: g.name, count: g.members })}
+                      </option>
+                    ))}
+                  </select>
+                  <Button type="button" variant="outline" onClick={addGroup} disabled={!group}>
+                    {t("Add")}
+                  </Button>
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground">{t("A group is everyone who holds that role now: someone who leaves it loses access at once.")}</p>
             </div>
           )}
-          {kind === "delete" && (
+          {kind === "delete" && !cal?.subscription && (
             <div className="grid gap-1.5">
               <Label htmlFor="cal-move">{t("Its events")}</Label>
               <select id="cal-move" className="h-(--control-h) rounded-md border border-input bg-card px-2 text-sm" value={moveTo} onChange={(e) => setMoveTo(e.target.value)}>
@@ -275,8 +377,8 @@ function CalendarDialog({ kind, cal, mine, onClose, onDone }: { kind: "new" | "r
             <Button type="button" variant="outline" onClick={onClose}>
               {t("Cancel")}
             </Button>
-            <Button type="submit" disabled={busy || ((kind === "new" || kind === "rename") && !name.trim())} variant={kind === "delete" ? "destructive" : "default"}>
-              {busy ? t("Saving…") : kind === "delete" ? t("Delete") : t("Save")}
+            <Button type="submit" disabled={busy || ((kind === "new" || kind === "rename") && !name.trim()) || (subscribing && !url.trim())} variant={kind === "delete" ? "destructive" : "default"}>
+              {busy ? (subscribing ? t("Reading the calendar…") : t("Saving…")) : kind === "delete" ? (cal?.subscription ? t("Unsubscribe") : t("Delete")) : subscribing ? t("Subscribe") : t("Save")}
             </Button>
           </DialogFooter>
         </form>

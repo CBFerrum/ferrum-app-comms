@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { answersIn, ferrumEvent, fold, replyIcs } from "./itip";
+import { answersIn, counterIcs, ferrumEvent, fold, replyIcs } from "./itip";
 
 const INVITE = [
   "BEGIN:VCALENDAR", "PRODID:-//Ferrum//Comms//EN", "VERSION:2.0", "METHOD:REQUEST",
@@ -22,6 +22,18 @@ describe("answering an invitation by mail", () => {
       'ATTENDEE;PARTSTAT=ACCEPTED;CN="Administrator":mailto:admin@demo.test', "END:VEVENT", "END:VCALENDAR", "",
     ]);
     expect(replyIcs("BEGIN:VCALENDAR\r\nEND:VCALENDAR", { email: "a@x" }, "DECLINED")).toBeNull();
+  });
+
+  it("proposes another time with a COUNTER: the event's lines, the new time in UTC, one's own line and the note", () => {
+    const ics = counterIcs(INVITE, { email: "admin@demo.test" }, new Date("2026-11-13T09:30:00Z"), new Date("2026-11-13T10:30:00Z"), "After lunch; please, if you can", new Date("2026-11-12T04:00:00Z"))!;
+    const lines = ics.split("\r\n");
+    expect(lines).toContain("METHOD:COUNTER");
+    expect(lines.filter((l) => l.startsWith("DTSTART") && !l.startsWith("DTSTART:1970"))).toEqual(["DTSTART:20261113T093000Z"]);
+    expect(lines).toContain("DTEND:20261113T103000Z");
+    expect(lines).toContain("ATTENDEE;PARTSTAT=TENTATIVE:mailto:admin@demo.test");
+    expect(lines).toContain("COMMENT:After lunch\\; please\\, if you can");
+    expect(lines).toContain("ORGANIZER;CN=Priya Nair:mailto:priya.nair@demo.test");
+    expect(counterIcs("BEGIN:VCALENDAR\r\nEND:VCALENDAR", { email: "a@x" }, new Date(), new Date(), "")).toBeNull();
   });
 
   it("reads who answered what from a REPLY, and nothing from a REQUEST", () => {
