@@ -1491,6 +1491,7 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     calendar_sharing(&t, &admin, &users).await;
     calendar_delegates(&t, &admin, &users).await;
     calendar_subscriptions(&t, &users).await;
+    calendar_proposals(&t, &users, &smtp).await;
     hosted_mail(&t, &admin, &users, &imap).await;
 
     // What meetings keep of a person, in Comms' own table: in their copy, and gone with their erasure,
@@ -2374,6 +2375,120 @@ async fn calendar_subscriptions(t: &T, users: &HashMap<String, Ctx>) {
     t.ok(alice, "DELETE", &format!("/calendar/calendars/{cal}"), &[], Value::Null).await;
     let left: i64 = t.scalar("select count(*) from e_calendar_event where tenant_id = $1 and calendar = $2", Some(cal)).await;
     assert_eq!(left, 0);
+}
+
+/// Comms 0.18: guests propose another time, in the app or by mail (COUNTER); the organizer alone sees
+/// the proposals and accepts (the event, or one occurrence, moves) or declines (the guest is told).
+async fn calendar_proposals(t: &T, users: &HashMap<String, Ctx>, smtp: &Smtp) {
+    let (alice, bob, carol) = (&users["alice"], &users["bob"], &users["carol"]);
+    let k = &t.k;
+    let made = k
+        .insert(
+            alice,
+            "CalendarEvent",
+            obj(json!({"subject": "Weekly review", "starts_at": "2027-03-01T09:00:00Z", "ends_at": "2027-03-01T10:00:00Z", "timezone": "Europe/London",
+            "recurrence": "FREQ=WEEKLY;COUNT=4", "attendees": [{"email": "bob@acme.test"}, {"email": "guest@partner.test"}]})),
+        )
+        .await
+        .unwrap();
+    let ev = uid(&Value::Object(made));
+    let path = format!("/calendar/events/{ev}");
+    // Bob proposes Tuesday for the 8th only, with a note; and later a new time for the whole series.
+    t.ok(
+        bob,
+        "POST",
+        &format!("{path}/propose"),
+        &[],
+        json!({"start": "2027-03-09T14:00:00Z", "end": "2027-03-09T15:00:00Z", "occurrence": "2027-03-08T09:00:00Z", "note": "Monday is full"}),
+    )
+    .await;
+    assert_eq!(t.notifications(alice, "Bob Shah proposed a new time: Weekly review").await, 1);
+    refused(
+        t.call(
+            Some(bob),
+            "POST",
+            &format!("{path}/propose"),
+            &[],
+            json!({"start": "2027-03-09T14:00:00Z", "end": "2027-03-09T15:00:00Z", "occurrence": "2027-03-08T10:00:00Z"}),
+        )
+        .await,
+        "invalid",
+    );
+    refused(
+        t.call(Some(alice), "POST", &format!("{path}/propose"), &[], json!({"start": "2027-03-09T14:00:00Z", "end": "2027-03-09T15:00:00Z"})).await,
+        "invalid",
+    );
+    refused(
+        t.call(Some(carol), "POST", &format!("{path}/propose"), &[], json!({"start": "2027-03-09T14:00:00Z", "end": "2027-03-09T15:00:00Z"})).await,
+        "not found",
+    );
+    // The outside guest's COUNTER by mail, for the whole event; one from someone not invited is refused.
+    let counter = format!(
+        "BEGIN:VCALENDAR\r\nMETHOD:COUNTER\r\nBEGIN:VEVENT\r\nUID:{ev}@ferrum\r\nORGANIZER:mailto:alice@acme.test\r\nATTENDEE;PARTSTAT=TENTATIVE:mailto:guest@partner.test\r\n\
+         DTSTART:20270301T130000Z\r\nDTEND:20270301T140000Z\r\nCOMMENT:Afternoons suit us\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+    );
+    assert_eq!(ferrum_app_comms::apply_calendar_mail(k, t.tenant, "alice@acme.test", "guest@partner.test", &counter).await.unwrap(), "updated");
+    assert_eq!(ferrum_app_comms::apply_calendar_mail(k, t.tenant, "alice@acme.test", "guest@partner.test", &counter).await.unwrap(), "same");
+    assert_eq!(ferrum_app_comms::apply_calendar_mail(k, t.tenant, "alice@acme.test", "mallory@evil.test", &counter).await.unwrap(), "refused");
+    // Only the organizer sees them; the event has not moved.
+    let detail = t.ok(alice, "GET", &path, &[], Value::Null).await;
+    let list = detail["proposals"].as_array().unwrap().clone();
+    assert_eq!(list.len(), 2, "{detail}");
+    let whole = list.iter().find(|p| p["occurrence"].is_null()).unwrap().clone();
+    let one = list.iter().find(|p| !p["occurrence"].is_null()).unwrap().clone();
+    assert_eq!((whole["email"].as_str(), whole["note"].as_str()), (Some("guest@partner.test"), Some("Afternoons suit us")));
+    assert_eq!((one["name"].as_str(), one["occurrence"].as_str()), (Some("Bob Shah"), Some("2027-03-08T09:00:00.000Z")));
+    assert_eq!(t.ok(bob, "GET", &path, &[], Value::Null).await["proposals"], json!([]), "a guest never sees proposals");
+    assert_eq!(k.get(alice, "CalendarEvent", ev, false).await.unwrap()["starts_at"], json!("2027-03-01T09:00:00.000Z"));
+    let listed = t.ok(alice, "GET", "/calendar/events", &[("from", "2027-03-01"), ("to", "2027-03-31")], Value::Null).await;
+    let flagged: Vec<bool> =
+        listed["occurrences"].as_array().unwrap().iter().filter(|o| o["event"] == json!(ev.to_string())).map(|o| o["proposed"].as_bool().unwrap()).collect();
+    assert_eq!(flagged, [true, true, true, true], "the whole event has one, so every occurrence shows it");
+    let bobs = t.ok(bob, "GET", "/calendar/events", &[("from", "2027-03-01"), ("to", "2027-03-31")], Value::Null).await;
+    assert!(bobs["occurrences"].as_array().unwrap().iter().all(|o| o["proposed"] != json!(true)));
+    // Nobody else answers them: a guest, a free/busy viewer, a stranger.
+    for who in [bob, carol] {
+        refused(t.call(Some(who), "POST", &format!("{path}/proposals/{}", whole["id"].as_str().unwrap()), &[], json!({"action": "accept"})).await, "not found");
+    }
+    // Declining the outside guest's: a DECLINECOUNTER goes to them by mail.
+    t.ok(alice, "POST", &format!("{path}/proposals/{}", whole["id"].as_str().unwrap()), &[], json!({"action": "decline"})).await;
+    t.drain().await;
+    assert!(smtp.mails().iter().any(|m| m.data.contains("method=DECLINECOUNTER") && m.data.contains("guest@partner.test")), "a DECLINECOUNTER by mail");
+    // Accepting Bob's: the 8th becomes an event of its own on the 9th; the series skips the 8th.
+    let accepted = t.ok(alice, "POST", &format!("{path}/proposals/{}", one["id"].as_str().unwrap()), &[], json!({"action": "accept"})).await;
+    let moved: Uuid = accepted["event"].as_str().unwrap().parse().unwrap();
+    let doc = k.get(alice, "CalendarEvent", moved, false).await.unwrap();
+    assert_eq!((doc["starts_at"].as_str(), doc["subject"].as_str()), (Some("2027-03-09T14:00:00.000Z"), Some("Weekly review")));
+    let starts: Vec<String> = t.ok(alice, "GET", "/calendar/events", &[("from", "2027-03-01"), ("to", "2027-03-31")], Value::Null).await["occurrences"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|o| o["subject"] == json!("Weekly review"))
+        .map(|o| o["start"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(starts, ["2027-03-01T09:00:00.000Z", "2027-03-09T14:00:00.000Z", "2027-03-15T09:00:00.000Z", "2027-03-22T09:00:00.000Z"]);
+    assert_eq!(t.ok(alice, "GET", &path, &[], Value::Null).await["proposals"], json!([]));
+    // A whole-event proposal accepted moves the event, and the guests hear of the change.
+    t.ok(bob, "POST", &format!("/calendar/events/{moved}/propose"), &[], json!({"start": "2027-03-09T15:00:00Z", "end": "2027-03-09T16:00:00Z"})).await;
+    let p = t.ok(alice, "GET", &format!("/calendar/events/{moved}"), &[], Value::Null).await["proposals"][0]["id"].as_str().unwrap().to_string();
+    t.ok(alice, "POST", &format!("/calendar/events/{moved}/proposals/{p}"), &[], json!({"action": "accept"})).await;
+    assert_eq!(k.get(alice, "CalendarEvent", moved, false).await.unwrap()["starts_at"], json!("2027-03-09T15:00:00.000Z"));
+    assert!(t.notifications(bob, "Updated: Weekly review").await >= 1);
+    // A declined colleague is told in the app.
+    t.ok(
+        bob,
+        "POST",
+        &format!("{path}/propose"),
+        &[],
+        json!({"start": "2027-03-16T09:00:00Z", "end": "2027-03-16T10:00:00Z", "occurrence": "2027-03-15T09:00:00Z"}),
+    )
+    .await;
+    let p = t.ok(alice, "GET", &path, &[], Value::Null).await["proposals"][0]["id"].as_str().unwrap().to_string();
+    t.ok(alice, "POST", &format!("{path}/proposals/{p}"), &[], json!({"action": "decline"})).await;
+    assert_eq!(t.notifications(bob, "Your proposed time was not taken: Weekly review").await, 1);
+    for e in [ev, moved] {
+        k.delete(alice, "CalendarEvent", e, None).await.unwrap();
+    }
 }
 
 async fn hosted_mail(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>, imap: &FakeImap) {
