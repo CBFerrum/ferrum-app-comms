@@ -1,11 +1,11 @@
 // The buttons that act on mail: one bar used by the selection toolbar over the list and by the open
 // conversation, the same bar smaller on a row, and the "Move to" menu (a folder filter in a popover).
 
-import { Archive, Download, FolderInput, Inbox, MailOpen, Mail as MailClosed, MoreVertical, ShieldAlert, ShieldCheck, Star, Trash2 } from "lucide-react";
+import { Archive, CheckSquare, Download, FolderInput, Inbox, MailOpen, Mail as MailClosed, ShieldAlert, ShieldCheck, Star, Tag, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
-import { Button, Command, CommandEmpty, CommandInput, CommandItem, CommandList, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, Popover, PopoverContent, PopoverTrigger } from "@ferrum/kit/primitives";
+import { Button, Command, CommandEmpty, CommandInput, CommandItem, CommandList, Popover, PopoverContent, PopoverTrigger } from "@ferrum/kit/primitives";
 import { isolate, t as tr } from "@ferrum/client";
-import { cn } from "@ferrum/kit";
+import { cn, type SelectionAction } from "@ferrum/kit";
 import { FolderIcon } from "./MailFolders";
 import { AlsoFileMenu } from "./MailLabels";
 import { offered, type Verb } from "./lib/actions";
@@ -72,9 +72,7 @@ export interface BarProps {
   folderId?: string;
   /** More buttons at the end (the open conversation's). */
   children?: ReactNode;
-  /** A phone's width: Archive and Delete as buttons, the rest in a menu, so nothing is pushed off the screen. */
-  compact?: boolean;
-  /** Compact only: "Select all" in the menu. */
+  /** "Select all" (the selection's own list). */
   onSelectAll?: () => void;
   /** "Also file under…" (adds a folder); with its popover's state. */
   onLabel?: (to: Mailbox) => void;
@@ -84,103 +82,99 @@ export interface BarProps {
   onExport?: () => void;
 }
 
-/** Archive, Delete, Spam or Not spam, Mark read or unread, Star, Move to; in Trash and Spam also Move to Inbox and Delete forever. */
-export function ActionBar(p: BarProps) {
+/** One action on mail, as the open conversation's icon bar and the selection's bar (the kit's `SelectionToolbar`) both draw it. */
+export interface MailAction {
+  id: string;
+  label: string;
+  icon: ReactNode;
+  /** The kit's icon name for the selection's bar, where it has one. */
+  kitIcon?: string;
+  keys?: string;
+  run: () => void;
+  danger?: boolean;
+  pressed?: boolean;
+  /** Kept on the selection's bar when it folds (Archive, Delete). */
+  priority?: boolean;
+  /** Opens one of the folder popovers (Move to, Also file under): the icon bar draws the popover's own trigger. */
+  popover?: "move" | "label";
+}
+
+/** Archive, Delete, Spam or Not spam, Mark read or unread, Star, Move to, Also file under, Export; in Trash and Spam also Move to Inbox and Delete forever. */
+export function mailActions(p: BarProps): MailAction[] {
   const o = offered(p.role);
   const inbox = p.boxes.find((b) => b.role === "inbox");
-  if (p.compact) {
-    const more: { label: string; run: () => void }[] = [
-      ...(p.role === "trash" && inbox ? [{ label: tr("Move to Inbox"), run: () => p.onMove(inbox) }] : []),
-      ...(o.notSpam ? [{ label: tr("Not spam"), run: () => p.onVerb("notSpam") }] : []),
-      ...(o.spam ? [{ label: tr("Report spam"), run: () => p.onVerb("spam") }] : []),
-      ...(o.deleteForever ? [{ label: tr("Delete forever"), run: p.onForever }] : []),
-      { label: p.anyUnread ? tr("Mark as read") : tr("Mark as unread"), run: () => p.onVerb(p.anyUnread ? "read" : "unread") },
-      { label: p.allStarred ? tr("Remove the star") : tr("Star"), run: () => p.onVerb(p.allStarred ? "unstar" : "star") },
-      ...(o.move ? [{ label: tr("Move to…"), run: () => setTimeout(() => p.onMoveOpen(true)) }] : []),
-      ...(p.onLabel && p.onLabelOpen ? [{ label: tr("Also file under…"), run: () => setTimeout(() => p.onLabelOpen!(true)) }] : []),
-      ...(p.onExport ? [{ label: tr("Export as .mbox"), run: p.onExport }] : []),
-      ...(p.onSelectAll ? [{ label: tr("Select all"), run: p.onSelectAll }] : []),
-    ];
-    return (
-      <>
-        {o.archive && (
-          <IconAction label={tr("Archive")} keys="e" onClick={() => p.onVerb("archive")}>
-            <Archive />
+  // A popover opens after the menu that asked for it has closed.
+  const later = (f: () => void) => () => setTimeout(f);
+  const list: (MailAction | false | undefined)[] = [
+    o.archive && { id: "archive", label: tr("Archive"), icon: <Archive />, keys: "e", run: () => p.onVerb("archive"), priority: true },
+    o.trash && { id: "trash", label: tr("Delete"), icon: <Trash2 />, kitIcon: "trash", keys: "#", run: () => p.onVerb("trash"), priority: true },
+    p.role === "trash" && inbox && { id: "inbox", label: tr("Move to Inbox"), icon: <Inbox />, run: () => p.onMove(inbox) },
+    o.notSpam && { id: "notSpam", label: tr("Not spam: move to Inbox, and the filter learns"), icon: <ShieldCheck />, keys: "!", run: () => p.onVerb("notSpam") },
+    o.spam && { id: "spam", label: tr("Report spam"), icon: <ShieldAlert />, keys: "!", run: () => p.onVerb("spam") },
+    o.deleteForever && { id: "forever", label: tr("Delete forever"), icon: <Trash2 className="text-destructive" />, kitIcon: "trash", run: p.onForever, danger: true },
+    { id: "read", label: p.anyUnread ? tr("Mark as read") : tr("Mark as unread"), icon: p.anyUnread ? <MailOpen /> : <MailClosed />, kitIcon: "mail", keys: p.anyUnread ? "Shift+I" : "Shift+U", run: () => p.onVerb(p.anyUnread ? "read" : "unread") },
+    { id: "star", label: p.allStarred ? tr("Remove the star") : tr("Star"), icon: <Star className={cn(p.allStarred && "fill-warning text-warning")} />, keys: "s", pressed: p.allStarred, run: () => p.onVerb(p.allStarred ? "unstar" : "star") },
+    o.move && { id: "move", label: tr("Move to"), icon: <FolderInput />, keys: "v", run: later(() => p.onMoveOpen(true)), popover: "move" },
+    p.onLabel && p.onLabelOpen && { id: "label", label: tr("Also file under"), icon: <Tag />, keys: "l", run: later(() => p.onLabelOpen!(true)), popover: "label" },
+    p.onExport && { id: "export", label: tr("Export as .mbox"), icon: <Download />, kitIcon: "download", run: p.onExport },
+    p.onSelectAll && { id: "all", label: tr("Select all"), icon: <CheckSquare />, kitIcon: "check", run: p.onSelectAll },
+  ];
+  return list.filter((a): a is MailAction => !!a);
+}
+
+/** The selection's actions for the kit's `SelectionToolbar` (`actions`): it keeps what fits and folds the rest into More. Archive
+ *  and Delete are not among them: a list column is too narrow for their words beside the count, so they stay as icons
+ *  (`PinnedActions`, the bar's `children`, never folded). */
+export const selectionActions = (p: BarProps): SelectionAction[] =>
+  mailActions(p)
+    .filter((a) => !a.priority)
+    .map((a) => ({ id: a.id, label: a.label, icon: a.kitIcon, onSelect: a.run, danger: a.danger, title: a.keys ? `${a.label} (${a.keys})` : a.label }));
+
+/** Archive and Delete as named icons on the selection's bar, with the anchors of the folder popovers. */
+export function PinnedActions(p: BarProps) {
+  return (
+    <span className="flex shrink-0 items-center">
+      {mailActions(p)
+        .filter((a) => a.priority)
+        .map((a) => (
+          <IconAction key={a.id} label={a.label} keys={a.keys} onClick={a.run}>
+            {a.icon}
           </IconAction>
-        )}
-        {o.trash && (
-          <IconAction label={tr("Delete")} keys="#" onClick={() => p.onVerb("trash")}>
-            <Trash2 />
-          </IconAction>
-        )}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon-sm" aria-label={tr("More actions")} title={tr("More actions")}>
-              <MoreVertical />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            {more.map((m) => (
-              <DropdownMenuItem key={m.label} onSelect={m.run}>
-                {m.label}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-        {o.move && <MoveMenu quiet boxes={p.boxes} current={p.folderId} onPick={p.onMove} open={p.moveOpen} onOpenChange={p.onMoveOpen} />}
-        {p.onLabel && p.onLabelOpen && (
-          <span className="pointer-events-none w-0 overflow-hidden opacity-0" aria-hidden="true">
-            <AlsoFileMenu boxes={p.boxes} inIds={{}} onPick={p.onLabel} open={!!p.labelOpen} onOpenChange={p.onLabelOpen} />
-          </span>
-        )}
-        {p.children}
-      </>
-    );
-  }
+        ))}
+      <FolderPopovers {...p} />
+    </span>
+  );
+}
+
+/** The anchors the folder popovers open from when a bar draws its actions as words (the selection's bar): out of sight and out of the tab order. */
+export function FolderPopovers(p: BarProps) {
+  const o = offered(p.role);
   return (
     <>
-      {o.archive && (
-        <IconAction label={tr("Archive")} keys="e" onClick={() => p.onVerb("archive")}>
-          <Archive />
-        </IconAction>
+      {o.move && <MoveMenu quiet boxes={p.boxes} current={p.folderId} onPick={p.onMove} open={p.moveOpen} onOpenChange={p.onMoveOpen} />}
+      {p.onLabel && p.onLabelOpen && (
+        <span className="pointer-events-none w-0 overflow-hidden opacity-0" aria-hidden="true">
+          <AlsoFileMenu boxes={p.boxes} inIds={{}} onPick={p.onLabel} open={!!p.labelOpen} onOpenChange={p.onLabelOpen} />
+        </span>
       )}
-      {o.trash && (
-        <IconAction label={tr("Delete")} keys="#" onClick={() => p.onVerb("trash")}>
-          <Trash2 />
-        </IconAction>
-      )}
-      {p.role === "trash" && inbox && (
-        <IconAction label={tr("Move to Inbox")} onClick={() => p.onMove(inbox)}>
-          <Inbox />
-        </IconAction>
-      )}
-      {o.notSpam && (
-        <IconAction label={tr("Not spam: move to Inbox, and the filter learns")} keys="!" onClick={() => p.onVerb("notSpam")}>
-          <ShieldCheck />
-        </IconAction>
-      )}
-      {o.spam && (
-        <IconAction label={tr("Report spam")} keys="!" onClick={() => p.onVerb("spam")}>
-          <ShieldAlert />
-        </IconAction>
-      )}
-      {o.deleteForever && (
-        <IconAction label={tr("Delete forever")} onClick={p.onForever} danger>
-          <Trash2 className="text-destructive" />
-        </IconAction>
-      )}
-      <IconAction label={p.anyUnread ? tr("Mark as read") : tr("Mark as unread")} keys={p.anyUnread ? "Shift+I" : "Shift+U"} onClick={() => p.onVerb(p.anyUnread ? "read" : "unread")}>
-        {p.anyUnread ? <MailOpen /> : <MailClosed />}
-      </IconAction>
-      <IconAction label={p.allStarred ? tr("Remove the star") : tr("Star")} keys="s" pressed={p.allStarred} onClick={() => p.onVerb(p.allStarred ? "unstar" : "star")}>
-        <Star className={cn(p.allStarred && "fill-warning text-warning")} />
-      </IconAction>
-      {o.move && <MoveMenu boxes={p.boxes} current={p.folderId} onPick={p.onMove} open={p.moveOpen} onOpenChange={p.onMoveOpen} />}
-      {p.onLabel && p.onLabelOpen && <AlsoFileMenu boxes={p.boxes} inIds={{}} onPick={p.onLabel} open={!!p.labelOpen} onOpenChange={p.onLabelOpen} />}
-      {p.onExport && (
-        <IconAction label={tr("Export as .mbox")} onClick={p.onExport}>
-          <Download />
-        </IconAction>
+    </>
+  );
+}
+
+/** The open conversation's actions as icons, each named with its key. */
+export function ActionBar(p: BarProps) {
+  return (
+    <>
+      {mailActions(p).map((a) =>
+        a.popover === "move" ? (
+          <MoveMenu key={a.id} boxes={p.boxes} current={p.folderId} onPick={p.onMove} open={p.moveOpen} onOpenChange={p.onMoveOpen} />
+        ) : a.popover === "label" ? (
+          <AlsoFileMenu key={a.id} boxes={p.boxes} inIds={{}} onPick={p.onLabel!} open={!!p.labelOpen} onOpenChange={p.onLabelOpen!} />
+        ) : (
+          <IconAction key={a.id} label={a.label} keys={a.keys} onClick={a.run} danger={a.danger} pressed={a.pressed}>
+            {a.icon}
+          </IconAction>
+        ),
       )}
       {p.children}
     </>

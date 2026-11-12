@@ -14,7 +14,7 @@ import { Badge, Button, Input, Label, Skeleton, Textarea } from "@ferrum/kit/pri
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@ferrum/kit/primitives";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@ferrum/kit/primitives";
 import { api, docPath, errorMessage, isolate, shell, t } from "@ferrum/client";
-import { announce, cn, ListSkeleton, StatePanel, toast, useCanIntent, useDismiss, useLiveEntity } from "@ferrum/kit";
+import { announce, cn, ListSkeleton, RichText, StatePanel, toast, useCanIntent, useDismiss, useLiveEntity } from "@ferrum/kit";
 import { meetLink, meetPath, openCall, useMeetAvailable } from "./lib/meet";
 import {
   AGENDA_DAYS,
@@ -1327,7 +1327,7 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit, onDelete }: { o: Occu
           )}
           {o.description_html ? (
             // Made safe on the server (Mail's own cleaner, no pictures) before it was stored.
-            <div className="event-notes text-muted-foreground" dir="auto" dangerouslySetInnerHTML={{ __html: o.description_html }} />
+            <RichText html={o.description_html} className="text-sm text-muted-foreground" />
           ) : (
             o.description && <p className="whitespace-pre-line text-muted-foreground">{isolate(o.description)}</p>
           )}

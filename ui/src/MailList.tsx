@@ -15,8 +15,7 @@ import { prefsOf, useChangeMailData, useMailData } from "./MailData";
 import { FilterDialog } from "./MailFilters";
 import { FolderChips } from "./MailLabels";
 import { Marked, SaveSearchDialog, SearchBox, SearchChips } from "./MailSearch";
-import { useMedia } from "./MailCompose";
-import { ActionBar, IconAction } from "./MailToolbar";
+import { IconAction, PinnedActions, selectionActions, type BarProps } from "./MailToolbar";
 import { conversations, offered, rangeBetween, type Verb } from "./lib/actions";
 import { ALL_MAIL, LARGEST, SAVED, STARRED, folderName, isVirtual, purgeLine } from "./lib/folders";
 import { ruleFromQuery, type Rule } from "./lib/filters";
@@ -63,8 +62,6 @@ const emptyText = (role: string | null | undefined) =>
   : tr("No messages here.");
 
 export function MessageList(p: ListProps) {
-  // A phone's width: the selection bar folds its actions into a menu.
-  const phone = useMedia("(max-width: 720px)");
   const actions = useMailActions(p.account, p.boxes);
   const data = useMailData(p.account, p.boxes).data?.data;
   const changeData = useChangeMailData(p.account, p.boxes);
@@ -289,6 +286,24 @@ export function MessageList(p: ListProps) {
   const allStarred = chosen.length > 0 && chosen.every((r) => r.keywords?.$flagged);
   const all = chosen.length === rows.length && rows.length > 0;
   const holds = role === "trash" || role === "junk";
+  const bar: BarProps = {
+    // "Select all" is one of the actions: the list is narrow, and the bar keeps what fits.
+    onSelectAll: all ? undefined : () => setSelected(new Set(ids)),
+    role: actRole,
+    boxes: p.boxes,
+    anyUnread,
+    allStarred,
+    folderId: p.mailboxId,
+    onVerb: (v) => void apply(v, chosen),
+    onMove: (to) => void apply("move", chosen, to),
+    onForever: () => void forever(chosen),
+    moveOpen,
+    onMoveOpen: setMoveOpen,
+    onLabel: label,
+    labelOpen,
+    onLabelOpen: setLabelOpen,
+    onExport: () => void exportChosen(),
+  };
   return (
     <div className="flex h-full min-h-0 flex-col">
       {chosen.length > 0 ? (
@@ -296,35 +311,9 @@ export function MessageList(p: ListProps) {
           label={tr("Actions for the {n} conversations selected", { n: chosen.length })}
           count={chosen.length}
           onClear={clear}
-          extend={
-            // A phone's bar has no room for it: it is in the bar's menu there.
-            !all && !phone && (
-              <Button size="sm" variant="ghost" onClick={() => setSelected(new Set(ids))}>
-                {tr("Select all {n}", { n: rows.length })}
-              </Button>
-            )
-          }
+          actions={selectionActions(bar)}
         >
-          <span className="flex shrink-0 items-center">
-            <ActionBar
-              compact={phone}
-              onSelectAll={all ? undefined : () => setSelected(new Set(ids))}
-              role={actRole}
-              boxes={p.boxes}
-              anyUnread={anyUnread}
-              allStarred={allStarred}
-              folderId={p.mailboxId}
-              onVerb={(v) => void apply(v, chosen)}
-              onMove={(to) => void apply("move", chosen, to)}
-              onForever={() => void forever(chosen)}
-              moveOpen={moveOpen}
-              onMoveOpen={setMoveOpen}
-              onLabel={label}
-              labelOpen={labelOpen}
-              onLabelOpen={setLabelOpen}
-              onExport={() => void exportChosen()}
-            />
-          </span>
+          <PinnedActions {...bar} />
         </SelectionToolbar>
       ) : (
         <div className="flex items-center gap-2 border-b p-2">

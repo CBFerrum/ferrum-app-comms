@@ -3,6 +3,7 @@
 // quiet where they should be. Used beside the list and, on a phone, in a sheet.
 
 import { AlarmClock, Archive, ArrowDownWideNarrow, CalendarClock, FileText, Folder, FolderPlus, Inbox, Keyboard, Layers, Mail, MoreHorizontal, Pencil, Search, Send, Settings, ShieldAlert, Star, Trash2, Users, type LucideIcon } from "lucide-react";
+import { preloadComposer } from "./MailCompose";
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router";
 import { Badge, Button, Progress, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, Input, Label, Skeleton } from "@ferrum/kit/primitives";
@@ -165,7 +166,7 @@ export function FolderNav(p: Props) {
   const archiveAt = rest.findIndex((b) => b.role === "archive");
   return (
     <>
-      <Button onClick={p.onWrite} title={tr("Write a message (c)")}>
+      <Button onClick={p.onWrite} onPointerEnter={preloadComposer} onFocus={preloadComposer} title={tr("Write a message (c)")}>
         <Pencil aria-hidden="true" /> {tr("Write")}
       </Button>
       {p.accounts.length > 1 && (
