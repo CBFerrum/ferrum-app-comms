@@ -225,3 +225,14 @@ describe("wave 3 helpers", () => {
     expect([isRoom("board-1a2b3c@rooms.ferrum.invalid"), isRoom("ana@acme.test")]).toEqual([true, false]);
   });
 });
+
+import { stretch } from "./calendar";
+
+describe("busy spans in words", () => {
+  it("says a whole day as such, not as midnight to midnight", () => {
+    const at = (y: number, m: number, d: number, h = 0, mi = 0) => new Date(y, m, d, h, mi).toISOString();
+    expect(stretch({ start: at(2026, 10, 12), end: at(2026, 10, 13) })).toBe("all day");
+    expect(stretch({ start: at(2026, 10, 12), end: at(2026, 10, 14) })).toMatch(/12.*–.*13/);
+    expect(stretch({ start: at(2026, 10, 12, 9), end: at(2026, 10, 12, 10) })).not.toMatch(/all day/);
+  });
+});

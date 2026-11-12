@@ -279,7 +279,7 @@ export function TimeGrid(p: {
                       <button
                         type="button"
                         className={cn("block size-full px-1 text-start focus-visible:-outline-offset-2", can && "cursor-grab touch-none active:cursor-grabbing", short && "flex items-baseline gap-1")}
-                        aria-label={pl.o.calendarName ? t("{subject}, {time}, {calendar}", { subject: pl.o.subject, time: range(s, z), calendar: pl.o.calendarName }) : t("{subject}, {time}", { subject: pl.o.subject, time: range(s, z) })}
+                        aria-label={`${pl.o.calendarName ? t("{subject}, {time}, {calendar}", { subject: pl.o.subject, time: range(s, z), calendar: pl.o.calendarName }) : t("{subject}, {time}", { subject: pl.o.subject, time: range(s, z) })}${pl.o.proposed ? `, ${t("new time proposed")}` : ""}`}
                         aria-keyshortcuts={can ? "Alt+ArrowUp Alt+ArrowDown Alt+ArrowLeft Alt+ArrowRight Alt+Shift+ArrowUp Alt+Shift+ArrowDown" : undefined}
                         onPointerDown={(e) => startMove(e, pl.o, "move")}
                         onPointerMove={onMove}
@@ -291,7 +291,10 @@ export function TimeGrid(p: {
                         }}
                         onKeyDown={(e) => onKey(e, pl.o)}
                       >
-                        <span dir="auto" className="block truncate font-medium">{pl.o.subject}</span>
+                        <span dir="auto" className="flex min-w-0 items-center gap-1 font-medium">
+                          <span className="truncate">{pl.o.subject}</span>
+                          <ProposedMark o={pl.o} />
+                        </span>
                         <span dir="ltr" className="block truncate text-start text-muted-foreground tabular-nums">{range(s, z)}</span>
                       </button>
                       {can && (
@@ -350,6 +353,18 @@ export function EventBar({ o, style, before, after, onOpen }: { o: Occurrence; s
     >
       {!o.all_day && <span dir="ltr" className="shrink-0 tabular-nums">{timeFmt(new Date(o.start))}</span>}
       <span dir="auto" className="truncate">{o.kind === "away" ? t("Out of office") : o.subject}</span>
+      <ProposedMark o={o} />
     </button>
+  );
+}
+
+/** A guest proposed another time for this event (I organize it): a small mark, named for screen readers in the event's label. */
+export function ProposedMark({ o }: { o: Occurrence }) {
+  if (!o.proposed) return null;
+  return (
+    <>
+      <span className="size-2 shrink-0 rounded-full bg-warning ring-1 ring-foreground/60" title={t("New time proposed")} aria-hidden="true" />
+      <span className="sr-only">{`, ${t("new time proposed")}`}</span>
+    </>
   );
 }

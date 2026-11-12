@@ -528,8 +528,15 @@ export function bars(busy: Busy[], day: Date, fromHour: number, toHour: number):
 
 /** "10:00–11:00" for a busy stretch, in the viewer's time. */
 export const stretch = (b: Busy) => {
-  const t = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  return `${t(b.start)}–${t(b.end)}`;
+  const t = (d: Date) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const day = (d: Date) => d.toLocaleDateString([], { day: "numeric", month: "short" });
+  const [a, z] = [new Date(b.start), new Date(b.end)];
+  const last = new Date(z.getTime() - 1);
+  // A whole day (midnight to midnight) is said as such, not as "12:00 AM–12:00 AM".
+  if (a.getHours() === 0 && a.getMinutes() === 0 && z.getHours() === 0 && z.getMinutes() === 0 && z > a) {
+    return isoDay(a) === isoDay(last) ? tr("all day") : `${day(a)} – ${day(last)}`;
+  }
+  return isoDay(a) === isoDay(last) ? `${t(a)}–${t(z)}` : `${day(a)} ${t(a)} – ${day(z)} ${t(z)}`;
 };
 
 // ───────────────────────────── the editor's fields ─────────────────────────────
