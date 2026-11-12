@@ -37,14 +37,14 @@ use uuid::Uuid;
 /// covers a long meeting's reconnections; a person who loses access gets no new one.
 const TOKEN_SECONDS: i64 = 6 * 3600;
 
-struct Server {
-    url: String,
-    key: String,
-    secret: String,
+pub(crate) struct Server {
+    pub(crate) url: String,
+    pub(crate) key: String,
+    pub(crate) secret: String,
 }
 
 /// LiveKit, when the operator set it up.
-fn server() -> Option<Server> {
+pub(crate) fn server() -> Option<Server> {
     let var = |name: &str| std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
     let url = var("FERRUM_MEET_URL")?.trim_end_matches('/').to_string();
     if !url.starts_with("wss://") && !url.starts_with("ws://") {
@@ -60,7 +60,7 @@ fn recordings_on() -> bool {
 }
 
 /// LiveKit's server API: `FERRUM_MEET_API_URL`, or the browsers' address over http(s).
-fn api_url(server: &Server) -> String {
+pub(crate) fn api_url(server: &Server) -> String {
     match std::env::var("FERRUM_MEET_API_URL").ok().map(|v| v.trim().trim_end_matches('/').to_string()).filter(|v| !v.is_empty()) {
         Some(url) => url,
         None => server.url.replacen("wss://", "https://", 1).replacen("ws://", "http://", 1),
@@ -120,7 +120,7 @@ async fn join(k: &Kernel, ctx: &Ctx, server: &Server, kind: &str, id: Uuid) -> R
 }
 
 /// The LiveKit room of a meeting.
-fn room_name(tenant: Uuid, kind: &str, id: Uuid) -> String {
+pub(crate) fn room_name(tenant: Uuid, kind: &str, id: Uuid) -> String {
     format!("{}-{kind}-{}", tenant.simple(), id.simple())
 }
 
@@ -133,7 +133,7 @@ async fn admit(k: &Kernel, ctx: &Ctx, kind: &str, id: Uuid) -> Result<(String, O
         "event" => event_title(k, ctx, &mut tx, id).await?,
         "room" => {
             let (title, key): (String, Option<String>) =
-                sqlx::query_as("update comms_meeting set used_at = now() where tenant_id = $1 and id = $2 returning title, guest_key")
+                sqlx::query_as("update comms_meeting set used_at = now() where tenant_id = $1 and id = $2 and ended_at is null returning title, guest_key")
                     .bind(ctx.tenant)
                     .bind(id)
                     .fetch_optional(&mut *tx)
@@ -535,6 +535,19 @@ pub async fn guest(k: &Kernel, req: &SiteRequest) -> Result<SiteResponse> {
             let name = typed.ok_or_else(|| Error::field("name", "type your name, as others in the meeting will see it"))?;
             ("room", room, title, name)
         }
+        ["m", room, email, name, signature] => {
+            let room: Uuid = room.parse().map_err(|_| gone())?;
+            let decode = |v: &str| URL_SAFE_NO_PAD.decode(v).ok().and_then(|e| String::from_utf8(e).ok());
+            let (email, signed_name) = (decode(email).ok_or_else(gone)?, decode(name).ok_or_else(gone)?);
+            if !util::verify(&util::signing_key(k, tenant).await?, &crate::meetings::guest_claim(room, &email, &signed_name), signature) {
+                return Err(gone());
+            }
+            let title = crate::meetings::admit_guest(k, tenant, room).await?.ok_or_else(gone)?;
+            let identity = format!("guest.{}.{}", hex::encode(&email), hex::encode(rand::random::<[u8; 4]>()));
+            let name = typed.unwrap_or(signed_name);
+            let pass = token(&server, &identity, &format!("{name} (guest)"), &room_name(tenant, "room", room), chrono::Utc::now().timestamp());
+            return Ok(ok(json!({"url": server.url, "token": pass, "title": title, "name": name})));
+        }
         _ => return Err(gone()),
     };
     let identity = format!("guest.{}", hex::encode(rand::random::<[u8; 6]>()));
@@ -561,7 +574,7 @@ async fn event_title(k: &Kernel, ctx: &Ctx, tx: &mut Tx, id: Uuid) -> Result<Str
 
 /// A LiveKit access token: a JWT (HS256) admitting `identity` to `room` with camera,
 /// microphone, screen sharing and the meeting's chat.
-fn token(server: &Server, identity: &str, name: &str, room: &str, now: i64) -> String {
+pub(crate) fn token(server: &Server, identity: &str, name: &str, room: &str, now: i64) -> String {
     let claims = json!({
         "iss": server.key, "sub": identity, "name": name, "nbf": now - 10, "exp": now + TOKEN_SECONDS,
         "video": {"room": room, "roomJoin": true, "canPublish": true, "canSubscribe": true, "canPublishData": true},
