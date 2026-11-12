@@ -4,6 +4,7 @@
 // original, holding a message back (undo send, schedule send), and the checks before sending.
 // The browser's own parser does the HTML work (DOMParser): nothing here runs what it reads.
 
+import { sanitizeRichText } from "@ferrum/kit";
 import { t as tr } from "@ferrum/client";
 import type { Address, Upload } from "./mail";
 
@@ -127,27 +128,19 @@ export function textToHtml(text: string): string {
     .join("");
 }
 
-const RTL = /[֐-ࣿיִ-﷿ﹰ-ﻼ]/;
-const LTR = /[A-Za-zÀ-ɏͰ-ϿЀ-ӿऀ-෿぀-鿿]/;
-
-/** The direction the text starts in: its first letter that has one (Arabic, Hebrew right to left). */
-export function directionOf(text: string): "rtl" | "ltr" {
-  for (const ch of text) {
-    if (RTL.test(ch)) return "rtl";
-    if (LTR.test(ch)) return "ltr";
-  }
-  return "ltr";
-}
-
 // ui-lint-allow raw-color: the quote's rule goes out inside the message, read by other mail programs, not drawn by our theme
 export const QUOTE_STYLE = "margin:0 0 0 0.8ex;border-left:1px solid #ccc;padding-left:1ex";
-const BODY_STYLE = "font-family:Arial,Helvetica,sans-serif;font-size:14px";
+// No typeface of our own: the reader's mail program uses its own, as Gmail's messages leave it (Mail's reader draws the same
+// system face the composer writes in). The size and line spacing are the composer's and the reader's.
+const BODY_STYLE = "font-size:14px;line-height:1.5";
 
 /** The editor's HTML in the shapes mail programs draw alike: a line is a `div` (Outlook gives `p` a
  *  gap), an empty line a `<div><br></div>`, a list item holds its text directly, a quote is drawn by
  *  its own inline rule, and nothing names our editor. */
 export function fromEditor(html: string): string {
   const body = parse(html);
+  // A check list (☐/☑ lines): without markers in every reader, Mail's own included (its allow-list keeps `list-style-type`).
+  for (const ul of Array.from(body.querySelectorAll("ul[style]"))) if (/list-style:\s*none/i.test(ul.getAttribute("style") ?? "")) ul.setAttribute("style", "list-style-type:none;padding-left:0");
   cleanNode(body);
   for (const li of Array.from(body.querySelectorAll("li"))) {
     const ps = Array.from(li.children).filter((c) => c.tagName === "P");
@@ -181,7 +174,8 @@ export interface InlinePart {
 }
 
 /** The message's HTML and text as they go out, and the images in it as parts. `missing` lists images
- *  not on the mail server yet (pasted, or from a copy of a draft): the caller uploads them first. */
+ *  not on the mail server yet (a signature's own pictures, a picture kept in a copy of a draft): the
+ *  caller uploads them and calls again with `swap` (their address → where the mail server serves the copy). */
 export interface MailBody {
   html: string;
   text: string;
@@ -189,33 +183,60 @@ export interface MailBody {
   missing: string[];
 }
 
-/** One body from what is written, the signature and the quoted original. */
-export function mailBody(parts: { body: string; signature?: string | null; quote?: string | null }): MailBody {
-  const sig = parts.signature ? `<div class="gmail_signature" dir="auto">-- <br>${parts.signature}</div>` : "";
-  const root = parse(`${fromEditor(parts.body)}${sig ? `<br>${sig}` : ""}${parts.quote ?? ""}`);
-  cleanNode(root);
+/** Where the proxy serves a mailbox's blobs (`MailCompose`'s `blobUrl`): the composer shows pictures from there. */
+export const BLOB_PREFIX = "/api/app/comms/mail/blob/";
+/** A remote picture of an answered message, kept by its address while written and not loaded: the fragment marks it. */
+export const REMOTE_MARK = "#ferrum-remote";
+
+/** The part a picture shown from the mailbox is: its blob, type and name, from the address the composer shows it at. */
+export function blobPart(src: string): { blobId: string; type: string; name: string } | null {
+  if (!src.startsWith(BLOB_PREFIX)) return null;
+  const m = /^[^/?#]+\/([^/?#]+)(?:\?([^#]*))?$/.exec(src.slice(BLOB_PREFIX.length));
+  if (!m) return null;
+  const q = new URLSearchParams(m[2] ?? "");
+  return { blobId: decodeURIComponent(m[1]!), type: q.get("type") || "image/png", name: q.get("name") || "image" };
+}
+
+/** One body from what is written (the editor's HTML), the signature and the quoted original. The words written pass the kit's
+ *  allow-list for mail (`sanitizeRichText`, the one the editor and every rich-text field use); the signature and the quote are
+ *  another program's HTML and pass Mail's own (`cleanHtml`). Pictures from the mailbox become `cid:` parts, by reference. */
+export function mailBody(parts: { body: string; signature?: string | null; quote?: string | null }, swap: Record<string, string> = {}): MailBody {
   const inline: InlinePart[] = [];
   const missing: string[] = [];
-  for (const img of Array.from(root.querySelectorAll("img"))) {
-    const cid = img.getAttribute("data-cid");
-    const blobId = img.getAttribute("data-blob-id");
-    const remote = img.getAttribute("data-remote");
-    const src = img.getAttribute("src") ?? "";
-    if (cid && blobId) {
-      if (!inline.some((i) => i.cid === cid)) inline.push({ blobId, cid, type: img.getAttribute("data-type") || "image/png", name: img.getAttribute("data-name") || "image" });
-      img.setAttribute("src", `cid:${cid}`);
-    } else if (remote && /^https?:/i.test(remote)) img.setAttribute("src", remote);
-    else if (!/^(https?:|cid:)/i.test(src)) {
-      if (src) missing.push(src);
-      img.remove();
-      continue;
+  const cids = new Map<string, string>();
+  const pictures = (root: Element) => {
+    for (const img of Array.from(root.querySelectorAll("img"))) {
+      const src = swap[img.getAttribute("src") ?? ""] ?? (img.getAttribute("src") ?? "").trim();
+      const remote = img.getAttribute("data-remote") ?? (src.endsWith(REMOTE_MARK) ? src.slice(0, -REMOTE_MARK.length) : null);
+      const part = blobPart(src);
+      const name = img.getAttribute("data-name") || part?.name || "";
+      if (part) {
+        let cid = cids.get(part.blobId);
+        if (!cid) {
+          cid = img.getAttribute("data-cid") || newCid();
+          cids.set(part.blobId, cid);
+          inline.push({ blobId: part.blobId, cid, type: part.type, name: part.name });
+        }
+        img.setAttribute("src", `cid:${cid}`);
+      } else if (remote && /^https?:/i.test(remote)) img.setAttribute("src", remote);
+      else if (!/^(https?:|cid:)/i.test(src)) {
+        if (src && !missing.includes(src)) missing.push(src);
+        img.remove();
+        continue;
+      }
+      if (!img.getAttribute("alt") && name && name !== "image") img.setAttribute("alt", name);
+      for (const a of ["data-cid", "data-blob-id", "data-type", "data-name", "data-remote"]) img.removeAttribute(a);
     }
-    if (!img.getAttribute("alt") && img.getAttribute("data-name")) img.setAttribute("alt", img.getAttribute("data-name")!);
-    for (const a of ["data-cid", "data-blob-id", "data-type", "data-name", "data-remote"]) img.removeAttribute(a);
-  }
+  };
+  const written = parse(parts.body);
+  pictures(written);
+  const own = fromEditor(sanitizeRichText(written.innerHTML, { mail: true, imageSources: ["cid:"] }));
+  const sig = parts.signature ? `<div class="gmail_signature" dir="auto">-- <br>${parts.signature}</div>` : "";
+  const root = parse(`${own}${sig ? `<br>${sig}` : ""}${parts.quote ?? ""}`);
+  cleanNode(root);
+  pictures(root);
   const text = htmlToText(root);
-  const dir = directionOf(root.textContent ?? "");
-  return { html: `<div dir="${dir}" style="${BODY_STYLE}">${root.innerHTML}</div>`, text, inline, missing };
+  return { html: `<div dir="auto" style="${BODY_STYLE}">${root.innerHTML}</div>`, text, inline, missing };
 }
 
 const BLOCKS = new Set("address article aside blockquote center dd div dl dt figcaption figure footer h1 h2 h3 h4 h5 h6 header hr li main nav ol p pre section table tbody tfoot thead tr ul".split(" "));
@@ -277,7 +298,8 @@ export function htmlToText(input: string | Element): string {
       const lines = Array.from(el.children)
         .filter((c) => c.tagName === "LI")
         .map((li) => {
-          const mark = tag === "ol" ? `${i++}. ` : "- ";
+          // A check list goes out as ☐/☑ lines in a list without markers (sanitizeRichText's mail form): no "- " before them.
+          const mark = tag === "ol" ? `${i++}. ` : /list-style(-type)?:\s*none/i.test(el.getAttribute("style") ?? "") ? "" : "- ";
           const body = settle(Array.from(li.childNodes).map((c) => walk(c, pre, depth + 1)).join(""));
           return body
             .split("\n")
@@ -312,9 +334,9 @@ export type BlobUrl = (blobId: string, name: string, type: string) => string;
 
 /**
  * A message's HTML to answer or go on writing: cleaned, its plain parts as lines, and every `cid:`
- * image marked with the part it is (so it goes out again as that part, by reference, never fetched and
- * uploaded) and shown from the mailbox meanwhile. Remote images keep their address aside: they are not
- * loaded while writing, and go out as they came.
+ * image shown from the mailbox at the address that names its part (`blobPart` reads it back, so it goes
+ * out again as that part, by reference, never fetched and uploaded). Remote images keep their address
+ * marked with `REMOTE_MARK`: the composer does not load them while writing, and they go out as they came.
  */
 export function richOf(email: RawEmail, blobUrl: BlobUrl): string {
   const values = email.bodyValues ?? {};
@@ -329,19 +351,14 @@ export function richOf(email: RawEmail, blobUrl: BlobUrl): string {
   const byCid = new Map((email.attachments ?? []).filter((a) => a.cid && a.blobId).map((a) => [a.cid!.replace(/^<|>$/g, ""), a]));
   for (const img of Array.from(body.querySelectorAll("img"))) {
     const src = (img.getAttribute("src") ?? "").trim();
+    const remote = img.getAttribute("data-remote");
     const part = /^cid:/i.test(src) ? byCid.get(src.slice(4).replace(/^<|>$/g, "")) : undefined;
+    for (const a of ["data-cid", "data-blob-id", "data-type", "data-name", "data-remote"]) img.removeAttribute(a);
     if (part) {
-      const name = part.name || "image";
-      const type = part.type || "image/png";
-      img.setAttribute("data-cid", newCid());
-      img.setAttribute("data-blob-id", part.blobId!);
-      img.setAttribute("data-type", type);
-      img.setAttribute("data-name", name);
-      img.setAttribute("src", blobUrl(part.blobId!, name, type));
-    } else if (/^https?:/i.test(src)) {
-      img.setAttribute("data-remote", src);
-      img.removeAttribute("src");
-    } else if (!/^data:image\//i.test(src)) img.remove();
+      img.setAttribute("src", blobUrl(part.blobId!, part.name || "image", part.type || "image/png"));
+      if (!img.getAttribute("alt") && part.name) img.setAttribute("alt", part.name);
+    } else if (/^https?:/i.test(src) || (remote && /^https?:/i.test(remote))) img.setAttribute("src", (/^https?:/i.test(src) ? src : remote!).replace(/#.*$/, "") + REMOTE_MARK);
+    else if (!/^data:image\//i.test(src) && !blobPart(src)) img.remove();
   }
   return body.innerHTML;
 }

@@ -131,7 +131,17 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
   const accounts = accountsOf(session);
   const suffix = account === primary ? "" : `?account=${encodeURIComponent(account)}`;
   const switchTo = (id: string) => navigate(id === primary ? "/mail" : `/mail?account=${encodeURIComponent(id)}`);
-  const [wins, setWins] = useState<Win[]>(() => (compose ? [{ id: newKey(), draft: { kind: "new" }, state: "open" }] : []));
+  // `/mail/compose?draft=<id>` is a message popped out of its window to a browser window of its own: it opens full screen.
+  const popped = compose ? search.get("draft") : null;
+  const [wins, setWins] = useState<Win[]>(() => (compose && !popped ? [{ id: newKey(), draft: { kind: "new" }, state: "open" }] : []));
+  useEffect(() => {
+    if (!popped) return;
+    loadDraft(account, popped).then(
+      (d) => setWins([{ id: newKey(), draft: d, state: "max" }]),
+      (e: unknown) => toast(tr("The draft could not be opened: {e}", { e: errorMessage(e) }), "error"),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, for the draft the page was opened with
+  }, []);
   /** Opens a message to write in a window of its own; the older windows fold to bars when there are many. */
   const write = (d: Draft) =>
     setWins((all) => {

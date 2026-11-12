@@ -5,7 +5,6 @@ import { describe, expect, it } from "vitest";
 import {
   answerSubject,
   cleanHtml,
-  directionOf,
   emailCreate,
   envelope,
   fileProblem,
@@ -18,6 +17,7 @@ import {
   quoteHtml,
   recentRecipients,
   richOf,
+  blobPart,
   schedulePresets,
   structure,
   suggest,
@@ -98,21 +98,37 @@ describe("HTML going out", () => {
     expect(text).toBe("Hello Omar,\n\nThe plan:\n1. Review the plan <https://docs.test/plan>\n2. Book the room\n  - Banyan\nWrite to p@x.test\n> Earlier words\n>\n> more");
   });
 
-  it("builds one body: words, signature, quote; images as cid parts; direction from the words", () => {
+  it("builds one body: words through the kit's allow-list, signature, quote; mailbox pictures as cid parts by reference", () => {
     const body = mailBody({
-      body: `<p>مرحبا عمر</p><p><img src="/api/app/comms/mail/blob/d/B1?name=chart.png" data-cid="ii_1@ferrum" data-blob-id="B1" data-type="image/png" data-name="chart.png" width="240"></p><p><img src="data:image/png;base64,AAAA"></p>`,
+      body: `<p>مرحبا عمر</p><p onclick="x()"><img src="/api/app/comms/mail/blob/d/B1?name=chart.png&amp;type=image%2Fpng" width="240"><img src="/api/app/comms/mail/blob/d/B1?name=chart.png&amp;type=image%2Fpng"></p><p><img src="data:image/png;base64,AAAA"></p><ul data-type="taskList"><li data-type="taskItem" data-checked="true"><p>done</p></li></ul>`,
       signature: "<b>Priya</b>",
-      quote: quoteHtml("reply", { from: [{ name: "Omar Haddad", email: "omar@x.test" }] }, "12 Nov 2026, 10:02", `<div>Earlier <img data-remote="https://cdn.test/logo.png"></div>`),
+      quote: quoteHtml("reply", { from: [{ name: "Omar Haddad", email: "omar@x.test" }] }, "12 Nov 2026, 10:02", `<div>Earlier <img src="https://cdn.test/logo.png#ferrum-remote"></div>`),
     });
-    expect(body.inline).toEqual([{ blobId: "B1", cid: "ii_1@ferrum", type: "image/png", name: "chart.png" }]);
+    expect(body.inline).toHaveLength(1);
+    expect(body.inline[0]).toMatchObject({ blobId: "B1", type: "image/png", name: "chart.png" });
+    const cid = body.inline[0]!.cid;
     expect(body.missing).toEqual(["data:image/png;base64,AAAA"]);
-    expect(body.html.startsWith(`<div dir="rtl" style="font-family:Arial,Helvetica,sans-serif;font-size:14px">`)).toBe(true);
-    expect(body.html).toContain(`<img src="cid:ii_1@ferrum" width="240" alt="chart.png">`);
+    expect(body.html.startsWith(`<div dir="auto" style="font-size:14px;line-height:1.5">`)).toBe(true);
+    expect(body.html).toContain(`<div dir="auto">مرحبا عمر</div>`);
+    expect(body.html).toContain(`<img src="cid:${cid}" width="240" alt="chart.png"><img src="cid:${cid}" alt="chart.png">`);
     expect(body.html).toContain(`<img src="https://cdn.test/logo.png">`);
-    expect(body.html).not.toMatch(/data-|\/api\/|base64/);
+    expect(body.html).toContain("☑ done");
+    expect(body.html).not.toMatch(/data-|\/api\/|base64|onclick|ferrum-remote/);
     expect(body.html).toContain(`<div class="gmail_signature" dir="auto">-- <br><b>Priya</b></div>`);
     expect(body.html).toContain(`On 12 Nov 2026, 10:02, Omar Haddad &lt;omar@x.test&gt; wrote:`);
-    expect(body.text).toBe("مرحبا عمر\n[image: chart.png]\n\n-- \nPriya\n\nOn 12 Nov 2026, 10:02, Omar Haddad <omar@x.test> wrote:\n> Earlier");
+    expect(body.text).toBe("مرحبا عمر\n[image: chart.png][image: chart.png]\n\n☑ done\n\n-- \nPriya\n\nOn 12 Nov 2026, 10:02, Omar Haddad <omar@x.test> wrote:\n> Earlier");
+  });
+
+  it("puts uploaded copies in place of pictures that were not on the mail server", () => {
+    const body = mailBody({ body: "<p>Hi</p>", signature: `<img src="data:image/png;base64,AAAA" alt="logo">` }, { "data:image/png;base64,AAAA": "/api/app/comms/mail/blob/d/B9?name=logo.png&type=image%2Fpng" });
+    expect(body.missing).toEqual([]);
+    expect(body.inline).toMatchObject([{ blobId: "B9", name: "logo.png" }]);
+  });
+
+  it("reads a picture's part from the address the composer shows it at", () => {
+    expect(blobPart("/api/app/comms/mail/blob/acc/Bx-1?name=a%20b.png&type=image%2Fjpeg")).toEqual({ blobId: "Bx-1", type: "image/jpeg", name: "a b.png" });
+    expect(blobPart("https://x.test/a.png")).toBeNull();
+    expect(blobPart("/api/app/comms/mail/blob/acc/../x")).toBeNull();
   });
 
   it("forwards with the original's header block and its words as they were", () => {
@@ -125,9 +141,8 @@ describe("HTML going out", () => {
     expect(body.text).toBe("Thanks\n\n-- \nPriya Nair\nOperations");
   });
 
-  it("plain text and direction", () => {
+  it("plain text as lines", () => {
     expect(textToHtml("a <b>\n\nc")).toBe("<div>a &lt;b&gt;</div><div><br></div><div>c</div>");
-    expect([directionOf("  123 مرحبا Hello"), directionOf("Hello مرحبا"), directionOf("नमस्ते"), directionOf("")]).toEqual(["rtl", "ltr", "ltr", "ltr"]);
   });
 
   it("an answered message's images stay references to its own parts, remote ones are not loaded while writing", () => {
@@ -139,7 +154,7 @@ describe("HTML going out", () => {
       },
       (b, n, t) => `/blob/${b}?name=${n}&type=${t}`,
     );
-    expect(html).toMatch(/^<p>Logo <img src="\/blob\/Blogo\?name=logo\.png&amp;type=image\/png" data-cid="ii_[0-9a-f]+@ferrum" data-blob-id="Blogo" data-type="image\/png" data-name="logo\.png"> and <img data-remote="https:\/\/track\.test\/p\.gif"> <\/p>$/);
+    expect(html).toBe(`<p>Logo <img src="/blob/Blogo?name=logo.png&amp;type=image/png" alt="logo.png"> and <img src="https://track.test/p.gif#ferrum-remote"> </p>`);
   });
 });
 
