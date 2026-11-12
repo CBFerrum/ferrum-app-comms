@@ -230,6 +230,8 @@ impl DocHook for EventHook {
             // What attendees see changed: a new version of the invitation.
             doc.insert("sequence".into(), json!(int(&old, "sequence") + 1));
         }
+        // Guests away then who chose so decline at once, with their message.
+        crate::hours::decline_away(hc.tx, hc.ctx.tenant, doc).await?;
         let missing: Vec<String> = attendees(doc).into_iter().filter(|a| a.1.is_none()).map(|a| a.0).collect();
         if !missing.is_empty() {
             let names: BTreeMap<String, String> = util::users(hc.tx, hc.ctx.tenant, &missing).await?.into_iter().map(|u| (u.email, u.full_name)).collect();
@@ -500,6 +502,19 @@ async fn my_calendar(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> 
             break;
         }
     }
+    // My time away, as a bar across its days (not an event: it is changed in my working hours).
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let mine = crate::hours::of(&mut tx, ctx.tenant, std::slice::from_ref(&me)).await?.remove(&me);
+    tx.commit().await?;
+    if let Some((a, b)) = mine.as_ref().and_then(|h| Some((h.away_from?, h.away_to?)))
+        && q.is_none()
+    {
+        let (start, end) = (a.and_time(chrono::NaiveTime::MIN).and_utc(), (b + Duration::days(1)).and_time(chrono::NaiveTime::MIN).and_utc());
+        if start < to && end > from {
+            out.push(json!({"id": format!("away/{a}"), "event": null, "kind": "away", "start": util::ts(start), "end": util::ts(end), "all_day": true,
+                "subject": "Out of office", "description": mine.as_ref().and_then(|h| h.away_message.clone()), "status": "Confirmed", "is_organizer": false}));
+        }
+    }
     out.sort_by(|a, b| a["start"].as_str().cmp(&b["start"].as_str()));
     Ok(json!({"from": util::ts(from), "to": util::ts(to), "q": q, "occurrences": out}))
 }
@@ -569,6 +584,8 @@ async fn free_busy(k: &Kernel, ctx: &Ctx, body: Map<String, Value>) -> Result<Va
     // An event being edited does not count against its own time.
     let exclude: Option<Uuid> = body.get("exclude").and_then(Value::as_str).and_then(|e| e.parse().ok());
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    // Working hours and time away of those who set them (what colleagues may see of them).
+    let hours: Map<String, Value> = crate::hours::of(&mut tx, ctx.tenant, &users).await?.into_iter().map(|(p, h)| (p, h.public())).collect();
     let mut busy = Map::new();
     for u in users {
         let mut intervals = Vec::new();
@@ -583,7 +600,7 @@ async fn free_busy(k: &Kernel, ctx: &Ctx, body: Map<String, Value>) -> Result<Va
         busy.insert(u, json!(merge(intervals).into_iter().map(|(a, b)| json!({"start": util::ts(a), "end": util::ts(b)})).collect::<Vec<_>>()));
     }
     tx.commit().await?;
-    Ok(json!({"from": util::ts(from), "to": util::ts(to), "busy": busy}))
+    Ok(json!({"from": util::ts(from), "to": util::ts(to), "busy": busy, "hours": hours}))
 }
 
 /// The words an organizer reads for an answer.
@@ -1061,6 +1078,8 @@ pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> 
         (m, ["feed"]) => feed_token(k, ctx, m).await?,
         ("POST", ["import"]) => import(k, ctx, req).await?,
         ("GET", ["export"]) => return export(k, ctx).await,
+        ("GET", ["hours"]) => crate::hours::handle(k, ctx, "GET", None).await?,
+        ("PUT", ["hours"]) => crate::hours::handle(k, ctx, "PUT", Some(util::body_json(req)?)).await?,
         _ => return Err(Error::NotFound("calendar endpoint".into())),
     };
     Ok(util::ok(out))
