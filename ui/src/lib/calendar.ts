@@ -23,6 +23,8 @@ export interface Occurrence {
   is_organizer?: boolean;
   my_response?: string | null;
   recurring?: boolean;
+  /** "away": my time away, drawn as a bar (not an event). */
+  kind?: string;
   /** Guests' addresses and names, for search (sent when asked with `q`). */
   guests?: string[];
 }
@@ -389,12 +391,55 @@ export function clashes(busy: BusyMap, start: Date, end: Date): string[] {
     .map(([who]) => who);
 }
 
+/** Someone's working hours and time away, as `/calendar/hours` and `/calendar/freebusy` give them. */
+export interface PersonHours {
+  /** 0 Sunday … 6 Saturday. */
+  days: number[];
+  /** "09:00", "17:00" on the clock of `timezone`. */
+  from: string;
+  to: string;
+  timezone?: string | null;
+  away_from?: string | null;
+  away_to?: string | null;
+  away_decline?: boolean;
+  away_message?: string | null;
+}
+
+export const DEFAULT_HOURS: PersonHours = { days: [1, 2, 3, 4, 5], from: "09:00", to: "17:00" };
+
+/** Whether `start`–`end` is inside someone's working hours on one of their working days, not in their time away (on their clock). */
+export function inHours(h: PersonHours, start: Date, end: Date): boolean {
+  const a = toInputIn(start, h.timezone);
+  const z = toInputIn(end, h.timezone);
+  const day = a.slice(0, 10);
+  if (h.away_from && h.away_to && day >= h.away_from && day <= h.away_to) return false;
+  if (!h.days.includes(new Date(`${day}T12:00:00Z`).getUTCDay())) return false;
+  const endsSameDay = z.slice(0, 10) === day || (z.slice(0, 10) > day && z.slice(11) === "00:00" && h.to === "24:00");
+  return endsSameDay && a.slice(11) >= h.from && z.slice(11) <= h.to;
+}
+
+/** Whether someone is away on a local day of the viewer's. */
+export const awayOn = (h: PersonHours | undefined, day: Date) => !!h?.away_from && !!h.away_to && isoDay(day) >= h.away_from && isoDay(day) <= h.away_to;
+
+/** Someone's working hours on a day of the viewer's, as a share of the hours shown (percent); none on a day off. */
+export function workBar(h: PersonHours, day: Date, fromHour: number, toHour: number): { left: number; width: number } | null {
+  const date = isoDay(day);
+  const a = fromInputIn(`${date}T${h.from}`, h.timezone);
+  const z = fromInputIn(`${date}T${h.to}`, h.timezone);
+  if (!a || !z || !h.days.includes(new Date(`${date}T12:00:00Z`).getUTCDay())) return null;
+  const base = new Date(day.getFullYear(), day.getMonth(), day.getDate(), fromHour).getTime();
+  const span = (toHour - fromHour) * 3_600_000;
+  const left = Math.max(0, (a.getTime() - base) / span) * 100;
+  const right = Math.min(1, (z.getTime() - base) / span) * 100;
+  return right > left ? { left, width: right - left } : null;
+}
+
 /** Times for a meeting of `minutes` that suit everyone in `busy`: on the marks of `step` minutes,
  *  within working hours (`start` to `end`, in hours of the viewer's day), from `from` on, over the
  *  next `days` days; weekends are skipped unless asked for. */
 export function suggestSlots(
   busy: BusyMap,
-  o: { from: Date; days: number; minutes: number; start?: number; end?: number; step?: number; limit?: number; weekends?: boolean },
+  o: { from: Date; days: number; minutes: number; start?: number; end?: number; step?: number; limit?: number; weekends?: boolean; hours?: Record<string, PersonHours> },
 ): Date[] {
   const { start = 9, end = 18, step = 30, limit = 5 } = o;
   const out: Date[] = [];
@@ -404,7 +449,10 @@ export function suggestSlots(
     for (let m = start * 60; m + o.minutes <= end * 60 && out.length < limit; m += step) {
       const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, m);
       if (at.getTime() < o.from.getTime()) continue;
-      if (!clashes(busy, at, new Date(at.getTime() + o.minutes * 60_000)).length) out.push(at);
+      const until = new Date(at.getTime() + o.minutes * 60_000);
+      // Inside every guest's own working hours, on their clock, where they set them.
+      if (o.hours && Object.values(o.hours).some((h) => !inHours(h, at, until))) continue;
+      if (!clashes(busy, at, until).length) out.push(at);
     }
   }
   return out;

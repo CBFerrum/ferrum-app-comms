@@ -7,7 +7,7 @@
 // for. Every change waits for the server before it shows as done, and offers Undo.
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarDays, ChevronLeft, ChevronRight, Download, Keyboard, Link2, MapPin, MoreHorizontal, Plus, Repeat, Search, Upload, Video, X } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Clock, Download, Keyboard, Link2, MapPin, MoreHorizontal, Plus, Repeat, Search, Upload, Video, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { Badge, Button, Input, Label, Skeleton, Textarea } from "@ferrum/kit/primitives";
@@ -37,7 +37,9 @@ import {
   VIEWS,
   weekendOf,
   type Guest,
+  DEFAULT_HOURS,
   type Occurrence,
+  type PersonHours,
   type Scope,
   type View,
   userLocale,
@@ -48,8 +50,10 @@ import { Failure } from "./States";
 
 const VIEW_KEY = "ferrum.calendar.view";
 const ZONE_KEY = "ferrum.calendar.zone2";
-/** Working hours until a person sets their own: 09:00 to 17:00 on the locale's working days. */
-const workHours = (weekend: number[]): WorkHours => ({ from: 9 * 60, to: 17 * 60, days: [0, 1, 2, 3, 4, 5, 6].filter((d) => !weekend.includes(d)) });
+/** Working hours: the person's own, else 09:00 to 17:00 on the locale's working days. */
+const minutes = (hhmm: string) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
+const workHours = (weekend: number[], own?: PersonHours): WorkHours =>
+  own ? { from: minutes(own.from), to: minutes(own.to), days: own.days } : { from: 9 * 60, to: 17 * 60, days: [0, 1, 2, 3, 4, 5, 6].filter((d) => !weekend.includes(d)) };
 
 const remembered = (key: string) => {
   try {
@@ -96,7 +100,10 @@ export function CalendarPage() {
   const lang = userLocale();
   const first = useMemo(() => firstDayOf(lang), [lang]);
   const weekend = useMemo(() => weekendOf(lang), [lang]);
-  const work = useMemo(() => workHours(weekend), [weekend]);
+  // My working hours (a server before Calendar 0.16 has none: the locale's then).
+  const mine = useQuery({ queryKey: ["calendar", "hours"], queryFn: ({ signal }) => api.get<{ saved: boolean; hours: PersonHours }>(`${CALENDAR}/hours`, undefined, signal), retry: false, staleTime: 300_000 });
+  const work = useMemo(() => workHours(weekend, mine.data?.saved ? mine.data.hours : undefined), [weekend, mine.data]);
+  const [hoursOpen, setHoursOpen] = useState(false);
   const [params, setParams] = useSearchParams();
   // A link to an event (`?event={id}&at={start}`: Home's My work, a notification) opens it.
   const wanted = params.get("event");
@@ -122,7 +129,9 @@ export function CalendarPage() {
     [setParams],
   );
   const [zone2, setZone2] = useState(() => remembered(ZONE_KEY) ?? "");
-  const [open, setOpen] = useState<Occurrence | null>(null);
+  const [open, setOpenState] = useState<Occurrence | null>(null);
+  // My time away opens where it is changed.
+  const setOpen = (o: Occurrence | null) => (o?.kind === "away" ? setHoursOpen(true) : setOpenState(o));
   const [draft, setDraft] = useState<{ start: Date; end: Date; allDay?: boolean; at?: { x: number; y: number } } | null>(null);
   const [scopeAsk, setScopeAsk] = useState<{ title: string; resolve: (s: Scope | null) => void } | null>(null);
   const [keys, setKeys] = useState(false);
@@ -227,7 +236,7 @@ export function CalendarPage() {
   // Keyboard: views, today, previous/next, create, search, help.
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || typing(e) || draft || open || scopeAsk || keys || feed) return;
+      if (e.metaKey || e.ctrlKey || e.altKey || typing(e) || draft || open || scopeAsk || keys || feed || hoursOpen) return;
       const k = e.key;
       const rtl = document.documentElement.dir === "rtl";
       if (VIEW_KEYS[k]) go({ view: VIEW_KEYS[k] });
@@ -246,7 +255,7 @@ export function CalendarPage() {
     };
     window.addEventListener("keydown", on);
     return () => window.removeEventListener("keydown", on);
-  }, [go, view, anchor, narrow, draft, open, scopeAsk, keys, feed]);
+  }, [go, view, anchor, narrow, draft, open, scopeAsk, keys, feed, hoursOpen]);
 
   const title =
     view === "day"
@@ -354,6 +363,9 @@ export function CalendarPage() {
                   <Download /> {t("Export my calendar (.ics)")}
                 </a>
               </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setHoursOpen(true)}>
+                <Clock /> {t("Working hours and time away")}
+              </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => setFeed(true)}>
                 <Link2 /> {t("Secret address for other calendars")}
               </DropdownMenuItem>
@@ -382,6 +394,7 @@ export function CalendarPage() {
       )}
       {keys && <Shortcuts onClose={() => setKeys(false)} />}
       {feed && <FeedDialog onClose={() => setFeed(false)} />}
+      {hoursOpen && <HoursDialog current={mine.data?.hours} missing={!!mine.error} first={first} onClose={() => setHoursOpen(false)} onSaved={() => void qc.invalidateQueries({ queryKey: ["calendar"] })} />}
     </div>
   );
 }
@@ -956,6 +969,111 @@ function FeedDialog({ onClose }: { onClose: () => void }) {
           </Button>
           <Button onClick={onClose}>{t("Done")}</Button>
         </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** My working days and hours (on my zone's clock), and time away: it shows on my calendar, can decline invitations in it with my message, and links to Mail's vacation reply. */
+function HoursDialog({ current, missing, first, onClose, onSaved }: { current?: PersonHours; missing: boolean; first: number; onClose: () => void; onSaved: () => void }) {
+  const [h, setH] = useState<PersonHours>(() => ({ ...DEFAULT_HOURS, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, ...current }));
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const set = (patch: Partial<PersonHours>) => setH((x) => ({ ...x, ...patch }));
+  const order = [0, 1, 2, 3, 4, 5, 6].map((i) => (i + first) % 7);
+  const dayName = (d: number) => new Date(2026, 10, 1 + d).toLocaleDateString(userLocale(), { weekday: "short" }); // 1 Nov 2026 is a Sunday
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setProblem(null);
+    try {
+      await api.put(`${CALENDAR}/hours`, { days: h.days, from: h.from, to: h.to, timezone: h.timezone || null, away_from: h.away_from || null, away_to: h.away_to || null, away_decline: !!h.away_decline && !!h.away_from, away_message: h.away_message || null });
+      onSaved();
+      onClose();
+      toast(t("Working hours saved"));
+    } catch (err) {
+      setProblem((err as { status?: number }).status === 404 ? t("This server does not keep working hours yet. Ask your administrator to update Comms.") : t("Not saved: {err}", { err: errorMessage(err) }));
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-h-[92dvh] overflow-y-auto sm:max-w-lg">
+        <form onSubmit={save} className="grid gap-4">
+          <DialogHeader>
+            <DialogTitle>{t("Working hours and time away")}</DialogTitle>
+            <DialogDescription>{t("Colleagues finding a time see when you work and when you are away, never more.")}</DialogDescription>
+          </DialogHeader>
+          {missing && <p className="text-sm text-muted-foreground">{t("This server does not keep working hours yet: what you set here is not saved until Comms is updated.")}</p>}
+          <fieldset className="grid gap-2">
+            <legend className="mb-1 text-sm font-medium">{t("Working days")}</legend>
+            <div className="flex flex-wrap gap-1.5">
+              {order.map((d) => (
+                <label key={d} className={cn("flex items-center gap-1.5 rounded-md border px-2 py-1 text-sm pointer-coarse:min-h-11", h.days.includes(d) && "border-primary bg-primary-soft")}>
+                  <input type="checkbox" checked={h.days.includes(d)} onChange={(e) => set({ days: e.target.checked ? [...h.days, d].sort() : h.days.filter((x) => x !== d) })} /> {isolate(dayName(d))}
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="grid gap-1.5">
+              <Label htmlFor="wh-from">{t("From")}</Label>
+              <Input id="wh-from" type="time" value={h.from} onChange={(e) => set({ from: e.target.value })} />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="wh-to">{t("To")}</Label>
+              <Input id="wh-to" type="time" value={h.to} onChange={(e) => set({ to: e.target.value })} />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="wh-zone">{t("Time zone")}</Label>
+              <ZoneSelect id="wh-zone" value={h.timezone ?? ""} onChange={(z) => set({ timezone: z || null })} />
+            </div>
+          </div>
+          <fieldset className="grid gap-3 border-t pt-3">
+            <legend className="pt-3 text-sm font-medium">{t("Out of office")}</legend>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-1.5">
+                <Label htmlFor="wh-away-from">{t("First day")}</Label>
+                <Input id="wh-away-from" type="date" value={h.away_from ?? ""} onChange={(e) => set({ away_from: e.target.value || null })} />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="wh-away-to">{t("Last day")}</Label>
+                <Input id="wh-away-to" type="date" value={h.away_to ?? ""} min={h.away_from ?? undefined} onChange={(e) => set({ away_to: e.target.value || null })} />
+              </div>
+            </div>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={!!h.away_decline} disabled={!h.away_from} onChange={(e) => set({ away_decline: e.target.checked })} /> {t("Decline new invitations for events then")}
+            </label>
+            <div className="grid gap-1.5">
+              <Label htmlFor="wh-msg">{t("Message with the answer")}</Label>
+              <Textarea id="wh-msg" rows={2} maxLength={500} value={h.away_message ?? ""} placeholder={t("I am away until …")} onChange={(e) => set({ away_message: e.target.value })} />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {t("Mail can answer messages for the same days:")}{" "}
+              <a className="text-primary underline" href="/mail?settings=vacation">
+                {t("set the vacation reply in Mail")}
+              </a>
+            </p>
+          </fieldset>
+          {problem && (
+            <p role="alert" className="text-sm text-destructive">
+              {isolate(problem)}
+            </p>
+          )}
+          <DialogFooter>
+            {h.away_from && (
+              <Button type="button" variant="ghost" className="sm:me-auto" onClick={() => set({ away_from: null, away_to: null, away_decline: false })}>
+                {t("Clear time away")}
+              </Button>
+            )}
+            <Button type="button" variant="outline" onClick={onClose}>
+              {t("Cancel")}
+            </Button>
+            <Button type="submit" disabled={busy}>
+              {busy ? t("Saving…") : t("Save")}
+            </Button>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   );

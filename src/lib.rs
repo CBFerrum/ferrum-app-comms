@@ -11,6 +11,7 @@ mod dav;
 mod dns;
 mod groups;
 mod hosted;
+mod hours;
 pub mod ics;
 pub mod inbound;
 mod itip;

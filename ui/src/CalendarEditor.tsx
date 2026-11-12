@@ -34,8 +34,11 @@ import {
   tally,
   toInputIn,
   userLocale,
+  awayOn,
+  workBar,
   type Busy,
   type BusyMap,
+  type PersonHours,
   type Guest,
   type Repeat,
 } from "./lib/calendar";
@@ -162,12 +165,12 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
     queryKey: ["calendar", "busy", insiders.join(","), shownDay, doc?.id],
     queryFn: ({ signal }) =>
       api
-        .post<{ busy: BusyMap }>(`${CALENDAR}/freebusy`, { users: insiders.slice(0, 50), from: day.toISOString(), to: new Date(day.getTime() + 8 * DAY).toISOString(), exclude: doc?.id }, { signal })
-        .then((r) => r.busy),
+        .post<{ busy: BusyMap; hours?: Record<string, PersonHours> }>(`${CALENDAR}/freebusy`, { users: insiders.slice(0, 50), from: day.toISOString(), to: new Date(day.getTime() + 8 * DAY).toISOString(), exclude: doc?.id }, { signal }),
     enabled: !allDay && !!when,
     staleTime: 60_000,
   });
-  const others: BusyMap = week.data ?? {};
+  const others: BusyMap = week.data?.busy ?? {};
+  const hours: Record<string, PersonHours> = week.data?.hours ?? {};
 
   const set = (v: Date) => {
     const length = when ? when.ends.getTime() - when.starts.getTime() : 3_600_000;
@@ -255,7 +258,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
 
   const clash = when && !allDay ? clashes(others, when.starts, when.ends) : [];
   const nameOf = (email: string) => (email === me ? t("You") : names[email] || email);
-  const suggestions = useMemo(() => (allDay || !week.data ? [] : suggestSlots(week.data, { from: new Date(Math.max(Date.now(), day.getTime())), days: 8, minutes })), [allDay, week.data, minutes, day]);
+  const suggestions = useMemo(() => (allDay || !week.data ? [] : suggestSlots(week.data.busy, { from: new Date(Math.max(Date.now(), day.getTime())), days: 8, minutes, hours: week.data.hours })), [allDay, week.data, minutes, day]);
 
   return (
     <form onSubmit={save} className="mx-auto grid max-w-5xl gap-6 p-4 lg:grid-cols-[minmax(0,32rem)_minmax(0,1fr)]">
@@ -460,7 +463,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
         {allDay ? (
           <p className="text-sm text-muted-foreground">{t("An all-day event has no time to find.")}</p>
         ) : (
-          <FindTime day={day} insiders={insiders} outsiders={guests.filter((g) => !colleague(g))} names={names} me={me} busy={others} loading={week.isLoading} error={week.error} retry={() => void week.refetch()} when={when} suggestions={suggestions} onPick={set} onDay={(d) => set(new Date(d.getFullYear(), d.getMonth(), d.getDate(), when?.starts.getHours() ?? 9, when?.starts.getMinutes() ?? 0))} />
+          <FindTime hours={hours} day={day} insiders={insiders} outsiders={guests.filter((g) => !colleague(g))} names={names} me={me} busy={others} loading={week.isLoading} error={week.error} retry={() => void week.refetch()} when={when} suggestions={suggestions} onPick={set} onDay={(d) => set(new Date(d.getFullYear(), d.getMonth(), d.getDate(), when?.starts.getHours() ?? 9, when?.starts.getMinutes() ?? 0))} />
         )}
       </aside>
     </form>
@@ -511,6 +514,7 @@ function GuestInput({ people, taken, typed, setTyped, add }: { people: Person[];
 }
 
 function FindTime(p: {
+  hours: Record<string, PersonHours>;
   day: Date;
   insiders: string[];
   outsiders: string[];
@@ -570,9 +574,16 @@ function FindTime(p: {
                 <div
                   className="relative h-6 flex-1 cursor-pointer overflow-hidden rounded bg-muted"
                   role="img"
-                  aria-label={t("{who}: {value} on {value2}", { who: label(who), value: said(p.busy[who]), value2: dayWord(p.day) })}
+                  aria-label={`${t("{who}: {value} on {value2}", { who: label(who), value: said(p.busy[who]), value2: dayWord(p.day) })}${awayOn(p.hours[who], p.day) ? `, ${t("away")}` : ""}`}
                   onClick={pick}
                 >
+                  {/* Their working hours, on their clock, lighter; time away hatched. */}
+                  {p.hours[who] &&
+                    (awayOn(p.hours[who], p.day) ? (
+                      <span className="absolute inset-0 grid place-items-center bg-[repeating-linear-gradient(45deg,var(--muted),var(--muted)_4px,var(--card)_4px,var(--card)_8px)] text-xs text-muted-foreground">{t("Away")}</span>
+                    ) : (
+                      ((w) => w && <span className="absolute inset-y-0 bg-card" style={{ insetInlineStart: `${w.left}%`, width: `${w.width}%` }} />)(workBar(p.hours[who]!, p.day, FROM, TO))
+                    ))}
                   {bars(p.busy[who] ?? [], p.day, FROM, TO).map((b, i) => (
                     <span key={i} className="absolute inset-y-0 bg-muted-foreground/50" style={{ left: `${b.left}%`, width: `${b.width}%` }} />
                   ))}
@@ -589,7 +600,7 @@ function FindTime(p: {
               </div>
             ))}
           </div>
-          <p className="text-xs text-muted-foreground">{t("Grey is busy time (never what it is). Click a row to move the event there.")}</p>
+          <p className="text-xs text-muted-foreground">{t("Grey is busy time (never what it is); white is someone's working hours, where they set them. Click a row to move the event there.")}</p>
         </div>
       )}
       <div className="grid gap-1.5">

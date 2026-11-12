@@ -139,7 +139,8 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
       const next = [...all, { id: newKey(), draft: d, state: "open" as const }];
       return next.map((w, i) => (i < next.length - 2 && w.state === "open" ? { ...w, state: "min" as const } : w));
     });
-  const [settings, setSettings] = useState<string | false>(false);
+  // `?settings=vacation` (Calendar's time away links here) opens that tab of the settings.
+  const [settings, setSettings] = useState<string | false>(() => new URLSearchParams(location.search).get("settings") || false);
   const [keys, setKeys] = useState(false);
   const [sheet, setSheet] = useState(false);
   const undo = useUndo();

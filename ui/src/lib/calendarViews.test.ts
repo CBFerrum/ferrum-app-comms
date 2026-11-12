@@ -143,3 +143,31 @@ describe("changing a repeating event", () => {
     expect(calls).toEqual([["PATCH", "/api/r/CalendarEvent/s1", { recurrence_exceptions: ["2026-11-30T09:00:00.000Z"] }]]);
   });
 });
+
+import { awayOn, inHours, suggestSlots as suggest, workBar } from "./calendar";
+
+describe("working hours", () => {
+  const kolkata = { days: [1, 2, 3, 4, 5], from: "09:00", to: "18:00", timezone: "Asia/Kolkata" };
+  it("reads a time on the person's own clock", () => {
+    // 04:00–05:00 UTC is 09:30–10:30 in Kolkata on a Monday; 13:00 UTC is 18:30 there.
+    expect(inHours(kolkata, new Date("2026-11-16T04:00:00Z"), new Date("2026-11-16T05:00:00Z"))).toBe(true);
+    expect(inHours(kolkata, new Date("2026-11-16T12:00:00Z"), new Date("2026-11-16T13:00:00Z"))).toBe(false);
+    expect(inHours(kolkata, new Date("2026-11-21T04:00:00Z"), new Date("2026-11-21T05:00:00Z"))).toBe(false); // Saturday
+    const away = { ...kolkata, away_from: "2026-11-16", away_to: "2026-11-17" };
+    expect(inHours(away, new Date("2026-11-16T04:00:00Z"), new Date("2026-11-16T05:00:00Z"))).toBe(false);
+    expect([awayOn(away, new Date(2026, 10, 17)), awayOn(away, new Date(2026, 10, 18)), awayOn(undefined, new Date())]).toEqual([true, false, false]);
+  });
+
+  it("suggests only times inside every guest's hours, and draws them on the viewer's day", () => {
+    const ny = { days: [1, 2, 3, 4, 5], from: "09:00", to: "17:00", timezone: "America/New_York" };
+    const got = suggest({}, { from: new Date("2026-11-16T00:00:00Z"), days: 1, minutes: 60, start: 0, end: 24, limit: 50, hours: { a: kolkata, b: ny } });
+    // Kolkata 09:00–18:00 is 03:30–12:30 UTC; New York 09:00–17:00 is 14:00–22:00 UTC: no overlap.
+    expect(got).toEqual([]);
+    const both = suggest({}, { from: new Date("2026-11-16T00:00:00Z"), days: 1, minutes: 60, start: 0, end: 24, step: 30, limit: 50, hours: { b: ny } });
+    expect(both.map((d) => d.toISOString().slice(11, 16))[0]).toBe("14:00");
+    const bar = workBar(ny, new Date(2026, 10, 16), 0, 24);
+    // At most 8 of the viewer's 24 hours (less where their day cuts it, in the zone the tests run in).
+    expect(bar!.width > 0 && bar!.width <= 100 / 3 + 0.01).toBe(true);
+    expect(workBar({ ...ny, days: [] }, new Date(2026, 10, 16), 0, 24)).toBeNull();
+  });
+});
