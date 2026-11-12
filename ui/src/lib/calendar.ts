@@ -489,6 +489,15 @@ export function fromInput(v: string): Date | null {
   return Number.isNaN(d.getTime()) || d.getMonth() !== Number(m[2]) - 1 ? null : d;
 }
 
+/** Old names some browsers still list, as the IANA database names them now. */
+const RENAMED: Record<string, string> = { "Asia/Calcutta": "Asia/Kolkata", "Asia/Katmandu": "Asia/Kathmandu", "Asia/Saigon": "Asia/Ho_Chi_Minh", "Asia/Rangoon": "Asia/Yangon", "Europe/Kiev": "Europe/Kyiv", "America/Buenos_Aires": "America/Argentina/Buenos_Aires", "Atlantic/Faeroe": "Atlantic/Faroe" };
+
+/** Every IANA zone this browser knows, by its current name, sorted. */
+export function zoneList(): string[] {
+  const all = (Intl as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf?.("timeZone") ?? [];
+  return [...new Set(all.map((z) => RENAMED[z] ?? z))].sort();
+}
+
 /** The wall clock at `d` in `zone`. */
 function wallIn(d: Date, zone: string): number[] {
   const parts = new Intl.DateTimeFormat("en-US", { timeZone: zone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).formatToParts(d);

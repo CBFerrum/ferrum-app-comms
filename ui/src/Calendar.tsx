@@ -25,6 +25,7 @@ import {
   dayFrom,
   daysShown,
   firstDayOf,
+  fromInputIn,
   isoDay,
   matches,
   monthGrid,
@@ -36,6 +37,7 @@ import {
   tally,
   VIEWS,
   weekendOf,
+  zoneList,
   type Guest,
   DEFAULT_HOURS,
   type Occurrence,
@@ -52,8 +54,17 @@ const VIEW_KEY = "ferrum.calendar.view";
 const ZONE_KEY = "ferrum.calendar.zone2";
 /** Working hours: the person's own, else 09:00 to 17:00 on the locale's working days. */
 const minutes = (hhmm: string) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
-const workHours = (weekend: number[], own?: PersonHours): WorkHours =>
-  own ? { from: minutes(own.from), to: minutes(own.to), days: own.days } : { from: 9 * 60, to: 17 * 60, days: [0, 1, 2, 3, 4, 5, 6].filter((d) => !weekend.includes(d)) };
+const workHours = (weekend: number[], own?: PersonHours): WorkHours => {
+  if (!own) return { from: 9 * 60, to: 17 * 60, days: [0, 1, 2, 3, 4, 5, 6].filter((d) => !weekend.includes(d)) };
+  // Hours kept on another zone's clock are drawn on this browser's (today's offset).
+  const here = (hhmm: string) => {
+    const at = own.timezone ? fromInputIn(`${isoDay(new Date())}T${hhmm}`, own.timezone) : null;
+    return at ? at.getHours() * 60 + at.getMinutes() : minutes(hhmm);
+  };
+  const from = here(own.from);
+  const to = here(own.to);
+  return to > from ? { from, to, days: own.days } : { from: minutes(own.from), to: minutes(own.to), days: own.days };
+};
 
 const remembered = (key: string) => {
   try {
@@ -343,7 +354,15 @@ export function CalendarPage() {
               <Search />
             </Button>
           )}
-          <select aria-label={t("View")} className="h-8 rounded-md border border-input bg-card px-2 text-sm" value={view} onChange={(e) => go({ view: e.target.value as View })}>
+          {/* Desktop: the kit's segmented control; a phone keeps a menu. */}
+          <div className="segmented max-md:hidden" role="group" aria-label={t("View")}>
+            {VIEWS.map((v) => (
+              <button key={v} type="button" aria-pressed={view === v} aria-keyshortcuts={Object.keys(VIEW_KEYS).find((k) => VIEW_KEYS[k] === v)} onClick={() => go({ view: v })}>
+                {viewName(v)}
+              </button>
+            ))}
+          </div>
+          <select aria-label={t("View")} className="h-8 rounded-md border border-input bg-card px-2 text-sm md:hidden" value={view} onChange={(e) => go({ view: e.target.value as View })}>
             {VIEWS.map((v) => (
               <option key={v} value={v}>
                 {isolate(viewName(v))}
@@ -401,7 +420,7 @@ export function CalendarPage() {
 
 /** Every IANA zone this browser knows, with "none" first. */
 function ZoneSelect({ id, value, onChange }: { id: string; value: string; onChange: (z: string) => void }) {
-  const zones = useMemo(() => (Intl as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf?.("timeZone") ?? [], []);
+  const zones = useMemo(zoneList, []);
   return (
     <select id={id} className="h-8 w-full min-w-0 rounded-md border border-input bg-card px-2 text-sm" value={value} onChange={(e) => onChange(e.target.value)}>
       <option value="">{t("None")}</option>

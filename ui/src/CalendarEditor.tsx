@@ -34,6 +34,7 @@ import {
   tally,
   toInputIn,
   userLocale,
+  zoneList,
   awayOn,
   workBar,
   type Busy,
@@ -333,7 +334,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
           <div className="-mt-1 grid gap-1.5">
             <Label htmlFor="ev-zone">{t("Time zone")}</Label>
             <select id="ev-zone" className="h-(--control-h) w-full min-w-0 rounded-md border border-input bg-card px-2 text-sm" value={zone} onChange={(e) => setZone(e.target.value)}>
-              {[...new Set([zone, mine, ...((Intl as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf?.("timeZone") ?? [])])].map((z) => (
+              {[...new Set([zone, mine, ...zoneList()])].map((z) => (
                 <option key={z} value={z}>
                   {isolate(z.replaceAll("_", " "))}
                 </option>
@@ -582,10 +583,10 @@ function FindTime(p: {
                     (awayOn(p.hours[who], p.day) ? (
                       <span className="absolute inset-0 grid place-items-center bg-[repeating-linear-gradient(45deg,var(--muted),var(--muted)_4px,var(--card)_4px,var(--card)_8px)] text-xs text-muted-foreground">{t("Away")}</span>
                     ) : (
-                      ((w) => w && <span className="absolute inset-y-0 bg-card" style={{ insetInlineStart: `${w.left}%`, width: `${w.width}%` }} />)(workBar(p.hours[who]!, p.day, FROM, TO))
+                      ((w) => w && <span className="absolute inset-y-0 bg-success-soft" style={{ insetInlineStart: `${w.left}%`, width: `${w.width}%` }} />)(workBar(p.hours[who]!, p.day, FROM, TO))
                     ))}
                   {bars(p.busy[who] ?? [], p.day, FROM, TO).map((b, i) => (
-                    <span key={i} className="absolute inset-y-0 bg-muted-foreground/50" style={{ left: `${b.left}%`, width: `${b.width}%` }} />
+                    <span key={i} className="absolute inset-y-0 bg-muted-foreground/70" style={{ left: `${b.left}%`, width: `${b.width}%` }} />
                   ))}
                   {shade && <span className="pointer-events-none absolute inset-y-0 border-x-2 border-primary bg-primary/20" style={{ left: `${shade.left}%`, width: `${shade.width}%` }} />}
                 </div>
@@ -600,7 +601,7 @@ function FindTime(p: {
               </div>
             ))}
           </div>
-          <p className="text-xs text-muted-foreground">{t("Grey is busy time (never what it is); white is someone's working hours, where they set them. Click a row to move the event there.")}</p>
+          <p className="text-xs text-muted-foreground">{t("Grey is busy time (never what it is); green is someone's working hours, where they set them. Click a row to move the event there.")}</p>
         </div>
       )}
       <div className="grid gap-1.5">

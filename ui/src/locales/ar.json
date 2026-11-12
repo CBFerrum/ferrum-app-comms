@@ -333,7 +333,7 @@
   "Google Calendar, Outlook and phone apps can subscribe to it and show your events. Anyone who has it can see them: share it with nobody.": "يمكن لتقويم Google وOutlook وتطبيقات الهاتف الاشتراك فيه وعرض مواعيدك. من يملكه يستطيع رؤيتها: لا تشاركه مع أحد.",
   "Green": "أخضر",
   "Grey": "رمادي",
-  "Grey is busy time (never what it is); white is someone's working hours, where they set them. Click a row to move the event there.": "الرمادي وقت مشغول (دون ذكر سببه)؛ والأبيض ساعات عمل الشخص إن حددها. انقر صفًا لنقل الموعد إلى هناك.",
+  "Grey is busy time (never what it is); green is someone's working hours, where they set them. Click a row to move the event there.": "الرمادي وقت مشغول (دون ذكر سببه)؛ والأخضر ساعات عمل الشخص إن حددها. انقر صفًا لنقل الموعد إلى هناك.",
   "Guest link": "رابط الضيف",
   "Guests": "الضيوف",
   "Guests (email addresses)": "الضيوف (عناوين البريد)",
