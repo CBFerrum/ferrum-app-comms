@@ -19,7 +19,7 @@ pub(crate) const ATTENDEES: &str = "e_calendar_event__attendees";
 pub(crate) const REMINDERS: &str = "e_calendar_event__reminders";
 /// Changing one of these is a new version of the invitation (SEQUENCE + 1).
 const SIGNIFICANT: &[&str] =
-    &["subject", "starts_at", "ends_at", "all_day", "location", "meeting_link", "recurrence", "recurrence_exceptions", "status", "description"];
+    &["subject", "starts_at", "ends_at", "all_day", "timezone", "location", "meeting_link", "recurrence", "recurrence_exceptions", "status", "description"];
 const MAX_RANGE_DAYS: i64 = 400;
 const MAX_REMINDER_MINUTES: i64 = 40_320;
 
@@ -33,7 +33,9 @@ pub fn series(doc: &Doc) -> Option<Series> {
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(Value::as_str).filter_map(|x| Exception::parse(x).ok()).collect())
         .unwrap_or_default();
-    Some(Series { start, end, rule, exceptions })
+    // All-day events are dates (UTC midnights); timed ones repeat at their wall-clock time.
+    let zone = if b(doc, "all_day") { None } else { s(doc, "timezone").and_then(ics::zone) };
+    Some(Series { start, end, rule, exceptions, zone })
 }
 
 fn lower(v: Option<&str>) -> String {
@@ -110,8 +112,11 @@ pub fn vevent(doc: &Doc, organizer_name: Option<String>, cancelled: bool, alarms
         status: status.into(),
         private: s(doc, "visibility") != Some("Public"),
         categories: s(doc, "category").map(str::to_string),
-        rrule: sr.rule.map(|r| r.to_string()),
-        exceptions: sr.exceptions,
+        // A repeating timed event is written in its zone (DTSTART;TZID=), so other calendars
+        // repeat it at the same wall-clock time as Ferrum does.
+        tzid: sr.zone.filter(|_| sr.rule.is_some()),
+        rrule: sr.rule.as_ref().map(|r| r.exported(sr.zone, b(doc, "all_day")).to_string()),
+        exceptions: sr.exceptions.iter().map(|x| sr.excluded(x).map(Exception::At).unwrap_or(*x)).collect(),
         organizer: s(doc, "owner").map(|o| (organizer_name, o.to_string())),
         attendees: attendees(doc).into_iter().map(|(email, name, response)| Attendee { email, name, partstat: partstat(&response) }).collect(),
         alarms: if alarms { rows(doc, "reminders").iter().map(|r| int(r, "minutes_before")).collect() } else { vec![] },
@@ -225,6 +230,8 @@ impl DocHook for EventHook {
             // What attendees see changed: a new version of the invitation.
             doc.insert("sequence".into(), json!(int(&old, "sequence") + 1));
         }
+        // Guests away then who chose so decline at once, with their message.
+        crate::hours::decline_away(hc.tx, hc.ctx.tenant, doc).await?;
         let missing: Vec<String> = attendees(doc).into_iter().filter(|a| a.1.is_none()).map(|a| a.0).collect();
         if !missing.is_empty() {
             let names: BTreeMap<String, String> = util::users(hc.tx, hc.ctx.tenant, &missing).await?.into_iter().map(|u| (u.email, u.full_name)).collect();
@@ -454,12 +461,17 @@ fn range(from: Option<&str>, to: Option<&str>) -> Result<(DateTime<Utc>, DateTim
 /// public ones), recurring events expanded into occurrences.
 async fn my_calendar(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
     let (from, to) = range(util::param(req, "from"), util::param(req, "to"))?;
+    let q = util::param(req, "q").map(str::trim).filter(|q| !q.is_empty()).map(|q| util::cut(q, 200));
     let me = ctx.email.to_lowercase();
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let events = events_of(&mut tx, ctx.tenant, &me, from, to, true, true).await?;
     tx.commit().await?;
     let mut out = Vec::new();
     for (doc, response) in events {
+        // A search: what I can see of the event (its guests only when I organize it or am one).
+        if q.as_deref().is_some_and(|q| !found(&doc, q)) {
+            continue;
+        }
         let Some(sr) = series(&doc) else { continue };
         let recurring = sr.rule.is_some();
         for (start, end) in recur::occurrences(&sr, from, to) {
@@ -490,8 +502,21 @@ async fn my_calendar(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> 
             break;
         }
     }
+    // My time away, as a bar across its days (not an event: it is changed in my working hours).
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let mine = crate::hours::of(&mut tx, ctx.tenant, std::slice::from_ref(&me)).await?.remove(&me);
+    tx.commit().await?;
+    if let Some((a, b)) = mine.as_ref().and_then(|h| Some((h.away_from?, h.away_to?)))
+        && q.is_none()
+    {
+        let (start, end) = (a.and_time(chrono::NaiveTime::MIN).and_utc(), (b + Duration::days(1)).and_time(chrono::NaiveTime::MIN).and_utc());
+        if start < to && end > from {
+            out.push(json!({"id": format!("away/{a}"), "event": null, "kind": "away", "start": util::ts(start), "end": util::ts(end), "all_day": true,
+                "subject": "Out of office", "description": mine.as_ref().and_then(|h| h.away_message.clone()), "status": "Confirmed", "is_organizer": false}));
+        }
+    }
     out.sort_by(|a, b| a["start"].as_str().cmp(&b["start"].as_str()));
-    Ok(json!({"from": util::ts(from), "to": util::ts(to), "occurrences": out}))
+    Ok(json!({"from": util::ts(from), "to": util::ts(to), "q": q, "occurrences": out}))
 }
 
 /// How far ahead Home's My work looks for invitations to answer.
@@ -559,6 +584,8 @@ async fn free_busy(k: &Kernel, ctx: &Ctx, body: Map<String, Value>) -> Result<Va
     // An event being edited does not count against its own time.
     let exclude: Option<Uuid> = body.get("exclude").and_then(Value::as_str).and_then(|e| e.parse().ok());
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    // Working hours and time away of those who set them (what colleagues may see of them).
+    let hours: Map<String, Value> = crate::hours::of(&mut tx, ctx.tenant, &users).await?.into_iter().map(|(p, h)| (p, h.public())).collect();
     let mut busy = Map::new();
     for u in users {
         let mut intervals = Vec::new();
@@ -573,7 +600,7 @@ async fn free_busy(k: &Kernel, ctx: &Ctx, body: Map<String, Value>) -> Result<Va
         busy.insert(u, json!(merge(intervals).into_iter().map(|(a, b)| json!({"start": util::ts(a), "end": util::ts(b)})).collect::<Vec<_>>()));
     }
     tx.commit().await?;
-    Ok(json!({"from": util::ts(from), "to": util::ts(to), "busy": busy}))
+    Ok(json!({"from": util::ts(from), "to": util::ts(to), "busy": busy, "hours": hours}))
 }
 
 /// The words an organizer reads for an answer.
@@ -818,27 +845,69 @@ pub async fn feed(k: &Kernel, tenant: Uuid, token: &str) -> Result<SiteResponse>
     .fetch_optional(&mut *tx)
     .await?;
     let (email, name) = row.ok_or_else(|| Error::NotFound("calendar".into()))?;
+    let text = ics_of(&mut tx, tenant, &email, &name).await?;
+    tx.commit().await?;
+    let mut r = SiteResponse::text(200, "text/calendar; charset=utf-8", text);
+    r.headers.push(("cache-control".into(), "private, max-age=300".into()));
+    Ok(r)
+}
+
+/// A person's calendar as iCalendar text: their events and invitations from 180 days back to ten
+/// years on (what the secret feed and an export carry).
+async fn ics_of(tx: &mut Tx, tenant: Uuid, email: &str, name: &str) -> Result<String> {
     let from = util::now() - Duration::days(180);
-    let events = events_of(&mut tx, tenant, &email, from, util::now() + Duration::days(3660), false, false).await?;
+    let events = events_of(tx, tenant, email, from, util::now() + Duration::days(3660), false, false).await?;
     let mut organizers: BTreeMap<String, Option<String>> = BTreeMap::new();
     let mut list = Vec::new();
     for (doc, _) in &events {
         let owner = lower(s(doc, "owner"));
         if !organizers.contains_key(&owner) {
-            let n = display_name(&mut tx, tenant, &owner).await?;
+            let n = display_name(tx, tenant, &owner).await?;
             organizers.insert(owner.clone(), n);
         }
         list.extend(vevent(doc, organizers.get(&owner).cloned().flatten(), false, true));
     }
-    tx.commit().await?;
     let label = if name.trim().is_empty() { email } else { name };
-    let mut r = SiteResponse::text(200, "text/calendar; charset=utf-8", ics::calendar(None, Some(&label), &list));
-    r.headers.push(("cache-control".into(), "private, max-age=300".into()));
+    Ok(ics::calendar(None, Some(label), &list))
+}
+
+/// `GET /calendar/export`: my calendar as an `.ics` file to save.
+async fn export(k: &Kernel, ctx: &Ctx) -> Result<SiteResponse> {
+    let me = ctx.email.to_lowercase();
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let name = display_name(&mut tx, ctx.tenant, &me).await?.unwrap_or_default();
+    let text = ics_of(&mut tx, ctx.tenant, &me, &name).await?;
+    tx.commit().await?;
+    let mut r = SiteResponse::text(200, "text/calendar; charset=utf-8", text);
+    r.headers.push(("content-disposition".into(), "attachment; filename=\"calendar.ics\"".into()));
+    r.headers.push(("cache-control".into(), "no-store".into()));
     Ok(r)
+}
+
+/// Whether every word of `q` is in the event's title, place, notes, organizer or guests (any case).
+fn found(doc: &Doc, q: &str) -> bool {
+    let mut hay = ["subject", "location", "description", "owner"].iter().filter_map(|f| s(doc, f)).collect::<Vec<_>>().join(" ");
+    for (email, name, _) in attendees(doc) {
+        hay.push(' ');
+        hay.push_str(&email);
+        hay.push(' ');
+        hay.push_str(name.as_deref().unwrap_or_default());
+    }
+    let hay = hay.to_lowercase();
+    q.split_whitespace().all(|w| hay.contains(&w.to_lowercase()))
 }
 
 /// An event's own fields from iCalendar, for imports and calendar apps.
 pub(crate) fn event_fields(e: &ics::ParsedEvent) -> Doc {
+    let mut doc = event_fields_without_zone(e);
+    // The zone its times were written in (kept when the app sent UTC times).
+    if let Some(z) = e.tzid.as_deref().filter(|_| !e.all_day) {
+        doc.insert("timezone".into(), json!(z));
+    }
+    doc
+}
+
+fn event_fields_without_zone(e: &ics::ParsedEvent) -> Doc {
     let status = match e.status.as_deref() {
         Some("CANCELLED") => "Cancelled",
         Some("TENTATIVE") => "Tentative",
@@ -951,6 +1020,25 @@ pub async fn fire_reminders(k: &Kernel, tenant: Uuid) -> Result<usize> {
                     continue;
                 }
                 let mut tx = k.db.tenant_tx(tenant).await?;
+                // An occurrence whose instant moved (repeating events follow their zone's clock
+                // since 0.16) and was reminded at its old instant on the same local day counts as
+                // reminded.
+                let near: Vec<DateTime<Utc>> = sqlx::query_scalar(
+                    "select occurrence_start from comms_reminder_log where tenant_id = $1 and event_id = $2 and minutes_before = $3 \
+                     and occurrence_start between $4 and $5 and occurrence_start <> $6",
+                )
+                .bind(tenant)
+                .bind(event)
+                .bind(*m as i32)
+                .bind(start - Duration::days(1))
+                .bind(start + Duration::days(1))
+                .bind(start)
+                .fetch_all(&mut *tx)
+                .await?;
+                if reminded_that_day(start, &near, sr.zone) {
+                    tx.commit().await?;
+                    continue;
+                }
                 let first = sqlx::query(
                     "insert into comms_reminder_log (tenant_id, event_id, occurrence_start, minutes_before) values ($1, $2, $3, $4) on conflict do nothing",
                 )
@@ -994,6 +1082,49 @@ pub async fn fire_reminders(k: &Kernel, tenant: Uuid) -> Result<usize> {
     Ok(fired)
 }
 
+/// Whether a reminder for the occurrence at `start` already went out for one at another instant of
+/// the same local day (in the event's zone): the same occurrence, moved by a change of clocks.
+fn reminded_that_day(start: DateTime<Utc>, fired: &[DateTime<Utc>], zone: Option<chrono_tz::Tz>) -> bool {
+    let day = recur::wall(start, zone).date();
+    fired.iter().any(|f| *f != start && recur::wall(*f, zone).date() == day)
+}
+
+/// `GET /calendar/search?q=`: the bar's search provider (`shell.search`): events I can see (mine,
+/// those I am invited to, public ones) whose title, place, notes, organizer or guests match, from
+/// half a year back to a year on, each opening at its next occurrence (or its last one).
+async fn search(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
+    let q = util::param(req, "q").map(str::trim).unwrap_or_default();
+    if q.chars().count() < 2 {
+        return Err(Error::field("q", "type at least two characters"));
+    }
+    let q = util::cut(q, 200);
+    let limit: usize = util::param(req, "limit").and_then(|l| l.parse().ok()).unwrap_or(20).clamp(1, 50);
+    let now = util::now();
+    let (from, to) = (now - Duration::days(180), now + Duration::days(215));
+    let me = ctx.email.to_lowercase();
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let events = events_of(&mut tx, ctx.tenant, &me, from, to, true, false).await?;
+    tx.commit().await?;
+    let mut results: Vec<(i64, Value)> = Vec::new();
+    for (doc, _) in events.iter().filter(|(d, _)| found(d, &q)) {
+        let Some(sr) = series(doc) else { continue };
+        let all = recur::occurrences(&sr, from, to);
+        let Some((start, end)) = all.iter().find(|(s, _)| *s >= now).or(all.last()).copied() else { continue };
+        let mut at = doc.clone();
+        at.insert("starts_at".into(), json!(util::ts(start)));
+        at.insert("ends_at".into(), json!(util::ts(end)));
+        let id = s(doc, "id").unwrap_or_default();
+        results.push((
+            (start - now).num_seconds().abs(),
+            json!({"title": s(doc, "subject").unwrap_or("(no title)"), "subtitle": when(&at), "url": format!("/calendar/?event={id}&at={}", util::ts(start)),
+                "icon": "calendar", "updated_at": doc.get("updated_at")}),
+        ));
+    }
+    // Nearest to now first.
+    results.sort_by_key(|(d, _)| *d);
+    Ok(json!({"results": results.into_iter().take(limit).map(|(_, v)| v).collect::<Vec<_>>()}))
+}
+
 fn uuid(seg: &str) -> Result<Uuid> {
     seg.parse().map_err(|_| Error::NotFound("record".into()))
 }
@@ -1008,6 +1139,10 @@ pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> 
         ("POST", ["events", e, "rsvp"]) => rsvp(k, ctx, uuid(e)?, util::body_json(req)?).await?,
         (m, ["feed"]) => feed_token(k, ctx, m).await?,
         ("POST", ["import"]) => import(k, ctx, req).await?,
+        ("GET", ["export"]) => return export(k, ctx).await,
+        ("GET", ["search"]) => search(k, ctx, req).await?,
+        ("GET", ["hours"]) => crate::hours::handle(k, ctx, "GET", None).await?,
+        ("PUT", ["hours"]) => crate::hours::handle(k, ctx, "PUT", Some(util::body_json(req)?)).await?,
         _ => return Err(Error::NotFound("calendar endpoint".into())),
     };
     Ok(util::ok(out))
@@ -1033,9 +1168,20 @@ mod tests {
         assert_eq!((ev.sequence, ev.status.as_str(), ev.private), (3, "CONFIRMED", true));
         assert_eq!(ev.attendees[0].partstat, "ACCEPTED");
         assert_eq!(ev.alarms, vec![10]);
-        assert_eq!(ev.exceptions, vec![Exception::Day(NaiveDate::from_ymd_opt(2026, 11, 9).unwrap())]);
+        // The date exception is written as the occurrence it removes, in the event's zone.
+        assert_eq!(ev.exceptions, vec![Exception::At("2026-11-09T03:30:00Z".parse().unwrap())]);
+        assert_eq!((ev.tzid.map(|z| z.name()), ev.rrule.as_deref()), (Some("Asia/Kolkata"), Some("FREQ=WEEKLY;COUNT=2")));
         let all_day = event(json!({"subject": "Offsite", "starts_at": "2026-12-24T00:00:00Z", "ends_at": "2026-12-26T00:00:00Z", "all_day": true}));
         assert_eq!(when(&all_day), "Thu 24 Dec 2026 – Fri 25 Dec 2026 (all day)");
+        // A reminder at 08:00 UTC for a London 09:00 that is now 09:00 UTC (after the clocks went back) was that day's.
+        let at = |v: &str| v.parse::<DateTime<Utc>>().unwrap();
+        let london = ics::zone("Europe/London");
+        assert!(reminded_that_day(at("2026-11-02T09:00:00Z"), &[at("2026-11-02T08:00:00Z")], london));
+        assert!(!reminded_that_day(at("2026-11-02T09:00:00Z"), &[at("2026-10-26T09:00:00Z"), at("2026-11-02T09:00:00Z")], london));
+        // Kolkata 00:30 is 19:00 UTC the day before: the day is the event's own.
+        assert!(reminded_that_day(at("2026-11-01T19:00:00Z"), &[at("2026-11-01T18:30:00Z")], ics::zone("Asia/Kolkata")));
+        assert!(!reminded_that_day(at("2026-11-02T03:30:00Z"), &[at("2026-11-01T03:30:00Z")], ics::zone("Asia/Kolkata")));
+        assert!(found(&d, "board ASHA") && found(&d, "guest@partner") && found(&d, "Guest") && !found(&d, "board lunch"));
         assert_eq!(merge(vec![]), vec![]);
         let t = |h: u32| NaiveDate::from_ymd_opt(2026, 11, 2).unwrap().and_hms_opt(h, 0, 0).unwrap().and_utc();
         assert_eq!(merge(vec![(t(9), t(10)), (t(12), t(13)), (t(9), t(11))]), vec![(t(9), t(11)), (t(12), t(13))]);

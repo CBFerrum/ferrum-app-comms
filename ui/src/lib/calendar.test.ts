@@ -47,7 +47,7 @@ describe("calendar", () => {
     expect(sameTimeOn(timed, new Date(2026, 10, 4)).getTime()).toBe(new Date(2026, 10, 4, 9).getTime());
     const whole = occ("w", "2026-10-30T00:00:00Z", "2026-11-01T00:00:00Z", true);
     expect(moved(whole, new Date(2026, 10, 5, 15))).toEqual({ starts_at: "2026-11-05T00:00:00.000Z", ends_at: "2026-11-07T00:00:00.000Z" });
-    expect([movable(timed), movable({ ...timed, recurring: true }), movable({ ...timed, is_organizer: false }), movable({ ...timed, status: "Cancelled" })]).toEqual([true, false, false, false]);
+    expect([movable(timed), movable({ ...timed, recurring: true }), movable({ ...timed, is_organizer: false }), movable({ ...timed, status: "Cancelled" })]).toEqual([true, true, false, false]);
   });
 
   it("only lets safe colors and links through", () => {
@@ -119,7 +119,7 @@ describe("the editor's fields", () => {
 
   it("turns a repeat choice into a rule and back, keeping what it cannot show", () => {
     expect(ruleFor("weekly", "")).toBe("FREQ=WEEKLY");
-    expect(ruleFor("weekdays", "2026-12-31")).toBe("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;UNTIL=20261231T235959Z");
+    expect(ruleFor("weekdays", "2026-12-31")).toBe("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;UNTIL=20261231");
     expect(ruleFor("none", "2026-12-31")).toBeNull();
     for (const kind of ["daily", "weekdays", "weekly", "monthly", "yearly"] as const) expect(repeatOf(ruleFor(kind, "2027-01-15"))).toEqual({ kind, until: "2027-01-15" });
     expect(repeatOf(null)).toEqual({ kind: "none", until: "" });

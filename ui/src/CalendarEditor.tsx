@@ -21,6 +21,7 @@ import {
   bars,
   clashes,
   fromInput,
+  fromInputIn,
   isoDay,
   mergeGuests,
   nextHour,
@@ -31,9 +32,14 @@ import {
   stretch,
   suggestSlots,
   tally,
-  toInput,
+  toInputIn,
+  userLocale,
+  zoneList,
+  awayOn,
+  workBar,
   type Busy,
   type BusyMap,
+  type PersonHours,
   type Guest,
   type Repeat,
 } from "./lib/calendar";
@@ -47,6 +53,7 @@ interface EventDoc {
   starts_at: string;
   ends_at: string;
   all_day?: boolean;
+  timezone?: string | null;
   location?: string | null;
   meeting_link?: string | null;
   description?: string | null;
@@ -111,18 +118,22 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
   }, [doc, params]);
   const rule = repeatOf(doc?.recurrence);
   const remind = reminderOf((doc?.reminders ?? []).map((r) => r.minutes_before));
+  const mine = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  // The event's zone: its own, else mine. Start and end are typed on its clock.
+  const [zone, setZone] = useState(doc?.timezone || mine);
   const [subject, setSubject] = useState(doc?.subject ?? params.get("subject") ?? "");
-  const [allDay, setAllDay] = useState(!!doc?.all_day);
+  const wholeDays = doc ? !!doc.all_day : params.get("all_day") === "1";
+  const [allDay, setAllDay] = useState(wholeDays);
   // All-day events are shown by date (the last day included), timed ones by date and time.
-  const [start, setStart] = useState(() => (doc?.all_day ? doc.starts_at.slice(0, 10) : toInput(first.starts)));
-  const [end, setEnd] = useState(() => (doc?.all_day ? new Date(Date.parse(doc.ends_at) - DAY).toISOString().slice(0, 10) : toInput(first.ends)));
+  const [start, setStart] = useState(() => (wholeDays ? first.starts.toISOString().slice(0, 10) : toInputIn(first.starts, zone)));
+  const [end, setEnd] = useState(() => (wholeDays ? new Date(first.ends.getTime() - DAY).toISOString().slice(0, 10) : toInputIn(first.ends, zone)));
   const [location, setLocation] = useState(doc?.location ?? "");
   const [description, setDescription] = useState(doc?.description ?? "");
   const [repeat, setRepeat] = useState<Repeat>(rule.kind);
   const [until, setUntil] = useState(rule.until);
   const [reminder, setReminder] = useState<number | "none" | "custom">(remind);
   const [visibility, setVisibility] = useState(doc?.visibility ?? "Private");
-  const [guests, setGuests] = useState<string[]>((doc?.attendees ?? []).map((a) => a.email.toLowerCase()));
+  const [guests, setGuests] = useState<string[]>(() => (doc ? (doc.attendees ?? []).map((a) => a.email.toLowerCase()) : parseGuests(params.get("guests") ?? "").emails.filter((e) => e !== me)));
   const [typed, setTyped] = useState("");
   const link = doc?.meeting_link ?? null;
   const hasCall = !!meetPath(link);
@@ -140,10 +151,10 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
       const z = fromInput(end.slice(0, 10));
       return a && z ? { starts: a, ends: new Date(z.getFullYear(), z.getMonth(), z.getDate() + 1) } : null;
     }
-    const a = fromInput(start);
-    const z = fromInput(end);
+    const a = fromInputIn(start, zone);
+    const z = fromInputIn(end, zone);
     return a && z ? { starts: a, ends: z } : null;
-  }, [allDay, start, end]);
+  }, [allDay, start, end, zone]);
   const minutes = when ? Math.max(15, Math.round((when.ends.getTime() - when.starts.getTime()) / 60_000)) : 60;
 
   // Free and busy: me and the colleagues invited, for the day shown and a week on from it (this
@@ -155,17 +166,17 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
     queryKey: ["calendar", "busy", insiders.join(","), shownDay, doc?.id],
     queryFn: ({ signal }) =>
       api
-        .post<{ busy: BusyMap }>(`${CALENDAR}/freebusy`, { users: insiders.slice(0, 50), from: day.toISOString(), to: new Date(day.getTime() + 8 * DAY).toISOString(), exclude: doc?.id }, { signal })
-        .then((r) => r.busy),
+        .post<{ busy: BusyMap; hours?: Record<string, PersonHours> }>(`${CALENDAR}/freebusy`, { users: insiders.slice(0, 50), from: day.toISOString(), to: new Date(day.getTime() + 8 * DAY).toISOString(), exclude: doc?.id }, { signal }),
     enabled: !allDay && !!when,
     staleTime: 60_000,
   });
-  const others: BusyMap = week.data ?? {};
+  const others: BusyMap = week.data?.busy ?? {};
+  const hours: Record<string, PersonHours> = week.data?.hours ?? {};
 
   const set = (v: Date) => {
     const length = when ? when.ends.getTime() - when.starts.getTime() : 3_600_000;
-    setStart(toInput(v));
-    setEnd(toInput(new Date(v.getTime() + length)));
+    setStart(toInputIn(v, zone));
+    setEnd(toInputIn(new Date(v.getTime() + length), zone));
   };
   const addGuests = (text: string) => {
     const got = parseGuests(text);
@@ -193,7 +204,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
       starts_at: allDay ? new Date(sameDay(when.starts)).toISOString() : when.starts.toISOString(),
       ends_at: allDay ? new Date(sameDay(when.ends)).toISOString() : when.ends.toISOString(),
       all_day: allDay,
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      timezone: zone,
       location: location.trim() || null,
       description: description.trim() || null,
       visibility,
@@ -248,7 +259,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
 
   const clash = when && !allDay ? clashes(others, when.starts, when.ends) : [];
   const nameOf = (email: string) => (email === me ? t("You") : names[email] || email);
-  const suggestions = useMemo(() => (allDay || !week.data ? [] : suggestSlots(week.data, { from: new Date(Math.max(Date.now(), day.getTime())), days: 8, minutes })), [allDay, week.data, minutes, day]);
+  const suggestions = useMemo(() => (allDay || !week.data ? [] : suggestSlots(week.data.busy, { from: new Date(Math.max(Date.now(), day.getTime())), days: 8, minutes, hours: week.data.hours })), [allDay, week.data, minutes, day]);
 
   return (
     <form onSubmit={save} className="mx-auto grid max-w-5xl gap-6 p-4 lg:grid-cols-[minmax(0,32rem)_minmax(0,1fr)]">
@@ -288,8 +299,8 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
                 setEnd(end.slice(0, 10));
               } else if (when) {
                 const s = new Date(when.starts.getFullYear(), when.starts.getMonth(), when.starts.getDate(), 9);
-                setStart(toInput(s));
-                setEnd(toInput(new Date(s.getTime() + 3_600_000)));
+                setStart(toInputIn(s, zone));
+                setEnd(toInputIn(new Date(s.getTime() + 3_600_000), zone));
               }
             }}
           />{isolate(" ")}
@@ -303,7 +314,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
               type={allDay ? "date" : "datetime-local"}
               value={start}
               onChange={(e) => {
-                const a = fromInput(e.target.value);
+                const a = fromInputIn(e.target.value, zone);
                 if (a && when && !allDay) set(a);
                 else setStart(e.target.value);
               }}
@@ -319,7 +330,23 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
             {((who: string) => (clash.length === 1 ? t("{who} is busy then. The times that suit everyone are on the right.", { who }) : t("{who} are busy then. The times that suit everyone are on the right.", { who })))(new Intl.ListFormat(currentLanguage(), { type: "conjunction" }).format(clash.map((who) => t("{name} ({times})", { name: nameOf(who), times: (others[who] ?? []).filter((b) => Date.parse(b.start) < when.ends.getTime() && Date.parse(b.end) > when.starts.getTime()).map(stretch).join(", ") }))))}
           </p>
         )}
-        <p className="-mt-2 text-xs text-muted-foreground">{t("Times are in your time zone, {timeZone}. Guests see them in theirs.", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone })}</p>
+        {!allDay && (
+          <div className="-mt-1 grid gap-1.5">
+            <Label htmlFor="ev-zone">{t("Time zone")}</Label>
+            <select id="ev-zone" className="h-(--control-h) w-full min-w-0 rounded-md border border-input bg-card px-2 text-sm" value={zone} onChange={(e) => setZone(e.target.value)}>
+              {[...new Set([zone, mine, ...zoneList()])].map((z) => (
+                <option key={z} value={z}>
+                  {isolate(z.replaceAll("_", " "))}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-muted-foreground">
+              {zone !== mine && when
+                ? t("That is {start} – {end} in your time zone ({mine}).", { start: when.starts.toLocaleString(userLocale(), { weekday: "short", hour: "numeric", minute: "2-digit" }), end: when.ends.toLocaleTimeString(userLocale(), { hour: "numeric", minute: "2-digit" }), mine: mine.replaceAll("_", " ") })
+                : t("It repeats at this time of day in this zone, also when its clocks change. Guests see it in their own time.")}
+            </p>
+          </div>
+        )}
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="grid gap-1.5">
             <Label htmlFor="ev-repeat">{t("Repeats")}</Label>
@@ -339,7 +366,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
             </div>
           )}
         </div>
-        {repeat !== "none" && existing && <p className="-mt-2 text-xs text-muted-foreground">{t("Changes apply to every time it repeats.")}</p>}
+        {repeat !== "none" && existing && <p className="-mt-2 text-xs text-muted-foreground">{t("Changes here apply to every time it repeats. To change one, drag it or delete it on the calendar.")}</p>}
         <fieldset className="grid gap-2">
           <legend className="mb-1 text-sm font-medium">{t("Guests")}</legend>
           {guests.length > 0 && (
@@ -437,7 +464,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
         {allDay ? (
           <p className="text-sm text-muted-foreground">{t("An all-day event has no time to find.")}</p>
         ) : (
-          <FindTime day={day} insiders={insiders} outsiders={guests.filter((g) => !colleague(g))} names={names} me={me} busy={others} loading={week.isLoading} error={week.error} retry={() => void week.refetch()} when={when} suggestions={suggestions} onPick={set} onDay={(d) => set(new Date(d.getFullYear(), d.getMonth(), d.getDate(), when?.starts.getHours() ?? 9, when?.starts.getMinutes() ?? 0))} />
+          <FindTime hours={hours} day={day} insiders={insiders} outsiders={guests.filter((g) => !colleague(g))} names={names} me={me} busy={others} loading={week.isLoading} error={week.error} retry={() => void week.refetch()} when={when} suggestions={suggestions} onPick={set} onDay={(d) => set(new Date(d.getFullYear(), d.getMonth(), d.getDate(), when?.starts.getHours() ?? 9, when?.starts.getMinutes() ?? 0))} />
         )}
       </aside>
     </form>
@@ -488,6 +515,7 @@ function GuestInput({ people, taken, typed, setTyped, add }: { people: Person[];
 }
 
 function FindTime(p: {
+  hours: Record<string, PersonHours>;
   day: Date;
   insiders: string[];
   outsiders: string[];
@@ -547,11 +575,18 @@ function FindTime(p: {
                 <div
                   className="relative h-6 flex-1 cursor-pointer overflow-hidden rounded bg-muted"
                   role="img"
-                  aria-label={t("{who}: {value} on {value2}", { who: label(who), value: said(p.busy[who]), value2: dayWord(p.day) })}
+                  aria-label={`${t("{who}: {value} on {value2}", { who: label(who), value: said(p.busy[who]), value2: dayWord(p.day) })}${awayOn(p.hours[who], p.day) ? `, ${t("away")}` : ""}`}
                   onClick={pick}
                 >
+                  {/* Their working hours, on their clock, lighter; time away hatched. */}
+                  {p.hours[who] &&
+                    (awayOn(p.hours[who], p.day) ? (
+                      <span className="absolute inset-0 grid place-items-center bg-[repeating-linear-gradient(45deg,var(--muted),var(--muted)_4px,var(--card)_4px,var(--card)_8px)] text-xs text-muted-foreground">{t("Away")}</span>
+                    ) : (
+                      ((w) => w && <span className="absolute inset-y-0 bg-success-soft" style={{ insetInlineStart: `${w.left}%`, width: `${w.width}%` }} />)(workBar(p.hours[who]!, p.day, FROM, TO))
+                    ))}
                   {bars(p.busy[who] ?? [], p.day, FROM, TO).map((b, i) => (
-                    <span key={i} className="absolute inset-y-0 bg-muted-foreground/50" style={{ left: `${b.left}%`, width: `${b.width}%` }} />
+                    <span key={i} className="absolute inset-y-0 bg-muted-foreground/70" style={{ left: `${b.left}%`, width: `${b.width}%` }} />
                   ))}
                   {shade && <span className="pointer-events-none absolute inset-y-0 border-x-2 border-primary bg-primary/20" style={{ left: `${shade.left}%`, width: `${shade.width}%` }} />}
                 </div>
@@ -566,7 +601,7 @@ function FindTime(p: {
               </div>
             ))}
           </div>
-          <p className="text-xs text-muted-foreground">{t("Grey is busy time (never what it is). Click a row to move the event there.")}</p>
+          <p className="text-xs text-muted-foreground">{t("Grey is busy time (never what it is); green is someone's working hours, where they set them. Click a row to move the event there.")}</p>
         </div>
       )}
       <div className="grid gap-1.5">
