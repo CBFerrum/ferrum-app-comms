@@ -1413,5 +1413,21 @@
   "all day": "पूरे दिन",
   "invited by email": "ईमेल से आमंत्रित",
   "new time proposed": "नया समय प्रस्तावित",
-  "told in Ferrum": "Ferrum में बताया गया"
+  "told in Ferrum": "Ferrum में बताया गया",
+  "Add Bcc recipients": "Bcc प्राप्तकर्ता जोड़ें",
+  "Add Cc recipients": "Cc प्राप्तकर्ता जोड़ें",
+  "Adding the picture {name}": "चित्र {name} जोड़ा जा रहा है",
+  "I am away until Monday. For anything urgent, write to …": "मैं सोमवार तक बाहर हूँ। किसी ज़रूरी काम के लिए लिखें …",
+  "Not loaded while you write; it goes out as it came.": "लिखते समय लोड नहीं होता; जैसा आया था वैसा ही भेजा जाता है।",
+  "Not saved yet": "अभी सहेजा नहीं गया",
+  "Open in a new browser window": "नई ब्राउज़र विंडो में खोलें",
+  "Picture from the web": "वेब से चित्र",
+  "Picture from the web: {name}": "वेब से चित्र: {name}",
+  "Plain text: on": "सादा पाठ: चालू",
+  "Resize the window (arrow keys)": "विंडो का आकार बदलें (तीर कुंजियाँ)",
+  "Send ({keys})": "भेजें ({keys})",
+  "Send options": "भेजने के विकल्प",
+  "The browser blocked the new window. Allow pop-ups for this site and try again.": "ब्राउज़र ने नई विंडो रोक दी। इस साइट के लिए पॉप-अप की अनुमति दें और फिर से कोशिश करें।",
+  "Write something first: an empty message is not kept.": "पहले कुछ लिखें: खाली संदेश नहीं रखा जाता।",
+  "Write your message": "अपना संदेश लिखें"
 }

@@ -1413,5 +1413,21 @@
   "all day": "طوال اليوم",
   "invited by email": "دُعي بالبريد الإلكتروني",
   "new time proposed": "اقتُرح وقت جديد",
-  "told in Ferrum": "أُبلغ في Ferrum"
+  "told in Ferrum": "أُبلغ في Ferrum",
+  "Add Bcc recipients": "إضافة مستلمين في نسخة مخفية",
+  "Add Cc recipients": "إضافة مستلمين في نسخة",
+  "Adding the picture {name}": "جارٍ إضافة الصورة {name}",
+  "I am away until Monday. For anything urgent, write to …": "أنا خارج المكتب حتى يوم الاثنين. للأمور العاجلة، راسل …",
+  "Not loaded while you write; it goes out as it came.": "لا تُحمَّل أثناء الكتابة؛ وتُرسل كما وصلت.",
+  "Not saved yet": "لم يُحفظ بعد",
+  "Open in a new browser window": "فتح في نافذة متصفح جديدة",
+  "Picture from the web": "صورة من الويب",
+  "Picture from the web: {name}": "صورة من الويب: {name}",
+  "Plain text: on": "نص عادي: مُفعّل",
+  "Resize the window (arrow keys)": "تغيير حجم النافذة (مفاتيح الأسهم)",
+  "Send ({keys})": "إرسال ({keys})",
+  "Send options": "خيارات الإرسال",
+  "The browser blocked the new window. Allow pop-ups for this site and try again.": "منع المتصفح النافذة الجديدة. اسمح بالنوافذ المنبثقة لهذا الموقع وحاول مجددًا.",
+  "Write something first: an empty message is not kept.": "اكتب شيئًا أولًا: الرسالة الفارغة لا تُحفظ.",
+  "Write your message": "اكتب رسالتك"
 }

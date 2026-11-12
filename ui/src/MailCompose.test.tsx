@@ -3,7 +3,7 @@
 import { renderToString } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { TooltipProvider } from "@ferrum/kit/primitives";
-import { SEND_KEYS, SendButton } from "./MailCompose";
+import { SEND_KEYS, SendButton } from "./MailComposer";
 
 const html = (busy: boolean) => renderToString(<TooltipProvider><SendButton busy={busy} disabled={busy} split onSend={() => {}} /></TooltipProvider>);
 
