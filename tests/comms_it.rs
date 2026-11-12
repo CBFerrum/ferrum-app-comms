@@ -2586,7 +2586,7 @@ async fn calendar_rooms(t: &T, users: &HashMap<String, Ctx>) {
         json!({"recurrence": "FREQ=WEEKLY;COUNT=4", "timezone": "Europe/London"}),
     )
     .await;
-    assert!(answer(&weekly, &room).1.unwrap().contains("2027-03-15T09:15"), "the occurrence that clashes");
+    assert!(answer(&weekly, &room).1.unwrap().contains("Mon 15 Mar 2027, 09:15 (Europe/London)"), "the occurrence that clashes, on the room's clock");
     // Who may book: the van is for Sales.
     assert!(
         answer(&book(carol, "Move", "2027-03-17T09:00:00Z", "2027-03-17T10:00:00Z", &[&vanmail], json!({})).await, &vanmail)

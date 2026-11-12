@@ -1400,5 +1400,6 @@
   "{name} removed": "{name} हटाया गया",
   "{name} saved": "{name} सहेजा गया",
   "{room} declined: {why}": "{room} ने अस्वीकार किया: {why}",
-  "{who} is told the time stays.": "{who} को बताया गया कि समय वही रहेगा।"
+  "{who} is told the time stays.": "{who} को बताया गया कि समय वही रहेगा।",
+  "You cannot open this file in Drive: it is not shared with you.": "आप यह फ़ाइल Drive में नहीं खोल सकते: यह आपके साथ साझा नहीं है।"
 }

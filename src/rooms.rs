@@ -125,6 +125,14 @@ fn hours_words(h: &Hours) -> String {
     format!("{} {}–{}{}", days.join(", "), h.from, h.to, h.timezone.as_deref().map(|z| format!(" ({z})")).unwrap_or_default())
 }
 
+/// "Tue 9 Mar 2027, 09:30 (Europe/London)": a moment on the room's clock (UTC when it has none).
+fn moment(room: &Room, at: DateTime<Utc>) -> String {
+    match room.hours.as_ref().and_then(|h| h.timezone.as_deref()).and_then(ics::zone) {
+        Some(z) => format!("{} ({})", at.with_timezone(&z).format("%a %-d %b %Y, %H:%M"), z.name()),
+        None => format!("{} (UTC)", at.format("%a %-d %b %Y, %H:%M")),
+    }
+}
+
 /// The occurrences of an event a booking covers (a repeating one up to [`HORIZON_DAYS`] on).
 fn covered(doc: &Doc) -> Vec<(DateTime<Utc>, DateTime<Utc>)> {
     let Some(sr) = calendar::series(doc) else { return vec![] };
@@ -154,7 +162,7 @@ pub(crate) async fn answer(tx: &mut Tx, tenant: Uuid, doc: &mut Doc) -> Result<(
         } else if let Some(h) = room.hours.as_ref().filter(|h| mine.iter().any(|(a, b)| !within(h, *a, *b))) {
             Some(format!("outside the hours it can be booked: {}", hours_words(h)))
         } else {
-            clash(tx, tenant, room, event, &mine).await?.map(|at| format!("already booked then ({})", util::ts(at)))
+            clash(tx, tenant, room, event, &mine).await?.map(|at| format!("already booked at {}", moment(room, at)))
         };
         answers.push((room.address.clone(), if reason.is_none() { "Accepted" } else { "Declined" }, reason));
     }

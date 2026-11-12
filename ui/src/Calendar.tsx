@@ -1294,7 +1294,7 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit, onDelete }: { o: Occu
           ) : (
             o.description && <p className="whitespace-pre-line text-muted-foreground">{isolate(o.description)}</p>
           )}
-          {(o.attachments?.length ?? 0) > 0 && <EventFiles files={o.attachments!} by={by} />}
+          {(o.attachments?.length ?? 0) > 0 && <EventFiles files={o.attachments!} by={o.is_organizer ? null : by} />}
           {by && !o.is_organizer && <p className="text-xs text-muted-foreground">{t("Organized by {by}", { by })}</p>}
           {detail.data?.created_by && <p className="text-xs text-muted-foreground">{t("Created by {who}", { who: detail.data.created_by })}</p>}
           {response !== null && !cancelled && (
@@ -1506,7 +1506,11 @@ function EventFile({ f, by, preview }: { f: Attachment; by: string | null | unde
         )}
         <span className="shrink-0 text-xs text-muted-foreground">{isolate(fileKind(f.name))}</span>
       </span>
-      {access.isError && <span className="ps-6 text-xs text-muted-foreground">{t("You cannot open this file in Drive. Ask {by} to share it with you.", { by: by || t("the organizer") })}</span>}
+      {access.isError && (
+        <span className="ps-6 text-xs text-muted-foreground">
+          {by ? t("You cannot open this file in Drive. Ask {by} to share it with you.", { by }) : t("You cannot open this file in Drive: it is not shared with you.")}
+        </span>
+      )}
     </li>
   );
 }
