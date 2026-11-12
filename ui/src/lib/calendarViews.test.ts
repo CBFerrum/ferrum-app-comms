@@ -171,3 +171,22 @@ describe("working hours", () => {
     expect(workBar({ ...ny, days: [] }, new Date(2026, 10, 16), 0, 24)).toBeNull();
   });
 });
+
+import { colorOf, movable as canMove, toneVar, withCalendars, type Cal } from "./calendar";
+
+describe("several calendars", () => {
+  const cal = (id: string, extra: Partial<Cal> = {}): Cal => ({ id, name: id, tone: "green", hidden: false, is_default: false, owner: "me@acme.test", level: "owner", shares: [], ...extra });
+  const o = (id: string, calendar: string | null, extra: Partial<Occurrence> = {}): Occurrence => ({ id, event: id, start: "2027-03-10T10:00:00Z", end: "2027-03-10T11:00:00Z", all_day: false, subject: id, calendar, ...extra });
+  it("colours each event by its calendar, leaves hidden calendars out, and names a busy-only one Busy", () => {
+    const cals = [cal("personal", { is_default: true, tone: "blue" }), cal("team", { tone: "amber" }), cal("hers", { level: "free_busy", owner: "ana@acme.test" })];
+    const got = withCalendars([o("a", "team"), o("b", null, { is_organizer: true }), o("c", "hers", { level: "free_busy", subject: "Busy" }), o("d", "gone")], cals, new Set(["personal"]));
+    expect(got.map((x) => [x.id, x.tone, x.calendarName])).toEqual([["a", "amber", "team"], ["c", "green", "hers"], ["d", undefined, undefined]]);
+    expect(colorOf(got[0]!)).toBe("var(--warning)");
+    expect(colorOf({ color: "#123456", tone: "red" })).toBe("#123456");
+    expect([toneVar("purple", true), toneVar("nonsense")]).toEqual(["var(--purple-soft)", "var(--primary)"]);
+  });
+  it("lets 'make changes' move a single event, not a series, and never a free/busy one", () => {
+    const base = o("x", "team");
+    expect([canMove({ ...base, level: "edit" }), canMove({ ...base, level: "edit", recurring: true }), canMove({ ...base, level: "free_busy" }), canMove({ ...base, level: "details" })]).toEqual([true, false, false, false]);
+  });
+});
