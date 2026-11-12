@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.0
+
+Meetings other apps can make. The crate has a public module, `ferrum_app_comms::meetings`, for an app to give one of its records (a booking, a live class) a video meeting: `create` (entity and id as its source, a title, a start and end, a host; the record's open meeting is returned if it has one), `find`, `get`, `member_link` (the page a signed-in member opens), `guest_link` (for an outside guest by name and address: no account, admits only to that meeting, stops two hours after it was due to end or when it is ended), `reschedule` (links keep working at the new time), `end` (reads attendance one last time, closes the room, stops every link) and `attendance`. Comms sends no invitation; the calling app sends its own. Such a meeting is a room: in nobody's calendar. Without the app or a meeting server the functions answer `MeetingError::NotInstalled` or `NotConfigured`, which the caller can branch on.
+
+Attendance: LiveKit keeps no history of who was in a room, so Comms asks the room service who is in it every minute while a meeting is on (a quarter of an hour before to two hours after it was due to end) and keeps each joining with LiveKit's own time of joining. Time spent is accurate to about a minute; joinings from several devices count once. It is part of a person's personal-data copy and erasure. Rooms made this way are removed 90 days after they were due to end. No operator setup beyond the meeting server.
+
 ## 0.13.1
 
 Outgoing mail can carry extra headers. A Communication has a `headers` field (an object of name to value, set by the app that queues the mail, read-only to people) which is copied onto the message when it is sent through an email account. It is meant for what bulk senders need: `List-Unsubscribe` and `List-Unsubscribe-Post` (RFC 2369, RFC 8058), `List-Id`, `Precedence`, `Auto-Submitted`, `Feedback-ID` and `X-` names. Any other name (From, To, Cc, Bcc, Subject, Reply-To, Content-*), a value with a line break or other control character, an empty or over-long value, or more than 20 headers is refused when the Communication is saved. Mail sent through the server's own mailer (no email account) cannot carry headers: it still goes, the headers are not sent, and the log says so.
