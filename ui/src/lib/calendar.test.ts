@@ -119,7 +119,7 @@ describe("the editor's fields", () => {
 
   it("turns a repeat choice into a rule and back, keeping what it cannot show", () => {
     expect(ruleFor("weekly", "")).toBe("FREQ=WEEKLY");
-    expect(ruleFor("weekdays", "2026-12-31")).toBe("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;UNTIL=20261231T235959Z");
+    expect(ruleFor("weekdays", "2026-12-31")).toBe("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;UNTIL=20261231");
     expect(ruleFor("none", "2026-12-31")).toBeNull();
     for (const kind of ["daily", "weekdays", "weekly", "monthly", "yearly"] as const) expect(repeatOf(ruleFor(kind, "2027-01-15"))).toEqual({ kind, until: "2027-01-15" });
     expect(repeatOf(null)).toEqual({ kind: "none", until: "" });
