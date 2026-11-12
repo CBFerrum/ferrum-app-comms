@@ -75,6 +75,12 @@ async function countBefore(o: Occurrence, doc: EventDoc): Promise<number> {
 
 /** Moves or resizes `o` to `start`–`end`: the event, or for a repeating one the occurrences `scope` names. */
 export async function changeTimes(o: Occurrence, start: Date, end: Date, scope: Scope = "all"): Promise<Undo> {
+  // A calendar shared with me to "make changes": the calendar's own route (one event, not a series).
+  if (o.level === "edit") {
+    const shared = `${CALENDAR}/events/${o.event}`;
+    await api.patch(shared, { starts_at: iso(start), ends_at: iso(end) });
+    return () => api.patch(shared, { starts_at: iso(o.start), ends_at: iso(o.end) });
+  }
   const doc = await load(o.event);
   const first = Date.parse(o.start) <= Date.parse(doc.starts_at);
   if (!o.recurring || scope === "all" || (scope === "following" && first)) {

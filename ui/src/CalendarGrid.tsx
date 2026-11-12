@@ -10,7 +10,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEve
 import { Skeleton } from "@ferrum/kit/primitives";
 import { cn } from "@ferrum/kit";
 import { direction, isolate, t } from "@ferrum/client";
-import { atMinutes, barsAcross, isoDay, minutesOf, movable, placeDay, safeColor, snap, userLocale, type Occurrence } from "./lib/calendar";
+import { atMinutes, barsAcross, isoDay, minutesOf, movable, placeDay, colorOf, safeColor as safeHex, snap, toneVar, userLocale, type Occurrence } from "./lib/calendar";
 
 /** Pixels per hour. */
 export const HOUR = 48;
@@ -264,7 +264,7 @@ export function TimeGrid(p: {
                 )}
                 {placeDay(timed, d).map((pl) => {
                   const dragged = ghost?.o?.id === pl.o.id;
-                  const color = safeColor(pl.o.color) ?? "var(--primary)";
+                  const color = colorOf(pl.o);
                   const off = pl.o.status === "Cancelled" || pl.o.my_response === "Declined";
                   const can = movable(pl.o);
                   const s = new Date(pl.o.start);
@@ -274,12 +274,12 @@ export function TimeGrid(p: {
                     <div
                       key={pl.o.id}
                       className={cn("absolute z-10 overflow-hidden rounded-sm border-s-4 bg-primary-soft text-xs leading-tight shadow-xs", dragged && "opacity-40", off && "text-muted-foreground line-through")}
-                      style={{ top: (pl.from / 60) * HOUR + 1, height: Math.max(((pl.to - pl.from) / 60) * HOUR - 2, 18), insetInlineStart: `calc(${(pl.lane / pl.lanes) * 100}% + 1px)`, width: `calc(${100 / pl.lanes}% - 3px)`, borderInlineStartColor: color }}
+                      style={{ top: (pl.from / 60) * HOUR + 1, height: Math.max(((pl.to - pl.from) / 60) * HOUR - 2, 18), insetInlineStart: `calc(${(pl.lane / pl.lanes) * 100}% + 1px)`, width: `calc(${100 / pl.lanes}% - 3px)`, borderInlineStartColor: color, background: pl.o.tone && !safeHex(pl.o.color) ? toneVar(pl.o.tone, true) : undefined }}
                     >
                       <button
                         type="button"
                         className={cn("block size-full px-1 text-start focus-visible:-outline-offset-2", can && "cursor-grab touch-none active:cursor-grabbing", short && "flex items-baseline gap-1")}
-                        aria-label={t("{subject}, {time}", { subject: pl.o.subject, time: range(s, z) })}
+                        aria-label={pl.o.calendarName ? t("{subject}, {time}, {calendar}", { subject: pl.o.subject, time: range(s, z), calendar: pl.o.calendarName }) : t("{subject}, {time}", { subject: pl.o.subject, time: range(s, z) })}
                         aria-keyshortcuts={can ? "Alt+ArrowUp Alt+ArrowDown Alt+ArrowLeft Alt+ArrowRight Alt+Shift+ArrowUp Alt+Shift+ArrowDown" : undefined}
                         onPointerDown={(e) => startMove(e, pl.o, "move")}
                         onPointerMove={onMove}
@@ -339,7 +339,7 @@ export function zoneShort(zone: string): string {
 
 /** An all-day or multi-day event as a bar across days; its ends square off where it goes on beyond what is shown. */
 export function EventBar({ o, style, before, after, onOpen }: { o: Occurrence; style: React.CSSProperties; before?: boolean; after?: boolean; onOpen: () => void }) {
-  const color = safeColor(o.color) ?? "var(--primary)";
+  const color = colorOf(o);
   const off = o.status === "Cancelled" || o.my_response === "Declined";
   return (
     <button

@@ -29,6 +29,7 @@ roles:
       - {entity: Communication, read: true, write: true, create: true, if_owner: true}
       - {entity: EmailTemplate, read: true}
       - {entity: CalendarEvent, read: true, write: true, create: true, delete: true, if_owner: true}
+      - {entity: Calendar, read: true, if_owner: true}
       # The shared address book, for mail and contacts apps (CRM's roles edit it).
       - {entity: Contact, read: true}
       - {entity: Address, read: true}
