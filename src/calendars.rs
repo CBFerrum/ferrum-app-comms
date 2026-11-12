@@ -84,7 +84,19 @@ pub fn level(me: &str, event: &Doc, shared: &Shared) -> Level {
 
 /// An occurrence's fields as a free/busy viewer may see them: when, and "Busy".
 pub fn redact(o: &mut Map<String, Value>) {
-    for k in ["location", "meeting_link", "description", "category", "color", "reference_entity", "reference_id", "guests"] {
+    for k in [
+        "location",
+        "meeting_link",
+        "description",
+        "description_html",
+        "attachments",
+        "category",
+        "color",
+        "reference_entity",
+        "reference_id",
+        "guests",
+        "proposed",
+    ] {
         o.remove(k);
     }
     o.insert("subject".into(), json!("Busy"));

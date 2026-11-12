@@ -86,6 +86,8 @@ pub struct VEvent {
     pub all_day: bool,
     pub summary: String,
     pub description: Option<String>,
+    /// The notes as HTML (`X-ALT-DESC;FMTTYPE=text/html`, as Outlook and others write it), beside the plain DESCRIPTION.
+    pub html: Option<String>,
     pub location: Option<String>,
     pub url: Option<String>,
     /// CONFIRMED, TENTATIVE or CANCELLED.
@@ -188,6 +190,9 @@ fn write_event(out: &mut String, e: &VEvent) {
             line(out, &format!("{name}:{}", escape(v)));
         }
     }
+    if let Some(h) = e.html.as_deref().filter(|v| !v.trim().is_empty()) {
+        line(out, &format!("X-ALT-DESC;FMTTYPE=text/html:{}", escape(h)));
+    }
     if let Some(u) = e.url.as_deref().filter(|u| !u.trim().is_empty()) {
         line(out, &format!("URL:{}", u.trim()));
     }
@@ -265,6 +270,8 @@ pub struct ParsedEvent {
     pub uid: Option<String>,
     pub summary: String,
     pub description: Option<String>,
+    /// `X-ALT-DESC;FMTTYPE=text/html`: the notes as HTML, as the program that wrote them had them.
+    pub html: Option<String>,
     pub location: Option<String>,
     pub url: Option<String>,
     pub start: DateTime<Utc>,
@@ -472,6 +479,7 @@ struct Draft {
     uid: Option<String>,
     summary: Option<String>,
     description: Option<String>,
+    html: Option<String>,
     location: Option<String>,
     url: Option<String>,
     start: Option<(DateTime<Utc>, bool)>,
@@ -515,6 +523,7 @@ impl Draft {
             uid: self.uid,
             summary: self.summary.unwrap_or_else(|| "(no title)".into()),
             description: self.description,
+            html: self.html,
             location: self.location,
             url: self.url,
             start,
@@ -612,6 +621,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
                     "UID" => d.uid = text(),
                     "SUMMARY" => d.summary = text(),
                     "DESCRIPTION" => d.description = text(),
+                    "X-ALT-DESC" if get(&params, "FMTTYPE").is_some_and(|t| t.eq_ignore_ascii_case("text/html")) => d.html = text(),
                     "LOCATION" => d.location = text(),
                     "URL" => d.url = Some(value.trim().to_string()).filter(|s| !s.is_empty()),
                     "CATEGORIES" => d.categories = text(),
@@ -700,6 +710,7 @@ mod tests {
             all_day: false,
             summary: "Q3 review: budget, hiring; plans".into(),
             description: Some("Agenda:\n1. Budget\n2. Hiring".into()),
+            html: Some("<p><b>Agenda</b>: budget, hiring</p>".into()),
             location: Some("Room 4, Pune".into()),
             url: Some("https://meet.example.com/q3".into()),
             status: "CONFIRMED".into(),
@@ -735,6 +746,7 @@ mod tests {
         assert_eq!(e.uid.as_deref(), Some("abc@ferrum"));
         assert_eq!(e.summary, "Q3 review: budget, hiring; plans");
         assert_eq!(e.description.as_deref(), Some("Agenda:\n1. Budget\n2. Hiring"));
+        assert_eq!(e.html.as_deref(), Some("<p><b>Agenda</b>: budget, hiring</p>"), "the HTML notes read back");
         assert_eq!((e.start, e.end, e.all_day), (t("2026-11-02T09:00:00Z"), t("2026-11-02T10:30:00Z"), false));
         assert_eq!(e.rrule.as_deref(), Some("FREQ=WEEKLY;BYDAY=MO;COUNT=4"));
         assert_eq!(e.exceptions, vec![Exception::At(t("2026-11-09T09:00:00Z"))]);

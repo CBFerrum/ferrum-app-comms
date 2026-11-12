@@ -19,8 +19,52 @@ use uuid::Uuid;
 pub(crate) const ATTENDEES: &str = "e_calendar_event__attendees";
 pub(crate) const REMINDERS: &str = "e_calendar_event__reminders";
 /// Changing one of these is a new version of the invitation (SEQUENCE + 1).
-const SIGNIFICANT: &[&str] =
-    &["subject", "starts_at", "ends_at", "all_day", "timezone", "location", "meeting_link", "recurrence", "recurrence_exceptions", "status", "description"];
+const SIGNIFICANT: &[&str] = &[
+    "subject",
+    "starts_at",
+    "ends_at",
+    "all_day",
+    "timezone",
+    "location",
+    "meeting_link",
+    "recurrence",
+    "recurrence_exceptions",
+    "status",
+    "description",
+    "description_html",
+    "attachments",
+];
+/// The largest rich-text notes kept.
+const MAX_NOTES: usize = 200_000;
+/// The most files an event refers to.
+const MAX_ATTACHMENTS: usize = 20;
+
+/// Notes as rich text made safe as Mail makes outgoing mail safe (`mail::safe_html`), without
+/// pictures (an event has nowhere to keep them); none when nothing is left.
+pub(crate) fn notes_html(html: &str) -> Option<String> {
+    static IMG: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?is)<img\b[^>]*>").expect("a pattern"));
+    let clean = IMG.replace_all(&crate::mail::safe_html(html), "").trim().to_string();
+    let words = notes_text(&clean);
+    (!words.is_empty() || clean.contains("<a ")).then_some(clean)
+}
+
+/// The words of HTML notes, line by line: for DESCRIPTION and for programs that read only text.
+pub(crate) fn notes_text(html: &str) -> String {
+    static BREAK: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)<br\s*/?>|</p>|</div>|</li>|</blockquote>|</h[1-6]>").expect("a pattern"));
+    let lines = BREAK.replace_all(html, "\n");
+    let text = ammonia::Builder::empty().clean(&lines).to_string();
+    let text = text.replace("&nbsp;", " ").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&");
+    let mut out = String::new();
+    for l in text.lines().map(str::trim_end) {
+        if l.trim().is_empty() && out.ends_with("\n\n") {
+            continue;
+        }
+        out.push_str(l);
+        out.push('\n');
+    }
+    out.trim().to_string()
+}
 const MAX_RANGE_DAYS: i64 = 400;
 const MAX_REMINDER_MINUTES: i64 = 40_320;
 
@@ -108,6 +152,7 @@ pub fn vevent(doc: &Doc, organizer_name: Option<String>, cancelled: bool, alarms
         all_day: b(doc, "all_day"),
         summary: s(doc, "subject").unwrap_or("(no title)").to_string(),
         description: s(doc, "description").map(str::to_string),
+        html: s(doc, "description_html").map(str::to_string),
         location: s(doc, "location").map(str::to_string),
         url: s(doc, "meeting_link").map(str::to_string),
         status: status.into(),
@@ -165,8 +210,16 @@ async fn queue_invitation(hc: &mut HookCtx<'_>, doc: &Doc, to: &str, method: &st
             e(&base)
         ));
     }
-    if let Some(d) = s(doc, "description") {
-        html.push_str(&format!("<p>{}</p>", e(d).replace('\n', "<br>")));
+    // The notes as they were written (already made safe), else their plain words.
+    match (s(doc, "description_html"), s(doc, "description")) {
+        (Some(h), _) => html.push_str(&format!("<div>{h}</div>")),
+        (None, Some(d)) => html.push_str(&format!("<p>{}</p>", e(d).replace('\n', "<br>"))),
+        _ => {}
+    }
+    let files = rows(doc, "attachments");
+    if !files.is_empty() {
+        let names: Vec<String> = files.iter().filter_map(|f| s(f, "name")).map(e).collect();
+        html.push_str(&format!("<p>Files in Ferrum Drive: {}</p>", names.join(", ")));
     }
     if let Some(o) = &organizer {
         html.push_str(&format!("<p>Organizer: {} &lt;{}&gt;</p>", e(organizer_name.as_deref().unwrap_or(o)), e(o)));
@@ -213,6 +266,19 @@ impl DocHook for EventHook {
         }
         if let Some(rule) = s(doc, "recurrence").and_then(|r| recur::parse(r).ok()) {
             doc.insert("recurrence".into(), json!(rule.to_string()));
+        }
+        // Rich-text notes are kept safe, and their words are the plain notes calendar programs read.
+        if let Some(html) = s(doc, "description_html").map(str::to_string) {
+            if html.len() > MAX_NOTES {
+                return Err(Error::field("description_html", "the notes are too long"));
+            }
+            let safe = notes_html(&html);
+            if let Some(h) = &safe
+                && s(doc, "description").is_none_or(|d| d.trim().is_empty())
+            {
+                doc.insert("description".into(), json!(notes_text(h)));
+            }
+            doc.insert("description_html".into(), json!(safe));
         }
         if !doc.contains_key("created_at") {
             if (s(doc, "owner").is_none() || !hc.ctx.is_system) && !hc.ctx.user.is_nil() {
@@ -288,6 +354,19 @@ impl DocHook for EventHook {
         }
         if rows(doc, "reminders").len() > 5 {
             errors.push(FieldError::new("reminders", "at most 5 reminders"));
+        }
+        match doc.get("attachments") {
+            None | Some(Value::Null) => {}
+            Some(Value::Array(list)) if list.len() <= MAX_ATTACHMENTS => {
+                let ok = |a: &Value| {
+                    a.get("id").and_then(Value::as_str).is_some_and(|i| i.parse::<Uuid>().is_ok())
+                        && a.get("name").and_then(Value::as_str).is_some_and(|n| !n.trim().is_empty() && n.len() <= 255)
+                };
+                if !list.iter().all(ok) {
+                    errors.push(FieldError::new("attachments", "each file is {id, name} from Drive"));
+                }
+            }
+            Some(_) => errors.push(FieldError::new("attachments", format!("at most {MAX_ATTACHMENTS} files from Drive"))),
         }
         if !errors.is_empty() {
             return Err(Error::Validation(errors));
@@ -505,6 +584,8 @@ async fn my_calendar(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> 
                 "location": doc.get("location"),
                 "meeting_link": doc.get("meeting_link"),
                 "description": doc.get("description"),
+                "description_html": doc.get("description_html"),
+                "attachments": doc.get("attachments"),
                 "status": doc.get("status"),
                 "visibility": doc.get("visibility"),
                 "category": doc.get("category"),
@@ -972,6 +1053,7 @@ fn event_fields_without_zone(e: &ics::ParsedEvent) -> Doc {
         "ends_at": util::ts(e.end),
         "all_day": e.all_day,
         "description": e.description,
+        "description_html": e.html,
         "location": e.location.as_deref().map(|l| util::clean_line(l, 990)),
         "meeting_link": e.url.as_deref().filter(|u| u.starts_with("https://") || u.starts_with("http://")),
         "category": e.categories.as_deref().map(|c| util::clean_line(c, 990)),
@@ -1149,6 +1231,8 @@ const DELEGATE_FIELDS: &[&str] = &[
     "calendar",
     "category",
     "color",
+    "description_html",
+    "attachments",
 ];
 
 fn delegate_body(body: Map<String, Value>) -> Result<Doc> {
@@ -1380,6 +1464,14 @@ mod tests {
         assert!(found(&d, "board ASHA") && found(&d, "guest@partner") && found(&d, "Guest") && !found(&d, "board lunch"));
         assert_eq!(merge(vec![]), vec![]);
         let t = |h: u32| NaiveDate::from_ymd_opt(2026, 11, 2).unwrap().and_hms_opt(h, 0, 0).unwrap().and_utc();
+        // Rich notes: made safe (no script, no handlers, no pictures), and their words for DESCRIPTION.
+        let html = notes_html(
+            r#"<p onclick="x()"><b>Agenda</b> &amp; notes</p><script>alert(1)</script><img src="https://t.example/p.gif"><ul><li>One</li><li>Two</li></ul>"#,
+        )
+        .unwrap();
+        assert!(!html.contains("script") && !html.contains("onclick") && !html.contains("<img") && html.contains("<b>Agenda</b>"), "{html}");
+        assert_eq!(notes_text(&html), "Agenda & notes\nOne\nTwo");
+        assert_eq!(notes_html("<p> </p><img src=x>"), None);
         assert_eq!(merge(vec![(t(9), t(10)), (t(12), t(13)), (t(9), t(11))]), vec![(t(9), t(11)), (t(12), t(13))]);
     }
 }

@@ -67,6 +67,8 @@
     - {name: location, type: data}
     - {name: meeting_link, type: url}
     - {name: description, type: text}
+    - {name: description_html, type: text, label: Notes (rich text), description: "The notes with their formatting, made safe as Mail makes outgoing mail safe; description keeps their words as plain text"}
+    - {name: attachments, type: json, description: "Files from Drive, by reference: [{id, name, size}] (at most 20); opened in Drive, by those Drive lets open them"}
     - {name: category, type: data, in_filter: true}
     - {name: color, type: color}
     - {name: owner, type: email, label: Organizer, read_only: true, in_list: true, in_filter: true}
