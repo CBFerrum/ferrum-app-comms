@@ -1,5 +1,5 @@
 package: comms
-version: 0.3.2
+version: 0.4.0
 label: Communication
 description: Mail (accounts, threaded communications on any record, templates, inbound mail, newsletters), team chat and calendars with ICS.
 # The people mail goes to and the address book calendar and contacts apps read (Ferrum
@@ -17,7 +17,7 @@ modules:
 # What a personal-data request exports and erases for a person (their email): the messages they
 # sent, emptied of their address, name, words and attached files' list.
 personal_data:
-  - {entity: Communication, match: sender, erase: [sender, sender_name, subject, content, text_content, attachments]}
+  - {entity: Communication, match: sender, erase: [sender, sender_name, subject, content, text_content, attachments, headers, reply_to_address]}
   - {entity: ChatMessage, match: sender, erase: [sender, body]}
   - {entity: EmailGroupMember, match: email, erase: [email, member_name]}
   - {entity: CalendarFeed, match: person, erase: [person]}
@@ -51,4 +51,4 @@ roles:
     permissions:
       - {entity: ChatChannel, read: true, write: true, create: true, delete: true, export: true}
       - {entity: ChatMessage, read: true, write: true, create: true, delete: true, export: true}
-export_tables: [comms_newsletter_delivery, comms_reminder_log, comms_meeting]
+export_tables: [comms_newsletter_delivery, comms_reminder_log, comms_meeting, comms_mail_route, comms_mail_filing]
