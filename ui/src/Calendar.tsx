@@ -102,7 +102,9 @@ const plus = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.g
 
 /** Whether a key press belongs to a field or an open dialog, not to the calendar. */
 const typing = (e: KeyboardEvent) => {
-  const el = e.target as HTMLElement | null;
+  // The real target, also inside the bar's search (a shadow root retargets e.target to its host).
+  const el = (e.composedPath()[0] ?? e.target) as HTMLElement | null;
+  if (el && el !== e.target && el instanceof HTMLElement && (el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName))) return true;
   return !!el && (el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName) || !!el.closest("[role=dialog],[role=menu],[role=listbox]"));
 };
 
