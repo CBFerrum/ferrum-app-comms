@@ -2,10 +2,12 @@
 //! folding, CRLF) and a tolerant VEVENT parser for imports and calendar apps (TZID through the IANA
 //! database, all-day dates, DURATION, EXDATE, RRULE, RECURRENCE-ID, ORGANIZER, ATTENDEE, VALARM
 //! triggers). Components it has no use for (VTIMEZONE, VTODO) are skipped without their
-//! properties leaking into the event.
+//! properties leaking into the event. Repeating events are written in their zone (`TZID` with a
+//! `VTIMEZONE` made from the IANA database), the rest in UTC.
 
 use crate::recur::{self, Exception};
-use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, Offset, TimeZone, Utc};
+use chrono_tz::Tz;
 
 /// Escapes a TEXT value: backslash, semicolon, comma and line breaks.
 pub fn escape(s: &str) -> String {
@@ -92,10 +94,76 @@ pub struct VEvent {
     pub categories: Option<String>,
     pub rrule: Option<String>,
     pub exceptions: Vec<Exception>,
+    /// Write the times in this zone (a repeating timed event); `None` writes UTC.
+    pub tzid: Option<Tz>,
     pub organizer: Option<(Option<String>, String)>,
     pub attendees: Vec<Attendee>,
     /// Reminders as minutes before the start (VALARM DISPLAY).
     pub alarms: Vec<i64>,
+}
+
+fn local(t: DateTime<Utc>, tz: Tz) -> String {
+    t.with_timezone(&tz).format("%Y%m%dT%H%M%S").to_string()
+}
+
+fn offset(secs: i32) -> String {
+    let (sign, a) = if secs < 0 { ('-', -secs) } else { ('+', secs) };
+    format!("{sign}{:02}{:02}", a / 3600, a % 3600 / 60)
+}
+
+/// A VTIMEZONE for `tz` with the zone's rules in `year` (RRULEs such as "last Sunday of March"),
+/// or one fixed offset for a zone without changes that year. Clients that know the IANA name (all
+/// the common ones) use their own database; this is for the rest.
+// ponytail: one year's rules, repeated; a zone that changed its rules since (Sao Paulo 2019) is
+// described by the rules of `year` only. Emit RDATE lists per year if a client needs history.
+fn vtimezone(out: &mut String, tz: Tz, year: i32) {
+    let at = |t: DateTime<Utc>| tz.offset_from_utc_datetime(&t.naive_utc());
+    let secs = |t: DateTime<Utc>| at(t).fix().local_minus_utc();
+    let Some(jan1) = NaiveDate::from_ymd_opt(year, 1, 1).map(|d| d.and_time(chrono::NaiveTime::MIN).and_utc()) else { return };
+    // Instants the offset changes: day by day, then to the second.
+    let mut changes = Vec::new();
+    for day in 0..366 {
+        let (a, b) = (jan1 + Duration::days(day), jan1 + Duration::days(day + 1));
+        if a.year() != year {
+            break;
+        }
+        if secs(a) != secs(b) {
+            let (mut lo, mut hi) = (a, b);
+            while hi - lo > Duration::seconds(1) {
+                let mid = lo + (hi - lo) / 2;
+                if secs(mid) == secs(a) { lo = mid } else { hi = mid }
+            }
+            changes.push(hi);
+        }
+    }
+    line(out, "BEGIN:VTIMEZONE");
+    line(out, &format!("TZID:{}", tz.name()));
+    if changes.is_empty() {
+        let off = offset(secs(jan1));
+        line(out, "BEGIN:STANDARD");
+        line(out, &format!("TZOFFSETFROM:{off}"));
+        line(out, &format!("TZOFFSETTO:{off}"));
+        line(out, &format!("TZNAME:{}", at(jan1)));
+        line(out, "DTSTART:19700101T000000");
+        line(out, "END:STANDARD");
+    }
+    for c in changes {
+        let (from, to) = (secs(c - Duration::seconds(1)), secs(c));
+        let onset = c.naive_utc() + Duration::seconds(from as i64);
+        let d = onset.date();
+        let last = (d + Duration::days(7)).month() != d.month();
+        let ord = if last { -1 } else { (d.day() as i32 + 6) / 7 };
+        let day = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"][d.weekday().num_days_from_monday() as usize];
+        let kind = if to > from { "DAYLIGHT" } else { "STANDARD" };
+        line(out, &format!("BEGIN:{kind}"));
+        line(out, &format!("TZOFFSETFROM:{}", offset(from)));
+        line(out, &format!("TZOFFSETTO:{}", offset(to)));
+        line(out, &format!("TZNAME:{}", at(c)));
+        line(out, &format!("DTSTART:{}", onset.format("%Y%m%dT%H%M%S")));
+        line(out, &format!("RRULE:FREQ=YEARLY;BYMONTH={};BYDAY={ord}{day}", d.month()));
+        line(out, &format!("END:{kind}"));
+    }
+    line(out, "END:VTIMEZONE");
 }
 
 fn write_event(out: &mut String, e: &VEvent) {
@@ -107,6 +175,9 @@ fn write_event(out: &mut String, e: &VEvent) {
         let end = e.end.date_naive().max(e.start.date_naive().succ_opt().unwrap_or(e.start.date_naive()));
         line(out, &format!("DTSTART;VALUE=DATE:{}", date(e.start.date_naive())));
         line(out, &format!("DTEND;VALUE=DATE:{}", date(end)));
+    } else if let Some(tz) = e.tzid {
+        line(out, &format!("DTSTART;TZID={}:{}", tz.name(), local(e.start, tz)));
+        line(out, &format!("DTEND;TZID={}:{}", tz.name(), local(e.end.max(e.start), tz)));
     } else {
         line(out, &format!("DTSTART:{}", utc(e.start)));
         line(out, &format!("DTEND:{}", utc(e.end.max(e.start))));
@@ -127,6 +198,14 @@ fn write_event(out: &mut String, e: &VEvent) {
         line(out, &format!("RRULE:{r}"));
     }
     for x in &e.exceptions {
+        if let (Some(tz), false) = (e.tzid, e.all_day) {
+            let at = match x {
+                Exception::At(t) => *t,
+                Exception::Day(d) => recur::resolve(tz, d.and_time(e.start.with_timezone(&tz).time())),
+            };
+            line(out, &format!("EXDATE;TZID={}:{}", tz.name(), local(at, tz)));
+            continue;
+        }
         match (x, e.all_day) {
             (Exception::Day(d), true) => line(out, &format!("EXDATE;VALUE=DATE:{}", date(*d))),
             (Exception::Day(d), false) => line(out, &format!("EXDATE:{}", utc(d.and_time(e.start.time()).and_utc()))),
@@ -165,6 +244,13 @@ pub fn calendar(method: Option<&str>, name: Option<&str>, events: &[VEvent]) -> 
     if let Some(n) = name {
         line(&mut out, &format!("X-WR-CALNAME:{}", escape(n)));
     }
+    let mut zones: Vec<Tz> = Vec::new();
+    for e in events.iter().filter(|e| !e.all_day) {
+        if let Some(tz) = e.tzid.filter(|z| !zones.contains(z)) {
+            zones.push(tz);
+            vtimezone(&mut out, tz, e.start.with_timezone(&tz).year());
+        }
+    }
     for e in events {
         write_event(&mut out, e);
     }
@@ -195,6 +281,8 @@ pub struct ParsedEvent {
     pub categories: Option<String>,
     /// RECURRENCE-ID: this VEVENT changes one occurrence of the series with its UID.
     pub recurrence_id: Option<(DateTime<Utc>, bool)>,
+    /// The IANA zone DTSTART was written in, when it names one.
+    pub tzid: Option<String>,
     /// ORGANIZER's address (lower case).
     pub organizer: Option<String>,
     pub attendees: Vec<Attendee>,
@@ -345,9 +433,7 @@ fn when(value: &str, params: &[(String, String)], warnings: &mut Vec<String>) ->
         }
         return Ok((naive.and_utc(), false));
     };
-    // A wall-clock time skipped by a daylight-saving jump is read as the time an hour later.
-    let local = tz.from_local_datetime(&naive).earliest().or_else(|| tz.from_local_datetime(&(naive + Duration::hours(1))).earliest());
-    local.map(|t| (t.with_timezone(&Utc), false)).ok_or_else(|| format!("'{v}' does not exist in {tzid}"))
+    Ok((recur::resolve(tz, naive), false))
 }
 
 /// `P1W`, `P2D`, `PT1H30M`, `-PT15M`...
@@ -398,6 +484,7 @@ struct Draft {
     sequence: i64,
     categories: Option<String>,
     recurrence_id: Option<(DateTime<Utc>, bool)>,
+    tzid: Option<String>,
     organizer: Option<String>,
     attendees: Vec<Attendee>,
     alarms: Vec<i64>,
@@ -440,6 +527,7 @@ impl Draft {
             sequence: self.sequence,
             categories: self.categories,
             recurrence_id: self.recurrence_id,
+            tzid: self.tzid,
             organizer: self.organizer,
             attendees: self.attendees,
             alarms: self.alarms,
@@ -531,7 +619,10 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
                     "CLASS" => d.private = Some(!value.trim().eq_ignore_ascii_case("PUBLIC")),
                     "SEQUENCE" => d.sequence = value.trim().parse().unwrap_or(0),
                     "RRULE" => d.rrule = Some(value.trim().to_string()),
-                    "DTSTART" => d.start = Some(when(&value, &params, &mut out.warnings)?),
+                    "DTSTART" => {
+                        d.start = Some(when(&value, &params, &mut out.warnings)?);
+                        d.tzid = get(&params, "TZID").and_then(zone).map(|z| z.name().to_string());
+                    }
                     "RECURRENCE-ID" => d.recurrence_id = Some(when(&value, &params, &mut out.warnings)?),
                     "ORGANIZER" => d.organizer = mailto(&value),
                     "ATTENDEE" => {
@@ -616,6 +707,7 @@ mod tests {
             categories: None,
             rrule: Some("FREQ=WEEKLY;BYDAY=MO;COUNT=4".into()),
             exceptions: vec![Exception::Day(NaiveDate::from_ymd_opt(2026, 11, 9).unwrap())],
+            tzid: None,
             organizer: Some((Some("Asha Rao".into()), "asha@acme.test".into())),
             attendees: vec![Attendee { email: "guest@partner.test".into(), name: Some("Guest, External".into()), partstat: "NEEDS-ACTION".into() }],
             alarms: vec![15],
@@ -649,6 +741,70 @@ mod tests {
         assert_eq!(e.sequence, 2);
         // The VALARM's DESCRIPTION did not overwrite the event's.
         assert_eq!(parsed.events.len(), 1);
+    }
+
+    #[test]
+    fn repeating_events_are_written_in_their_zone() {
+        let mut e = sample_event();
+        let london: Tz = "Europe/London".parse().unwrap();
+        e.tzid = Some(london);
+        e.start = t("2026-10-19T08:00:00Z");
+        e.end = t("2026-10-19T09:00:00Z");
+        e.rrule = Some("FREQ=WEEKLY;UNTIL=20261231T235959Z".into());
+        e.exceptions = vec![Exception::At(t("2026-11-02T09:00:00Z")), Exception::Day(NaiveDate::from_ymd_opt(2026, 11, 9).unwrap())];
+        let ics = calendar(Some("REQUEST"), None, &[e]);
+        assert!(ics.contains("DTSTART;TZID=Europe/London:20261019T090000\r\nDTEND;TZID=Europe/London:20261019T100000\r\n"), "{ics}");
+        assert!(ics.contains("EXDATE;TZID=Europe/London:20261102T090000\r\nEXDATE;TZID=Europe/London:20261109T090000\r\n"), "{ics}");
+        let tz_block = &ics[ics.find("BEGIN:VTIMEZONE").unwrap()..ics.find("END:VTIMEZONE").unwrap()];
+        assert_eq!(
+            tz_block.split("\r\n").collect::<Vec<_>>(),
+            [
+                "BEGIN:VTIMEZONE",
+                "TZID:Europe/London",
+                "BEGIN:DAYLIGHT",
+                "TZOFFSETFROM:+0000",
+                "TZOFFSETTO:+0100",
+                "TZNAME:BST",
+                "DTSTART:20260329T010000",
+                "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU",
+                "END:DAYLIGHT",
+                "BEGIN:STANDARD",
+                "TZOFFSETFROM:+0100",
+                "TZOFFSETTO:+0000",
+                "TZNAME:GMT",
+                "DTSTART:20261025T020000",
+                "RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU",
+                "END:STANDARD",
+                ""
+            ]
+        );
+        assert!(ics.find("END:VTIMEZONE").unwrap() < ics.find("BEGIN:VEVENT").unwrap());
+        // Read back: the same instants, and the zone kept.
+        let back = &parse(&ics).unwrap().events[0];
+        assert_eq!((back.start, back.tzid.as_deref()), (t("2026-10-19T08:00:00Z"), Some("Europe/London")));
+        assert_eq!(back.exceptions, vec![Exception::At(t("2026-11-02T09:00:00Z")), Exception::At(t("2026-11-09T09:00:00Z"))]);
+
+        // Other zones' rules: New York (second / first Sunday), Sydney (southern), Lord Howe (30
+        // minutes), and a zone without changes.
+        let rules = |zone: &str| {
+            let mut out = String::new();
+            vtimezone(&mut out, zone.parse().unwrap(), 2026);
+            unfold(&out).into_iter().filter(|l| l.starts_with("RRULE") || l.starts_with("TZOFFSET")).collect::<Vec<_>>().join(" ")
+        };
+        assert_eq!(
+            rules("America/New_York"),
+            "TZOFFSETFROM:-0500 TZOFFSETTO:-0400 RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU TZOFFSETFROM:-0400 TZOFFSETTO:-0500 RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU"
+        );
+        assert_eq!(
+            rules("Australia/Sydney"),
+            "TZOFFSETFROM:+1100 TZOFFSETTO:+1000 RRULE:FREQ=YEARLY;BYMONTH=4;BYDAY=1SU TZOFFSETFROM:+1000 TZOFFSETTO:+1100 RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=1SU"
+        );
+        assert_eq!(
+            rules("Australia/Lord_Howe"),
+            "TZOFFSETFROM:+1100 TZOFFSETTO:+1030 RRULE:FREQ=YEARLY;BYMONTH=4;BYDAY=1SU TZOFFSETFROM:+1030 TZOFFSETTO:+1100 RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=1SU"
+        );
+        assert_eq!(rules("Asia/Kolkata"), "TZOFFSETFROM:+0530 TZOFFSETTO:+0530");
+        assert_eq!(rules("America/Sao_Paulo"), "TZOFFSETFROM:-0300 TZOFFSETTO:-0300");
     }
 
     #[test]
