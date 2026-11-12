@@ -43,13 +43,14 @@
     - {name: reference_id, type: data}
     - {name: ical_uid, type: data, label: iCalendar UID, read_only: true, no_copy: true}
     - {name: sequence, type: int, read_only: true, no_copy: true}
+    - {name: organizer, type: email, label: Invited by, read_only: true, no_copy: true, description: "For an event taken from an invitation: who sent it (its ORGANIZER). Only they can cancel it by mail. Events taken before Ferrum 0.14 have none."}
   unique: [[owner, ical_uid]]
   indexes: [[starts_at]]
   form:
     - {label: Event, fields: [subject, starts_at, ends_at, all_day, timezone, location, meeting_link, status, visibility]}
     - {label: People, fields: [owner, attendees]}
     - {label: Repeat & Remind, collapsible: true, fields: [recurrence, recurrence_exceptions, reminders]}
-    - {label: Details, collapsible: true, fields: [description, category, color, reference_entity, reference_id, ical_uid, sequence]}
+    - {label: Details, collapsible: true, fields: [description, category, color, reference_entity, reference_id, ical_uid, sequence, organizer]}
   list: {columns: [starts_at, subject, owner, status], sort: starts_at desc}
 
 - name: CalendarFeed

@@ -40,7 +40,7 @@ fn lower(v: Option<&str>) -> String {
     v.unwrap_or_default().trim().to_lowercase()
 }
 
-fn attendees(doc: &Doc) -> Vec<(String, Option<String>, String)> {
+pub(crate) fn attendees(doc: &Doc) -> Vec<(String, Option<String>, String)> {
     rows(doc, "attendees")
         .iter()
         .filter_map(|r| {
@@ -589,7 +589,7 @@ fn answered(response: &str) -> &'static str {
 /// Writes one attendee's answer (and a note that came with it) on the event, and tells its
 /// organizer. `write` is who changes the event (the person, or the system for someone answering
 /// from a link); `who` is how the organizer should read the name.
-async fn record_answer(
+pub(crate) async fn record_answer(
     k: &Kernel,
     tx: &mut Tx,
     tenant: Uuid,
@@ -890,6 +890,10 @@ async fn import(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
         let mut doc = event_fields(&e);
         doc.insert("ical_uid".into(), json!(util::cut(&uid, 990)));
         doc.insert("owner".into(), json!(me));
+        // Taken from someone else's invitation: who sent it, the only one whose CANCEL counts (itip.rs).
+        if let Some(o) = e.organizer.as_deref().filter(|o| *o != me) {
+            doc.insert("organizer".into(), json!(o));
+        }
         let result = async {
             let mut tx = k.db.tenant_tx(ctx.tenant).await?;
             let existing: Option<Uuid> = sqlx::query_scalar("select id from e_calendar_event where tenant_id = $1 and owner = $2 and ical_uid = $3")

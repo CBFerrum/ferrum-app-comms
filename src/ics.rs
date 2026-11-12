@@ -229,7 +229,7 @@ pub fn unfold(text: &str) -> Vec<String> {
 }
 
 /// `NAME;PARAM=VALUE;...:value` → upper-cased name, params (upper-cased keys, unquoted values), value.
-fn content_line(l: &str) -> Option<(String, Vec<(String, String)>, String)> {
+pub(crate) fn content_line(l: &str) -> Option<(String, Vec<(String, String)>, String)> {
     let mut in_quotes = false;
     let mut split = None;
     for (i, c) in l.char_indices() {
@@ -284,7 +284,7 @@ fn unescape(s: &str) -> String {
     out
 }
 
-fn get<'a>(params: &'a [(String, String)], key: &str) -> Option<&'a str> {
+pub(crate) fn get<'a>(params: &'a [(String, String)], key: &str) -> Option<&'a str> {
     params.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
 }
 
@@ -448,7 +448,7 @@ impl Draft {
 }
 
 /// `mailto:Ana@Example.com` → `ana@example.com`.
-fn mailto(value: &str) -> Option<String> {
+pub(crate) fn mailto(value: &str) -> Option<String> {
     let v = value.trim();
     let v = if v.len() > 7 && v[..7].eq_ignore_ascii_case("mailto:") { &v[7..] } else { v };
     Some(v.trim().to_lowercase()).filter(|e| e.contains('@') && !e.contains(char::is_whitespace))

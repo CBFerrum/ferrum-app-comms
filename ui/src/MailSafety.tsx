@@ -7,7 +7,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { CalendarDays, MapPin, MoreHorizontal, ShieldAlert, TriangleAlert } from "lucide-react";
 import { Badge, Button, Checkbox, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@ferrum/kit/primitives";
-import { fetchBlob, isolate, queryString, t as tr } from "@ferrum/client";
+import { api, errorMessage, fetchBlob, isolate, queryString, t as tr } from "@ferrum/client";
+import { confirmDialog, toast } from "@ferrum/kit";
 import { MAIL, inTurn, jmap, type Address } from "./lib/mail";
 import { inviteWhen, parseInvite, spamReasons, unsubscribeTargets, type Invite, type Unsubscribe, type Warning } from "./lib/safety";
 
@@ -151,8 +152,20 @@ export function InviteCard({ invite, cancelled }: { invite: Invite; cancelled: b
   );
 }
 
+/** One-click unsubscribe (RFC 8058), asked of the sender's server by Mail's server, never by this page: only where the message itself offers it. */
+export async function unsubscribeNow(account: string, email: string, from: string) {
+  const ok = await confirmDialog({ title: tr("Unsubscribe from {sender}?", { sender: from }), message: tr("Mail asks the sender's server to stop sending you this mail, at the address the message gives for it. Nothing else is sent."), confirmLabel: tr("Unsubscribe") });
+  if (!ok) return;
+  try {
+    const r = await api.post<{ done: boolean; status: number }>(`${MAIL}/unsubscribe`, { account, email });
+    toast(r.done ? tr("Unsubscribed. The sender's server took the request; it may take a few days to stop.") : tr("The sender's server did not take it (it answered {status}). Try the sender's page instead.", { status: r.status }), r.done ? "success" : "error");
+  } catch (e) {
+    toast(tr("Not unsubscribed: {e}", { e: errorMessage(e) }), "error");
+  }
+}
+
 /** "Block sender", "Report phishing" and the rest of a message's own menu. */
-export function MessageMenu({ from, own, onBlock, onPhishing, onUnsubscribeMail, unsubscribe, onFilter, onOriginal, onPrint }: { from: Address | undefined; own: boolean; onBlock: () => void; onPhishing: () => void; onUnsubscribeMail: () => void; unsubscribe: Unsubscribe | null; onFilter: () => void; onOriginal: () => void; onPrint: () => void }) {
+export function MessageMenu({ from, own, onBlock, onPhishing, onUnsubscribeMail, onOneClick, unsubscribe, onFilter, onOriginal, onPrint }: { from: Address | undefined; own: boolean; onBlock: () => void; onPhishing: () => void; onUnsubscribeMail: () => void; onOneClick?: () => void; unsubscribe: Unsubscribe | null; onFilter: () => void; onOriginal: () => void; onPrint: () => void }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -174,7 +187,9 @@ export function MessageMenu({ from, own, onBlock, onPhishing, onUnsubscribeMail,
         {unsubscribe && (
           <>
             <DropdownMenuSeparator />
-            {unsubscribe.web ? (
+            {onOneClick ? (
+              <DropdownMenuItem onSelect={onOneClick}>{tr("Unsubscribe")}</DropdownMenuItem>
+            ) : unsubscribe.web ? (
               <DropdownMenuItem asChild>
                 <a href={unsubscribe.web} target="_blank" rel="noopener noreferrer">
                   {tr("Unsubscribe (opens the sender's page)")}
