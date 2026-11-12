@@ -478,6 +478,9 @@ async fn my_calendar(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> 
     let shared = crate::calendars::shared_with(&mut tx, ctx.tenant, &me).await?;
     let ids: Vec<Uuid> = shared.keys().copied().collect();
     let events = events_of(&mut tx, ctx.tenant, &me, from, to, true, true, &ids).await?;
+    // Which of my events (or their occurrences) have a time proposed by a guest.
+    let own: Vec<Uuid> = events.iter().filter(|(d, _)| lower(s(d, "owner")) == me).filter_map(|(d, _)| id(d, "id")).collect();
+    let proposed = crate::proposals::pending(&mut tx, ctx.tenant, &own).await?;
     tx.commit().await?;
     let mut out = Vec::new();
     for (doc, response) in events {
@@ -516,6 +519,7 @@ async fn my_calendar(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> 
                 "calendar": doc.get("calendar"),
                 "level": level.word(),
                 "fetched": b(&doc, "fetched"),
+                "proposed": proposed.iter().any(|(e, at)| Some(*e) == id(&doc, "id") && at.is_none_or(|at| at == start)),
             }));
             if level == Level::FreeBusy
                 && let Some(Value::Object(o)) = out.last_mut()
@@ -731,9 +735,11 @@ async fn event_detail(k: &Kernel, ctx: &Ctx, event: Uuid) -> Result<Value> {
         .fetch_optional(&mut *tx)
         .await?;
     let created_by = creator.filter(|(e, _)| *e != owner).map(|(e, n)| if n.trim().is_empty() { e } else { n });
+    // Other times guests proposed: for the organizer's eyes only.
+    let proposals = if organizer { crate::proposals::list(&mut tx, ctx.tenant, event).await? } else { vec![] };
     tx.commit().await?;
     Ok(json!({"id": event, "version": doc.get("version"), "attendees": guests, "owner": owner, "owner_name": owner_name, "level": level.word(),
-        "calendar": doc.get("calendar"), "created_by": created_by}))
+        "calendar": doc.get("calendar"), "created_by": created_by, "proposals": proposals}))
 }
 
 // ───────────────────────────── answering from the invitation ─────────────────────────────
@@ -1309,6 +1315,8 @@ pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> 
         ("POST", ["freebusy"]) => free_busy(k, ctx, util::body_json(req)?).await?,
         ("GET", ["events", e]) => event_detail(k, ctx, uuid(e)?).await?,
         ("POST", ["events", e, "rsvp"]) => rsvp(k, ctx, uuid(e)?, util::body_json(req)?).await?,
+        ("POST", ["events", e, "propose"]) => crate::proposals::propose(k, ctx, uuid(e)?, util::body_json(req)?).await?,
+        ("POST", ["events", e, "proposals", p]) => crate::proposals::decide(k, ctx, uuid(e)?, uuid(p)?, util::body_json(req)?).await?,
         (m, ["feed"]) => feed_token(k, ctx, m).await?,
         ("POST", ["import"]) => import(k, ctx, req).await?,
         ("GET", ["export"]) => return export(k, ctx).await,

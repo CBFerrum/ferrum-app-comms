@@ -21,6 +21,7 @@ mod mailadmin;
 pub(crate) mod meet;
 pub mod meetings;
 mod newsletter;
+mod proposals;
 pub mod recur;
 mod reports;
 mod site;
@@ -118,19 +119,27 @@ pub async fn maintenance_with(k: &Kernel, mailboxes: &dyn MailboxConnector) -> R
     first_error.map_or(Ok(()), Err)
 }
 
-/// Old reminder bookkeeping, what old new-mail notifications opened, and meeting rooms nobody joined for 90 days.
+/// Old reminder bookkeeping, what old new-mail notifications opened, proposals for deleted events, and meeting rooms nobody joined for 90 days.
 async fn purge(k: &Kernel, tenant: Uuid) -> Result<usize> {
     let mut tx = k.db.tenant_tx(tenant).await?;
     let mut n = 0;
     for sql in [
         "delete from comms_reminder_log where tenant_id = $1 and fired_at < now() - interval '60 days'",
         "delete from comms_mail_notice where tenant_id = $1 and created_at < now() - interval '60 days'",
+        "delete from comms_event_proposal p where tenant_id = $1 and not exists (select 1 from e_calendar_event e where e.tenant_id = p.tenant_id and e.id = p.event_id)",
         "delete from comms_meeting where tenant_id = $1 and coalesce(used_at, created_at) < now() - interval '90 days' and (source_entity is null or coalesce(ends_at, created_at) < now() - interval '90 days')",
     ] {
         n += sqlx::query(sql).bind(tenant).execute(&mut *tx).await?.rows_affected();
     }
     tx.commit().await?;
     Ok(n as usize)
+}
+
+/// Applies a calendar message found in `me`'s mailbox, sent by `from` (what happens when it arrives,
+/// `itip.rs`): the outcome's word. For tests, which have no mail server.
+#[doc(hidden)]
+pub async fn apply_calendar_mail(k: &Kernel, tenant: Uuid, me: &str, from: &str, text: &str) -> Result<&'static str> {
+    itip::apply(k, tenant, me, from, text).await.map(|a| a.word())
 }
 
 include!(concat!(env!("OUT_DIR"), "/packages.rs"));
