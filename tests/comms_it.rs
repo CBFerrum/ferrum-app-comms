@@ -1488,6 +1488,7 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     assert_eq!(dead, 0);
 
     calendar_apps(&t, &users).await;
+    calendar_sharing(&t, &admin, &users).await;
     hosted_mail(&t, &admin, &users, &imap).await;
 
     // What meetings keep of a person, in Comms' own table: in their copy, and gone with their erasure,
@@ -1697,6 +1698,209 @@ async fn calendar_apps(t: &T, users: &HashMap<String, Ctx>) {
 
 /// Hosted mailboxes on a real Stalwart (`FERRUM_MAIL_URL`, `FERRUM_MAIL_ADMIN`,
 /// `FERRUM_MAIL_ADMIN_SECRET`; `tests/stalwart.sh` starts one): skipped without one.
+/// Several calendars and sharing them (0.17): THE access rule, from every route that reads or
+/// writes events, at each level and unshared; a leaver loses access; the owner removes it at once;
+/// the default calendar is made and filled for events from before (timed over 10,000 events).
+async fn calendar_sharing(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>) {
+    // Edit goes to Meera (a Comms User too); Erin is a Comms User nothing is shared with.
+    let erin_id = t.k.create_user(admin, "erin@acme.test", "Erin Elsewhere", Some(PASSWORD), &["Comms User".to_string()], false).await.expect("user");
+    let erin = t.k.load_ctx(t.tenant, erin_id, None, "it".into()).await.unwrap();
+    let (alice, bob, carol, dave, mgr) = (&users["alice"], &users["bob"], &users["carol"], &users["mgr"], &erin);
+    let cals = |v: &Value| v["calendars"].as_array().unwrap().clone();
+    let mine = cals(&t.ok(alice, "GET", "/calendar/calendars", &[], Value::Null).await);
+    let personal = mine.iter().find(|c| c["is_default"] == json!(true)).expect("a default calendar for everyone").clone();
+    assert_eq!(personal["name"], json!("Personal"));
+    let personal_id = personal["id"].as_str().unwrap().to_string();
+    // Every event of Alice's from before is in it now.
+    let loose: i64 = t
+        .scalar("select count(*) from e_calendar_event where tenant_id = $1 and owner = 'alice@acme.test' and calendar is null and $2::uuid is null", None)
+        .await;
+    assert_eq!(loose, 0);
+    let team = t
+        .ok(alice, "POST", "/calendar/calendars", &[], json!({"name": "Team", "tone": "green", "shares": [
+            {"person": "bob@acme.test", "level": "Free/busy"}, {"person": "carol@acme.test", "level": "Details"}, {"person": "mgr@acme.test", "level": "Edit"}]}))
+        .await;
+    let team_id = team["id"].as_str().unwrap().to_string();
+    refused(
+        t.call(Some(alice), "POST", "/calendar/calendars", &[], json!({"name": "X", "shares": [{"person": "nobody@acme.test", "level": "Edit"}]})).await,
+        "invalid",
+    );
+    let k = &t.k;
+    let made = k
+        .insert(
+            alice,
+            "CalendarEvent",
+            obj(json!({"subject": "Salary review", "location": "Room 9", "description": "Numbers", "calendar": team_id,
+            "starts_at": "2027-03-10T10:00:00Z", "ends_at": "2027-03-10T11:00:00Z", "timezone": "Europe/London"})),
+        )
+        .await
+        .unwrap();
+    let ev = uid(&Value::Object(made.clone()));
+    k.insert(alice, "CalendarEvent", obj(json!({"subject": "Doctor", "calendar": team_id, "visibility": "Busy only", "starts_at": "2027-03-11T10:00:00Z", "ends_at": "2027-03-11T11:00:00Z"})))
+        .await
+        .unwrap();
+    // Alice cannot put an event in someone else's calendar.
+    let bobs = cals(&t.ok(bob, "GET", "/calendar/calendars", &[], Value::Null).await).into_iter().find(|c| c["is_default"] == json!(true)).unwrap();
+    refused(
+        k.insert(
+            alice,
+            "CalendarEvent",
+            obj(json!({"subject": "Sneaky", "calendar": bobs["id"], "starts_at": "2027-03-12T10:00:00Z", "ends_at": "2027-03-12T11:00:00Z"})),
+        )
+        .await,
+        "invalid",
+    );
+    // Shared calendars are listed for the people they are shared with, with the owner's name and their level; only the owner sees the list of shares.
+    for (who, level) in [(bob, "free_busy"), (carol, "details"), (dave, "edit")] {
+        let theirs = cals(&t.ok(who, "GET", "/calendar/calendars", &[], Value::Null).await);
+        let shared = theirs.iter().find(|c| c["id"] == json!(team_id)).unwrap_or_else(|| panic!("{} sees Team", who.email));
+        assert_eq!(
+            (shared["level"].as_str(), shared["shares"].as_array().map(Vec::len), shared["owner"].as_str()),
+            (Some(level), Some(0), Some("alice@acme.test"))
+        );
+    }
+    assert!(!cals(&t.ok(mgr, "GET", "/calendar/calendars", &[], Value::Null).await).iter().any(|c| c["id"] == json!(team_id)), "not shared");
+    let all = cals(&t.ok(alice, "GET", "/calendar/calendars", &[], Value::Null).await);
+    assert_eq!(all.iter().find(|c| c["id"] == json!(team_id)).unwrap()["shares"].as_array().unwrap().len(), 3);
+
+    // Every route, every level.
+    let range = [("from", "2027-03-01"), ("to", "2027-03-31")];
+    let titles = |v: &Value| {
+        v["occurrences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|o| o["calendar"] == json!(team_id))
+            .map(|o| o["subject"].as_str().unwrap_or("").to_string())
+            .collect::<Vec<_>>()
+    };
+    let listed = |ctx: &Ctx| {
+        let ctx = ctx.clone();
+        async move { t.ok(&ctx, "GET", "/calendar/events", &range, Value::Null).await }
+    };
+    assert_eq!(titles(&listed(alice).await), ["Salary review", "Doctor"]);
+    let b = listed(bob).await;
+    assert_eq!(titles(&b), ["Busy", "Busy"], "free/busy sees when, as Busy");
+    assert!(!b.to_string().contains("Room 9") && !b.to_string().contains("Numbers") && !b.to_string().contains("Salary"), "{b}");
+    assert_eq!(titles(&listed(carol).await), ["Salary review", "Busy"], "details, but a busy-only event stays busy");
+    assert_eq!(titles(&listed(dave).await), ["Salary review", "Busy"]);
+    assert!(titles(&listed(mgr).await).is_empty(), "not shared: nothing");
+    for (who, n) in [(bob, 0), (carol, 1), (dave, 1), (mgr, 0)] {
+        let q = t.ok(who, "GET", "/calendar/events", &[("from", "2027-03-01"), ("to", "2027-03-31"), ("q", "Salary")], Value::Null).await;
+        assert_eq!(q["occurrences"].as_array().unwrap().len(), n, "events?q= as {}", who.email);
+        let bar = t.ok(who, "GET", "/calendar/search", &[("q", "Salary")], Value::Null).await;
+        assert_eq!(bar["results"].as_array().unwrap().len(), n, "bar search as {}: {bar}", who.email);
+        let busy_only = t.ok(who, "GET", "/calendar/search", &[("q", "Doctor")], Value::Null).await;
+        assert_eq!(busy_only["results"].as_array().unwrap().len(), 0, "a busy-only title is found by nobody but its organizer");
+    }
+    let path = format!("/calendar/events/{ev}");
+    refused(t.call(Some(bob), "GET", &path, &[], Value::Null).await, "not found");
+    refused(t.call(Some(mgr), "GET", &path, &[], Value::Null).await, "not found");
+    assert_eq!(t.ok(carol, "GET", &path, &[], Value::Null).await["level"], json!("details"));
+    // Free/busy of Alice, asked by someone she shares nothing with: times only.
+    let fb = t.ok(mgr, "POST", "/calendar/freebusy", &[], json!({"users": ["alice@acme.test"], "from": "2027-03-10", "to": "2027-03-11"})).await;
+    assert_eq!(fb["busy"]["alice@acme.test"].as_array().unwrap().len(), 1);
+    assert!(!fb.to_string().contains("Salary"));
+    // The feed, the export and CalDAV carry a person's own calendar, never what is shared with them.
+    let export = t.raw(t.request(Some(carol), "GET", "/calendar/export", &[], vec![], "text/plain")).await.unwrap();
+    assert!(!String::from_utf8_lossy(&export.body).contains("Salary"));
+    let report = r#"<?xml version="1.0"?><c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><c:calendar-data/></d:prop><c:filter><c:comp-filter name="VCALENDAR"/></c:filter></c:calendar-query>"#;
+    for who in [bob, carol, dave] {
+        let mut req = t.request(Some(who), "REPORT", &format!("/dav/u/{}/calendars/default/", who.user), &[], report.as_bytes().to_vec(), "text/xml");
+        req.headers.insert("depth".into(), json!("1"));
+        let r = t.raw(req).await.unwrap();
+        assert!(r.status == 207 && !String::from_utf8_lossy(&r.body).contains("Salary"), "CalDAV as {}", who.email);
+    }
+    // The records API stays the organizer's and guests'.
+    refused(k.get(carol, "CalendarEvent", ev, false).await, "not found");
+    // Changes: only "make changes".
+    refused(t.call(Some(bob), "PATCH", &path, &[], json!({"subject": "x"})).await, "not found");
+    refused(t.call(Some(carol), "PATCH", &path, &[], json!({"subject": "x"})).await, "forbidden");
+    refused(t.call(Some(mgr), "PATCH", &path, &[], json!({"subject": "x"})).await, "not found");
+    refused(t.call(Some(dave), "PATCH", &path, &[], json!({"owner": "mgr@acme.test"})).await, "invalid");
+    t.ok(dave, "PATCH", &path, &[], json!({"subject": "Salary review (moved)", "starts_at": "2027-03-10T12:00:00Z", "ends_at": "2027-03-10T13:00:00Z"})).await;
+    assert_eq!(k.get(alice, "CalendarEvent", ev, false).await.unwrap()["subject"], json!("Salary review (moved)"));
+
+    // A leaver loses access; so does someone the owner removes, at once.
+    let set_active = |who: &'static str, on: bool| async move {
+        let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+        sqlx::query("update app_user set is_active = $3 where tenant_id = $1 and email = $2")
+            .bind(t.tenant)
+            .bind(format!("{who}@acme.test"))
+            .bind(on)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    };
+    set_active("carol", false).await;
+    assert!(titles(&listed(carol).await).is_empty(), "a leaver sees nothing of it");
+    set_active("carol", true).await;
+    set_active("alice", false).await;
+    assert!(titles(&listed(carol).await).is_empty(), "nor does anyone, once its owner has left");
+    set_active("alice", true).await;
+    t.ok(
+        alice,
+        "PATCH",
+        &format!("/calendar/calendars/{team_id}"),
+        &[],
+        json!({"shares": [{"person": "bob@acme.test", "level": "Free/busy"}, {"person": "carol@acme.test", "level": "Details"}]}),
+    )
+    .await;
+    refused(t.call(Some(dave), "PATCH", &path, &[], json!({"subject": "y"})).await, "not found");
+    assert!(titles(&listed(dave).await).is_empty());
+
+    // Only the owner changes a calendar; deleting one says where its events go.
+    refused(t.call(Some(carol), "PATCH", &format!("/calendar/calendars/{team_id}"), &[], json!({"name": "Mine"})).await, "not found");
+    refused(t.call(Some(alice), "DELETE", &format!("/calendar/calendars/{team_id}"), &[], Value::Null).await, "invalid");
+    refused(t.call(Some(alice), "DELETE", &format!("/calendar/calendars/{personal_id}"), &[("events", "delete")], Value::Null).await, "invalid");
+    let gone = t.ok(alice, "DELETE", &format!("/calendar/calendars/{team_id}"), &[("events", &format!("move:{personal_id}"))], Value::Null).await;
+    assert_eq!(gone["events"], json!(2));
+    assert_eq!(k.get(alice, "CalendarEvent", ev, false).await.unwrap()["calendar"], json!(personal_id));
+    assert!(titles(&listed(carol).await).is_empty());
+
+    // The default calendar for events from before 0.17, over 10,000 of them: made and filled once, idempotently.
+    let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
+    sqlx::query(
+        "insert into e_calendar_event select (jsonb_populate_record(null::e_calendar_event, to_jsonb(e) || jsonb_build_object('id', gen_random_uuid(), \
+         'ical_uid', gen_random_uuid()::text, 'calendar', null, 'owner', 'carol@acme.test'))).* from e_calendar_event e, generate_series(1, 10000) where e.tenant_id = $1 and e.id = $2",
+    )
+    .bind(t.tenant)
+    .bind(ev)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    // As before 0.17: Carol's events in no calendar, and Carol with none.
+    sqlx::query("update e_calendar_event set calendar = null where tenant_id = $1 and owner = 'carol@acme.test'")
+        .bind(t.tenant)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("delete from e_calendar where tenant_id = $1 and owner = 'carol@acme.test'").bind(t.tenant).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let started = std::time::Instant::now();
+    t.ok(carol, "GET", "/calendar/calendars", &[], Value::Null).await;
+    println!("default calendar made and 10,000 events put in it in {:?}", started.elapsed());
+    let again = std::time::Instant::now();
+    t.ok(carol, "GET", "/calendar/calendars", &[], Value::Null).await;
+    println!("and asked again (nothing to do) in {:?}", again.elapsed());
+    let loose: i64 = t
+        .scalar("select count(*) from e_calendar_event where tenant_id = $1 and owner = 'carol@acme.test' and calendar is null and $2::uuid is null", None)
+        .await;
+    assert_eq!(loose, 0);
+    let cals_of_carol: i64 = t.scalar("select count(*) from e_calendar where tenant_id = $1 and owner = 'carol@acme.test' and $2::uuid is null", None).await;
+    assert_eq!(cals_of_carol, 1);
+    let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
+    sqlx::query("delete from e_calendar_event where tenant_id = $1 and owner = 'carol@acme.test' and subject like 'Salary%'")
+        .bind(t.tenant)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    // Erin leaves again, so later counts of the team are as they were.
+    sqlx::query("update app_user set is_active = false where tenant_id = $1 and email = 'erin@acme.test'").bind(t.tenant).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+}
+
 async fn hosted_mail(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>, imap: &FakeImap) {
     let Ok(url) = std::env::var("FERRUM_MAIL_URL") else {
         eprintln!("hosted mail skipped: no FERRUM_MAIL_URL (tests/stalwart.sh starts a mail server)");
