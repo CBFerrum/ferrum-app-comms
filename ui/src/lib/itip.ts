@@ -94,6 +94,36 @@ export function replyIcs(ics: string, me: { email: string; name?: string | null 
   return `${out.map(fold).join("\r\n")}\r\n`;
 }
 
+/** iCalendar's form of an instant: `20270309T140000Z`. */
+const utc = (d: Date) => d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+const text = (v: string) => v.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+
+/** The COUNTER `me` sends the organiser of `ics` (RFC 5546 §3.2.7): the event's identifying lines with
+ *  the time they propose instead (in UTC), their ATTENDEE line and their note as a COMMENT. */
+export function counterIcs(ics: string, me: { email: string; name?: string | null }, start: Date, end: Date, note: string, now = new Date()): string | null {
+  const ev = eventOf(ics);
+  if (!ev || !ev.lines.some((l) => name(l) === "ORGANIZER")) return null;
+  const cn = me.name ? `;CN="${me.name.replace(/"/g, "'")}"` : "";
+  const kept = ev.lines.filter((l) => !["DTSTART", "DTEND", "DURATION"].includes(name(l)));
+  const out = [
+    "BEGIN:VCALENDAR",
+    "PRODID:-//Ferrum//Mail//EN",
+    "VERSION:2.0",
+    "METHOD:COUNTER",
+    ...ev.zones,
+    "BEGIN:VEVENT",
+    ...kept,
+    `DTSTART:${utc(start)}`,
+    `DTEND:${utc(end)}`,
+    `DTSTAMP:${utc(now)}`,
+    `ATTENDEE;PARTSTAT=TENTATIVE${cn}:mailto:${me.email}`,
+    ...(note.trim() ? [`COMMENT:${text(note.trim())}`] : []),
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ];
+  return `${out.map(fold).join("\r\n")}\r\n`;
+}
+
 /** The plain words that go with a REPLY, for a program that does not read the calendar part. */
 export function replyWords(answer: PartStat, who: string, title: string): string {
   const said = { ACCEPTED: "accepted", TENTATIVE: "might attend", DECLINED: "declined" }[answer];

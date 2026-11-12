@@ -9,6 +9,12 @@
 .mail-editor ol { list-style: decimal; padding-inline-start: 1.75em; }
 .mail-editor blockquote { border-inline-start: 1px solid var(--border); padding-inline-start: 1ex; margin-inline-start: 0.8ex; color: var(--muted-foreground); }
 .mail-editor a { color: var(--primary); text-decoration: underline; }
+/* An event's notes as rich text (made safe on the server). */
+.event-notes ul { list-style: disc; padding-inline-start: 1.5em; }
+.event-notes ol { list-style: decimal; padding-inline-start: 1.5em; }
+.event-notes blockquote { border-inline-start: 2px solid var(--border); padding-inline-start: 1ex; }
+.event-notes a { color: var(--primary); text-decoration: underline; }
+.event-notes p { margin-block: 0.25em; }
 .mail-editor p.is-editor-empty:first-child::before { content: attr(data-placeholder); color: var(--muted-foreground); float: inline-start; height: 0; pointer-events: none; }
 .mail-img { position: relative; display: inline-block; max-width: 100%; line-height: 0; }
 .mail-img img { max-width: 100%; height: auto; }

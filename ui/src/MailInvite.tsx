@@ -5,13 +5,14 @@
 // A REPLY that arrives for an event the person organised updates that guest's answer on it.
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, CircleHelp, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import { Button } from "@ferrum/kit/primitives";
+import { Check, CircleHelp, Clock, X } from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
+import { Button, Input, Label, Textarea } from "@ferrum/kit/primitives";
 import { toast } from "@ferrum/kit";
 import { api, docPath, errorMessage, isolate, t } from "@ferrum/client";
 import { CALENDAR } from "./lib/calendar";
-import { answersIn, eventOf, ferrumEvent, replyIcs, replyWords, RESPONSE, type PartStat } from "./lib/itip";
+import { answersIn, counterIcs, eventOf, ferrumEvent, replyIcs, replyWords, RESPONSE, type PartStat } from "./lib/itip";
+import { fromInputIn, toInputIn } from "./lib/calendar";
 import { MAIL, byRole, jmap, refusal, useServerDoes, type Mailbox } from "./lib/mail";
 import { useIdentities } from "./MailCompose";
 
@@ -85,19 +86,96 @@ export function InviteAnswer({ account, emailId, keywords, ics, me, boxes, title
       {choice("ACCEPTED", t("Yes"), Check)}
       {choice("TENTATIVE", t("Maybe"), CircleHelp)}
       {choice("DECLINED", t("No"), X)}
+      <ProposeByMail ics={ics} account={account} boxes={boxes} guest={guest} name={identities?.find((i) => i.email.toLowerCase() === guest.email)?.name ?? null} organiser={organiser} title={title} />
     </div>
+  );
+}
+
+/** "Propose a new time" under an invitation: on the organiser's event when it is in this workspace,
+ *  otherwise a COUNTER by mail from the person's mailbox. Nothing moves unless the organiser accepts. */
+function ProposeByMail({ ics, account, boxes, guest, name, organiser, title }: { ics: string; account: string; boxes: Mailbox[]; guest: { email: string }; name: string | null; organiser: string; title: string }) {
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const [open, setOpen] = useState(false);
+  const [start, setStart] = useState("");
+  const [end, setEnd] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const id = useId();
+  const ev = eventOf(ics);
+  if (!ev) return null;
+  const begin = () => {
+    // Start from the invitation's own time when it can be read (UTC lines), else from the next hour.
+    const at = /DTSTART:(\d{8}T\d{6})Z/.exec(ev.lines.join("\n"))?.[1];
+    const first = at ? new Date(`${at.slice(0, 4)}-${at.slice(4, 6)}-${at.slice(6, 8)}T${at.slice(9, 11)}:${at.slice(11, 13)}:00Z`) : new Date(Math.ceil(Date.now() / 3_600_000) * 3_600_000);
+    setStart(toInputIn(first, zone));
+    setEnd(toInputIn(new Date(first.getTime() + 3_600_000), zone));
+    setOpen(true);
+  };
+  const send = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const a = fromInputIn(start, zone);
+    const z = fromInputIn(end, zone);
+    if (!a || !z || z <= a) return toast(t("The time must end after it starts."), "error");
+    setBusy(true);
+    try {
+      const events = await eventsWithUid(ev.uid);
+      const theirs = events.find((x) => (x.owner ?? "").toLowerCase() === organiser);
+      if (theirs) await api.post(`${CALENDAR}/events/${theirs.id}/propose`, { start: a.toISOString(), end: z.toISOString(), note: note.trim() || undefined });
+      else {
+        const counter = counterIcs(ics, { email: guest.email, name }, a, z, note);
+        if (!counter) throw new Error(t("This invitation cannot be answered by mail."));
+        await sendMail(account, boxes, guest.email, name, organiser, `New time proposed: ${title}`, `${name || guest.email} proposes ${a.toUTCString()}${note.trim() ? `: ${note.trim()}` : ""}`, counter, "COUNTER");
+      }
+      toast(t("Your proposal was sent. Nothing moves unless the organiser accepts it."));
+      setOpen(false);
+    } catch (err) {
+      toast(t("Not sent: {e}", { e: errorMessage(err) }), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (!open)
+    return (
+      <Button size="xs" variant="ghost" onClick={begin}>
+        <Clock aria-hidden="true" /> {t("Propose a new time")}
+      </Button>
+    );
+  return (
+    <form onSubmit={send} className="flex w-full flex-wrap items-end gap-2" aria-label={t("Propose a new time")}>
+      <div className="grid gap-1">
+        <Label htmlFor={`${id}-s`}>{t("Starts")}</Label>
+        <Input id={`${id}-s`} type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)} />
+      </div>
+      <div className="grid gap-1">
+        <Label htmlFor={`${id}-e`}>{t("Ends")}</Label>
+        <Input id={`${id}-e`} type="datetime-local" value={end} onChange={(e) => setEnd(e.target.value)} />
+      </div>
+      <Textarea className="min-h-0 w-full" rows={1} maxLength={500} value={note} aria-label={t("A note for the organiser")} placeholder={t("A note for the organiser (optional)")} onChange={(e) => setNote(e.target.value)} />
+      <Button type="submit" size="xs" disabled={busy}>
+        {busy ? t("Sending…") : t("Send proposal")}
+      </Button>
+      <Button type="button" size="xs" variant="ghost" onClick={() => setOpen(false)}>
+        {t("Cancel")}
+      </Button>
+    </form>
   );
 }
 
 /** The REPLY by mail, from the person's mailbox to the organiser: words for people, the calendar part for their calendar. */
 async function sendReply(account: string, boxes: Mailbox[], ics: string, a: PartStat, email: string, name: string | null, organiser: string, title: string) {
   const reply = replyIcs(ics, { email, name }, a);
+  if (!reply) throw new Error(t("This invitation cannot be answered by mail."));
+  const subject = { ACCEPTED: `Accepted: ${title}`, TENTATIVE: `Tentatively accepted: ${title}`, DECLINED: `Declined: ${title}` }[a];
+  await sendMail(account, boxes, email, name, organiser, subject, replyWords(a, name || email, title), reply, "REPLY");
+}
+
+/** A calendar answer (REPLY or COUNTER) by mail, from the person's mailbox to the organiser. */
+async function sendMail(account: string, boxes: Mailbox[], email: string, name: string | null, organiser: string, subject: string, words: string, part: string, method: "REPLY" | "COUNTER") {
   const drafts = byRole(boxes, "drafts");
   const sent = byRole(boxes, "sent");
-  if (!reply || !drafts || !sent || !organiser) throw new Error(t("This invitation cannot be answered by mail."));
+  if (!drafts || !sent || !organiser) throw new Error(t("This invitation cannot be answered by mail."));
   const ident = ((await jmap([["Identity/get", { accountId: account }, "0"]]))["0"].list as { id: string; email: string }[]).find((i) => i.email.toLowerCase() === email) ;
   if (!ident) throw new Error(t("The mailbox has no address to write as."));
-  const subject = { ACCEPTED: `Accepted: ${title}`, TENTATIVE: `Tentatively accepted: ${title}`, DECLINED: `Declined: ${title}` }[a];
   const r = await jmap([
     [
       "Email/set",
@@ -110,8 +188,8 @@ async function sendReply(account: string, boxes: Mailbox[], ics: string, a: Part
             from: [name ? { name, email } : { email }],
             to: [{ email: organiser }],
             subject,
-            bodyValues: { t: { value: replyWords(a, name || email, title) }, c: { value: reply } },
-            bodyStructure: { type: "multipart/alternative", subParts: [{ partId: "t", type: "text/plain" }, { partId: "c", type: "text/calendar; method=REPLY" }] },
+            bodyValues: { t: { value: words }, c: { value: part } },
+            bodyStructure: { type: "multipart/alternative", subParts: [{ partId: "t", type: "text/plain" }, { partId: "c", type: `text/calendar; method=${method}` }] },
           },
         },
       },

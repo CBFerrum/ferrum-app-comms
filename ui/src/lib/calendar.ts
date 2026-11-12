@@ -26,6 +26,13 @@ export interface Occurrence {
   /** The calendar it is in, and what I may do with it: owner, edit, details, free_busy. */
   calendar?: string | null;
   level?: string;
+  /** Copied from a calendar subscribed to by its address: read-only. */
+  fetched?: boolean;
+  /** I organize it, and a guest proposed another time for it (or this occurrence). */
+  proposed?: boolean;
+  /** The notes with their formatting (made safe by the server), and files from Drive by reference. */
+  description_html?: string | null;
+  attachments?: Attachment[] | null;
   /** Its calendar's tone and name, filled in by the page from the calendars list. */
   tone?: string;
   calendarName?: string;
@@ -310,7 +317,9 @@ export function placeDay(list: Occurrence[], day: Date): Placed[] {
 }
 
 /** Whether the user may move or resize an occurrence: their own event, not cancelled (a repeating one asks which occurrences). */
-export const movable = (o: Occurrence) => (!!o.is_organizer || (o.level === "edit" && !o.recurring)) && o.status !== "Cancelled";
+export const movable = (o: Occurrence) => changeable(o) && o.status !== "Cancelled";
+/** Whether I may change or delete `o`: I organize it, or its calendar is shared with me to make changes. */
+export const changeable = (o: Pick<Occurrence, "is_organizer" | "level" | "fetched">) => !o.fetched && (!!o.is_organizer || o.level === "edit");
 
 /**
  * Where an occurrence goes when it now starts at `start`, its length kept. All-day events move by
@@ -338,7 +347,10 @@ export interface Cal {
   owner: string;
   owner_name?: string | null;
   level: "owner" | "edit" | "details" | "free_busy";
-  shares: { person: string; level: "Free/busy" | "Details" | "Edit" }[];
+  /** Subscribed to from outside by its address (its host only), with how its last fetch went. */
+  subscription?: { label?: string | null; fetched_at?: string | null; result?: string | null; failures?: number; remind?: boolean } | null;
+  /** Who it is shared with: a person by email, or a group (a role of the workspace). */
+  shares: { person?: string; role?: string; level: "Free/busy" | "Details" | "Edit" }[];
 }
 
 export const TONES = ["blue", "green", "amber", "red", "purple", "neutral"] as const;
@@ -633,3 +645,45 @@ export function reminderOf(minutes: number[]): number | "none" | "custom" {
   if (!minutes.length) return "none";
   return minutes.length === 1 && REMINDERS.some((r) => r.minutes === minutes[0]) ? minutes[0]! : "custom";
 }
+
+/** A subscription's state in words: when it last worked, or why its last fetch failed (the server's own words after "failed: "). */
+export function subscriptionState(sub: NonNullable<Cal["subscription"]>, ago: (iso: string) => string): { failed: boolean; text: string } {
+  const failed = (sub.failures ?? 0) > 0;
+  if (failed) return { failed, text: (sub.result ?? "").replace(/^failed: /, "") };
+  return { failed, text: sub.fetched_at ? ago(sub.fetched_at) : "" };
+}
+
+/** A file from Drive an event links to. */
+export interface Attachment {
+  id: string;
+  name: string;
+  size?: number;
+}
+
+/** A file's kind as people say it, from its name: "PDF", "Spreadsheet", … else its extension. */
+export function fileKind(name: string): string {
+  const ext = /\.([a-z0-9]{1,8})$/i.exec(name)?.[1]?.toLowerCase() ?? "";
+  const doc = () => tr("Document");
+  const sheet = () => tr("Spreadsheet");
+  const slides = () => tr("Presentation");
+  const image = () => tr("Image");
+  const kinds: Record<string, () => string> = { pdf: () => "PDF", doc, docx: doc, odt: doc, xls: sheet, xlsx: sheet, ods: sheet, csv: sheet, ppt: slides, pptx: slides, odp: slides, png: image, jpg: image, jpeg: image, gif: image, webp: image, txt: () => tr("Text"), md: () => tr("Text"), zip: () => tr("Archive") };
+  return kinds[ext]?.() ?? ext.toUpperCase();
+}
+
+/** A room or a resource: booked by adding its address to an event as a guest. */
+export interface Room {
+  id: string;
+  name: string;
+  kind: "Room" | "Resource";
+  address: string;
+  capacity?: number | null;
+  place?: string | null;
+  hours?: { days: number[]; from: string; to: string; timezone?: string | null } | null;
+  may_book: boolean;
+  everyone: boolean;
+  bookers: { person?: string; role?: string }[];
+}
+
+/** Whether a guest's address is a room's or a resource's (never mailed). */
+export const isRoom = (email: string) => /@rooms\.ferrum\.invalid$/i.test(email);
