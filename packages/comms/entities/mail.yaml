@@ -133,6 +133,8 @@
     - {name: error, type: text, read_only: true, no_copy: true}
     - {name: delivered_to, type: json, read_only: true, hidden: true, no_copy: true}
     - {name: ics, type: text, read_only: true, hidden: true, no_copy: true}
+    - {name: headers, type: json, read_only: true, hidden: true, no_copy: true,
+       description: "Extra headers on the outgoing message, set by the app that queued it: {\"List-Unsubscribe\": \"<https://...>\"}. Only List-Unsubscribe, List-Unsubscribe-Post, List-Id, Precedence, Auto-Submitted, Feedback-ID and X- names, on one line each"}
   indexes: [[reference_entity, reference_id], [status, next_attempt_at], [communication_date]]
   actions:
     - {name: retry, label: Retry Sending, permission: write, condition: "doc.status == 'Failed' || doc.status == 'Withheld'"}

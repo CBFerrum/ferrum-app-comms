@@ -106,6 +106,43 @@ pub struct Outgoing {
     pub headers: Vec<(String, String)>,
 }
 
+/// The headers a bulk sender legitimately needs on a message (RFC 2369, RFC 8058, Feedback-ID,
+/// RFC 3834); `X-` names are free too. Nothing else: never From, To, Cc, Bcc, Subject, Reply-To,
+/// Content-* or a Received line.
+const EXTRA_HEADERS: [&str; 6] = ["list-unsubscribe", "list-unsubscribe-post", "list-id", "precedence", "auto-submitted", "feedback-id"];
+const MAX_EXTRA_HEADERS: usize = 20;
+const MAX_HEADER_VALUE: usize = 998;
+
+/// A Communication's `headers` (an object of name to value) as the message's extra headers, or
+/// what is wrong with them: a name outside the allow-list, a value of several lines, no text or
+/// too long. Checked when the Communication is saved, and again as it is sent.
+pub fn extra_headers(v: Option<&Value>) -> std::result::Result<Vec<(String, String)>, String> {
+    let map = match v {
+        None | Some(Value::Null) => return Ok(vec![]),
+        Some(Value::Object(m)) => m,
+        Some(_) => return Err("headers are an object of header names and values".into()),
+    };
+    if map.len() > MAX_EXTRA_HEADERS {
+        return Err(format!("at most {MAX_EXTRA_HEADERS} extra headers"));
+    }
+    let mut out = Vec::new();
+    for (name, value) in map {
+        let lower = name.to_ascii_lowercase();
+        let token = !name.is_empty() && name.len() <= 100 && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-');
+        if !token || !(EXTRA_HEADERS.contains(&lower.as_str()) || lower.starts_with("x-") && lower.len() > 2) {
+            return Err(format!(
+                "'{name}' may not be set as a header: only List-Unsubscribe, List-Unsubscribe-Post, List-Id, Precedence, Auto-Submitted, Feedback-ID and X- headers"
+            ));
+        }
+        let value = value.as_str().ok_or_else(|| format!("the value of {name} is text"))?;
+        if value.trim().is_empty() || value.len() > MAX_HEADER_VALUE || value.chars().any(char::is_control) {
+            return Err(format!("the value of {name} is one line of at most {MAX_HEADER_VALUE} characters"));
+        }
+        out.push((name.clone(), value.to_string()));
+    }
+    Ok(out)
+}
+
 fn ctype(v: &str) -> ContentType {
     ContentType::parse(v).unwrap_or(ContentType::parse("application/octet-stream").expect("valid content type"))
 }
@@ -365,6 +402,9 @@ impl DocHook for CommunicationHook {
 
     async fn validate(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
         let mut errors = Vec::new();
+        if let Err(m) = extra_headers(doc.get("headers")) {
+            errors.push(FieldError::new("headers", m));
+        }
         let outgoing = is_outgoing_email(doc);
         if outgoing {
             let mut count = 0;
@@ -633,6 +673,7 @@ async fn send_doc(k: &Kernel, doc: &Doc, account: Option<&Account>, files: Vec<F
         s(doc, "content").map(str::to_string).unwrap_or_else(|| s(doc, "text_content").map(mail_parser::decoders::html::text_to_html).unwrap_or_default());
     let text = s(doc, "text_content").map(str::to_string).unwrap_or_else(|| mail_parser::decoders::html::html_to_text(&html));
     let ics = s(doc, "ics").map(|i| (ics_method(i), i.to_string()));
+    let headers = extra_headers(doc.get("headers")).map_err(SendError::permanent)?;
     match account {
         Some(acc) => {
             if !acc.enable_outgoing {
@@ -652,7 +693,7 @@ async fn send_doc(k: &Kernel, doc: &Doc, account: Option<&Account>, files: Vec<F
                 references: s(doc, "mail_references").unwrap_or_default().split_whitespace().map(str::to_string).collect(),
                 attachments: files,
                 ics,
-                headers: vec![],
+                headers,
             })
             .map_err(SendError::permanent)?;
             smtp_send(server, &message).await
@@ -660,6 +701,15 @@ async fn send_doc(k: &Kernel, doc: &Doc, account: Option<&Account>, files: Vec<F
         // No account: the server's own mailer, one simple HTML mail per recipient (it cannot carry
         // threading headers, attachments or invitations).
         None => {
+            // The server's own mailer takes a subject and an HTML body and nothing else: the extra
+            // headers cannot go with the mail. Said in the log, never dropped silently.
+            if !headers.is_empty() {
+                tracing::warn!(
+                    communication = s(doc, "id").unwrap_or_default(),
+                    "no email account: the server's mailer cannot carry extra headers, so {} header(s) are not sent",
+                    headers.len()
+                );
+            }
             let mailer = k.mailer.as_ref().ok_or_else(|| SendError::permanent("no outgoing email account is set up and the server has no mailer"))?;
             for m in to.iter().chain(&cc).chain(&bcc) {
                 let address = m.email.to_string();
