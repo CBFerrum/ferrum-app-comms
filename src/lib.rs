@@ -6,6 +6,7 @@
 mod account;
 mod arrivals;
 mod calendar;
+mod calendars;
 mod chat;
 mod dav;
 mod dns;

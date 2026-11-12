@@ -13,6 +13,31 @@
   fields:
     - {name: minutes_before, type: int, required: true, default: 15, min: 0, max: 40320, in_list: true}
 
+- name: CalendarShare
+  label: Calendar Share
+  kind: child
+  fields:
+    - {name: person, type: email, required: true, in_list: true, description: An active colleague's sign-in email}
+    - {name: level, type: select, options: [Free/busy, Details, Edit], default: Details, required: true, in_list: true, description: "Free/busy: when, as Busy; Details: everything; Edit: everything, and changes"}
+
+- name: Calendar
+  label: Calendar
+  label_plural: Calendars
+  kind: master
+  module: communication
+  title_field: calendar_name
+  description: "A person's calendar: every event belongs to one of its organizer's calendars. Shared with colleagues at a level; managed through /api/app/comms/calendar/calendars."
+  owner_fields: [owner]
+  fields:
+    - {name: calendar_name, type: data, label: Name, required: true, in_list: true}
+    - {name: owner, type: email, read_only: true, in_list: true, in_filter: true}
+    - {name: tone, type: select, options: [blue, green, amber, red, purple, neutral], default: blue, required: true, description: "Its colour, from the interface's tone palette"}
+    - {name: hidden, type: check, description: Not drawn on its owner's calendar}
+    - {name: is_default, type: check, read_only: true, description: Where new events go}
+    - {name: shares, type: table, of: CalendarShare}
+  indexes: [[owner]]
+  list: {columns: [calendar_name, owner], sort: calendar_name asc}
+
 - name: CalendarEvent
   label: Event
   label_plural: Events
@@ -33,7 +58,8 @@
     - {name: category, type: data, in_filter: true}
     - {name: color, type: color}
     - {name: owner, type: email, label: Organizer, read_only: true, in_list: true, in_filter: true}
-    - {name: visibility, type: select, options: [Private, Public], default: Private, required: true, in_filter: true, description: "Public events show on everyone's calendar; private ones only to the organizer and attendees (others see busy time)"}
+    - {name: calendar, type: link, to: Calendar, in_filter: true, description: "The organizer's calendar it is in (their default when none is given)"}
+    - {name: visibility, type: select, options: [Private, Public, Busy only], default: Private, required: true, in_filter: true, description: "Public events show on everyone's calendar; private ones to the organizer, attendees and those the calendar is shared with; busy-only ones show as busy time even in a shared calendar"}
     - {name: status, type: select, options: [Confirmed, Tentative, Cancelled], default: Confirmed, required: true, in_list: true, in_filter: true}
     - {name: attendees, type: table, of: CalendarEventAttendee}
     - {name: recurrence, type: data, max_length: 500, description: "RRULE: FREQ=DAILY|WEEKLY|MONTHLY|YEARLY with INTERVAL, BYDAY, BYMONTHDAY, COUNT or UNTIL (a date: that day in the event's zone; or a UTC time), e.g. FREQ=WEEKLY;BYDAY=MO,WE;COUNT=10"}
@@ -45,7 +71,7 @@
     - {name: sequence, type: int, read_only: true, no_copy: true}
     - {name: organizer, type: email, label: Invited by, read_only: true, no_copy: true, description: "For an event taken from an invitation: who sent it (its ORGANIZER). Only they can cancel it by mail. Events taken before Ferrum 0.14 have none."}
   unique: [[owner, ical_uid]]
-  indexes: [[starts_at]]
+  indexes: [[starts_at], [owner], [calendar]]
   form:
     - {label: Event, fields: [subject, starts_at, ends_at, all_day, timezone, location, meeting_link, status, visibility]}
     - {label: People, fields: [owner, attendees]}
