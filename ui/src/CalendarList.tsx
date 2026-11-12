@@ -65,7 +65,16 @@ export function CalendarList({ cals, hidden, sharedHidden, hideShared, failed }:
       else next.add(c.id);
       return hideShared(next);
     }
-    await patch(c, { hidden: !on });
+    // Shown at once; put back with a message if the server refuses.
+    const key = ["calendar", "calendars"];
+    const before = qc.getQueryData<Cal[]>(key);
+    qc.setQueryData<Cal[]>(key, (list) => list?.map((x) => (x.id === c.id ? { ...x, hidden: !on } : x)));
+    try {
+      await api.patch(`${CALENDAR}/calendars/${c.id}`, { hidden: !on });
+    } catch (e) {
+      qc.setQueryData(key, before);
+      toast(t("Not changed: {e}", { e: errorMessage(e) }), "error");
+    }
   };
   const only = async (c: Cal) => {
     hideShared(new Set(others.filter((o) => o.id !== c.id).map((o) => o.id)));
