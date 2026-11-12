@@ -31,12 +31,13 @@ import {
   monthGrid,
   moved,
   parseGuests,
-  safeColor,
+  colorOf,
   safeLink,
   stepped,
   tally,
   VIEWS,
   weekendOf,
+  withCalendars,
   zoneList,
   type Guest,
   DEFAULT_HOURS,
@@ -48,6 +49,7 @@ import {
 } from "./lib/calendar";
 import { changeTimes, removeOccurrence, type Undo } from "./lib/calendarChanges";
 import { EventBar, TimeGrid, timeFmt, useNow, type WorkHours } from "./CalendarGrid";
+import { CalendarList, levelName, useCalendars } from "./CalendarList";
 import { Failure } from "./States";
 
 const VIEW_KEY = "ferrum.calendar.view";
@@ -157,7 +159,9 @@ export function CalendarPage() {
   const events = useQuery({ queryKey: key, queryFn: ({ signal }) => api.get<{ occurrences: Occurrence[] }>(`${CALENDAR}/events`, { from, to }, signal) });
   const refresh = useCallback(() => void qc.invalidateQueries({ queryKey: ["calendar"] }), [qc]);
   useLiveEntity("CalendarEvent", refresh);
-  const list = useMemo(() => events.data?.occurrences ?? [], [events.data]);
+  // Each occurrence with its calendar's colour and name; hidden calendars left out.
+  const calendars = useCalendars();
+  const list = useMemo(() => withCalendars(events.data?.occurrences ?? [], calendars.cals, calendars.hidden), [events.data, calendars.cals, calendars.hidden]);
   const today = isoDay(useNow());
 
   // A link that names an event but not when (a notification of an invitation) goes to where it is.
@@ -300,6 +304,7 @@ export function CalendarPage() {
           <Plus /> {t("New event")}
         </Button>
         <MiniMonth selected={anchor} first={first} today={today} shown={days.length <= 7 ? days : []} onPick={(d) => go({ date: d })} />
+        <CalendarList cals={calendars.cals} hidden={calendars.hidden} sharedHidden={calendars.sharedHidden} hideShared={calendars.hideShared} failed={!!calendars.q.error} />
         <div className="grid gap-1.5 text-sm">
           <Label htmlFor="cal-zone2" className="text-xs text-muted-foreground">
             {t("Second time zone")}
@@ -508,7 +513,7 @@ function MonthView(p: { month: Date; first: number; list: Occurrence[]; loading:
                 <span className={cn("grid size-6 place-items-center rounded-full tabular-nums", k === p.today && "bg-primary text-primary-foreground")}>{isolate(d.toLocaleDateString(lang, { day: "numeric" }))}</span>
                 <span className="flex h-1.5 gap-0.5" aria-hidden="true">
                   {(days.get(k) ?? []).slice(0, 3).map((o) => (
-                    <span key={o.id} className="size-1.5 rounded-full" style={{ background: safeColor(o.color) ?? "var(--primary)" }} />
+                    <span key={o.id} className="size-1.5 rounded-full" style={{ background: colorOf(o) }} />
                   ))}
                 </span>
               </button>
@@ -677,7 +682,7 @@ function SearchResults({ q, onOpen }: { q: string; onOpen: (o: Occurrence) => vo
 }
 
 function OccurrenceChip({ o, onOpen, large }: { o: Occurrence; onOpen: () => void; large?: boolean }) {
-  const color = safeColor(o.color) ?? "var(--primary)";
+  const color = colorOf(o);
   const off = o.status === "Cancelled" || o.my_response === "Declined";
   return (
     <button
@@ -1118,7 +1123,8 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit, onDelete }: { o: Occu
   const [meetingLink, setMeetingLink] = useState(o.meeting_link);
   const meets = useMeetAvailable();
   const meet = meets.data === true;
-  const detail = useQuery({ queryKey: ["calendar", "detail", o.event], queryFn: ({ signal }) => api.get<Detail>(`${CALENDAR}/events/${o.event}`, undefined, signal), retry: false });
+  const busyOnly = o.level === "free_busy";
+  const detail = useQuery({ queryKey: ["calendar", "detail", o.event], queryFn: ({ signal }) => api.get<Detail>(`${CALENDAR}/events/${o.event}`, undefined, signal), retry: false, enabled: !busyOnly });
   const link = safeLink(meetingLink);
   // A meeting of this app opens here; any other link (another service's meeting) in a new tab.
   const meeting = meetPath(link);
@@ -1176,6 +1182,14 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit, onDelete }: { o: Occu
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-2 text-sm">
+          {o.calendarName && (
+            <p className="flex items-center gap-1.5 text-muted-foreground">
+              <span className="size-2.5 rounded-sm" style={{ background: colorOf(o) }} aria-hidden="true" />
+              {t("In {calendar}", { calendar: o.calendarName })}
+              {o.level && o.level !== "owner" && !o.is_organizer && ` · ${levelName(o.level)}`}
+            </p>
+          )}
+          {busyOnly && <p className="text-muted-foreground">{t("Its calendar is shared with you to see only when it is busy.")}</p>}
           <div className="flex flex-wrap gap-1.5">
             {o.status && o.status !== "Confirmed" && <Badge variant="secondary">{isolate(o.status)}</Badge>}
             {o.recurring && (
@@ -1188,6 +1202,12 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit, onDelete }: { o: Occu
           {o.location && (
             <p className="flex items-center gap-1.5">
               <MapPin className="size-4 text-muted-foreground" aria-hidden="true" /> {isolate(o.location)}
+              {/* No maps service in the workspace: a search for the place, its text encoded, opening elsewhere. */}
+              {!/^https?:/i.test(o.location) && (
+                <a className="ms-1 text-xs text-primary underline" href={`https://www.openstreetmap.org/search?query=${encodeURIComponent(o.location)}`} target="_blank" rel="noopener noreferrer">
+                  {t("Open in maps")}
+                </a>
+              )}
             </p>
           )}
           {meeting ? (
