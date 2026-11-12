@@ -50,6 +50,8 @@ struct Egress {
     url: String,
     calls: Arc<Mutex<Vec<(String, String, Value)>>>,
     refuse: Arc<std::sync::atomic::AtomicBool>,
+    /// Who the room service says is in the room now.
+    here: Arc<Mutex<Vec<Value>>>,
 }
 
 impl Egress {
@@ -60,11 +62,12 @@ impl Egress {
         let calls: Arc<Mutex<Vec<(String, String, Value)>>> = Arc::default();
         let stopped: Arc<std::sync::atomic::AtomicBool> = Arc::default();
         let refuse: Arc<std::sync::atomic::AtomicBool> = Arc::default();
-        let (c, s, r) = (calls.clone(), stopped.clone(), refuse.clone());
+        let here: Arc<Mutex<Vec<Value>>> = Arc::default();
+        let (c, s, r, h) = (calls.clone(), stopped.clone(), refuse.clone(), here.clone());
         tokio::spawn(async move {
             loop {
                 let Ok((sock, _)) = listener.accept().await else { return };
-                let (c, s, r) = (c.clone(), s.clone(), r.clone());
+                let (c, s, r, h) = (c.clone(), s.clone(), r.clone(), h.clone());
                 tokio::spawn(async move {
                     let mut reader = BufReader::new(sock);
                     let mut line = String::new();
@@ -96,6 +99,8 @@ impl Egress {
                         match path.as_str() {
                             // The enum's first value, EGRESS_STARTING, is left out, as protojson does.
                             "/twirp/livekit.Egress/StartRoomCompositeEgress" => (200, json!({"egress_id": "EG_one", "room_name": room})),
+                            "/twirp/livekit.RoomService/ListParticipants" => (200, json!({"participants": h.lock().unwrap().clone()})),
+                            "/twirp/livekit.RoomService/DeleteRoom" => (200, json!({})),
                             "/twirp/livekit.Egress/StopEgress" => {
                                 s.store(true, Ordering::SeqCst);
                                 (200, json!({"egress_id": body["egress_id"], "status": "EGRESS_ENDING"}))
@@ -119,7 +124,7 @@ impl Egress {
                 });
             }
         });
-        Egress { url, calls, refuse }
+        Egress { url, calls, refuse, here }
     }
 }
 
@@ -1438,12 +1443,19 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     assert!(smtp.mails().last().unwrap().data.contains("method=CANCEL"));
     assert_eq!(t.notifications(bob, "Cancelled: Partner sync%").await, 1);
     refused(join(bob, "event", event_id).await, "invalid");
+    livekit.refuse.store(false, std::sync::atomic::Ordering::SeqCst);
+    app_meetings(&t, &users, &livekit).await;
     // SAFETY: as above.
     unsafe {
         for var in ["FERRUM_MEET_URL", "FERRUM_MEET_KEY", "FERRUM_MEET_SECRET"] {
             std::env::remove_var(var);
         }
     }
+    let none = |r: Result<ferrum_app_comms::meetings::Meeting, ferrum_app_comms::meetings::MeetingError>| {
+        assert!(matches!(r, Err(ferrum_app_comms::meetings::MeetingError::NotConfigured)), "{r:?}");
+    };
+    none(ferrum_app_comms::meetings::create(&k, tenant, new_meeting(Uuid::new_v4(), alice.user)).await);
+    assert!(matches!(ferrum_app_comms::meetings::available(&k, tenant).await, Err(ferrum_app_comms::meetings::MeetingError::NotConfigured)));
 
     // ───────────── reports ─────────────
     let report = |ctx: &Ctx, name: &str| {
@@ -1484,7 +1496,12 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     let kept = copy["apps"].as_array().unwrap().iter().find(|a| a["app"] == json!("comms")).expect("Comms says what it keeps").clone();
     assert_eq!(kept["held"]["segments"][0]["text"], json!("Shall we start now?"), "{copy}");
     let done = t.k.erase_personal_data(&admin, "bob@acme.test", "Request 9").await.unwrap();
-    assert_eq!(done["apps"], json!([{"app": "comms", "erased": 1}]), "{done}");
+    assert_eq!(done["apps"], json!([{"app": "comms", "erased": 1}, {"app": "comms", "erased": 2}]), "{done}");
+    assert_eq!(
+        t.scalar::<i64>("select count(*) from comms_attendance where tenant_id = $1 and name = 'Bob Shah' and ($2::uuid is null or true)", None).await,
+        0,
+        "their times in meetings of other apps went with them"
+    );
     let heard = t.ok(alice, "GET", &format!("/meet/channel/{deals_id}/transcript"), &[], Value::Null).await["segments"].clone();
     let names: Vec<&str> = heard.as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
     assert_eq!(names, ["Alice Rao"], "the meeting keeps the others' words");
@@ -1923,4 +1940,141 @@ async fn hosted_mail(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>, imap: &Fa
     assert_eq!((synced["shared"].clone(), synced["lists"].clone()), (json!(1), json!(1)), "{synced}");
     assert!(shared_account(carol).await.is_none());
     assert!(shared_account(bob).await.is_some());
+}
+
+fn new_meeting(record: Uuid, host: Uuid) -> ferrum_app_comms::meetings::NewMeeting<'static> {
+    let start = chrono::Utc::now() + chrono::Duration::minutes(5);
+    ferrum_app_comms::meetings::NewMeeting { entity: "Booking", record, title: "Haircut", starts_at: start, ends_at: start + chrono::Duration::hours(1), host }
+}
+
+/// Meetings another app makes for its records: links, guests, moving, ending, attendance.
+async fn app_meetings(t: &T, users: &HashMap<String, Ctx>, livekit: &Egress) {
+    use ferrum_app_comms::meetings::{self as m, MeetingError};
+    let (k, tenant) = (&t.k, t.tenant);
+    let (alice, bob, carol) = (&users["alice"], &users["bob"], &users["carol"]);
+    let claims = |jwt: &str| -> Value {
+        let part = jwt.split('.').nth(1).unwrap();
+        serde_json::from_slice(&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(part).unwrap()).unwrap()
+    };
+    m::available(k, tenant).await.expect("a meeting server is set up");
+    let record = Uuid::new_v4();
+    let made = m::create(k, tenant, new_meeting(record, alice.user)).await.unwrap();
+    assert_eq!((made.entity.as_str(), made.record, made.host, made.title.as_str()), ("Booking", record, Some(alice.user), "Haircut"));
+    assert_eq!(m::create(k, tenant, new_meeting(record, alice.user)).await.unwrap().id, made.id, "one open meeting per record");
+    assert_eq!(m::find(k, tenant, "Booking", record).await.unwrap().unwrap().id, made.id);
+    assert!(m::find(k, tenant, "Booking", Uuid::new_v4()).await.unwrap().is_none());
+    let mut backwards = new_meeting(Uuid::new_v4(), alice.user);
+    backwards.ends_at = backwards.starts_at;
+    assert!(matches!(m::create(k, tenant, backwards).await, Err(MeetingError::Invalid(_))));
+    // Not in anybody's calendar.
+    let listed = t
+        .ok(
+            carol,
+            "GET",
+            "/calendar/events",
+            &[
+                ("from", &(chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339()),
+                ("to", &(chrono::Utc::now() + chrono::Duration::days(300)).to_rfc3339()),
+            ],
+            Value::Null,
+        )
+        .await;
+    assert!(!listed.to_string().contains("Haircut"), "{listed}");
+
+    // A member's link leads to the room's page; the room admits members, with a token for this room only.
+    let link = m::member_link(k, tenant, made.id).await.unwrap();
+    assert_eq!(link, format!("https://erp.acme.test/meet/room/{}", made.id));
+    let pass = t.ok(bob, "POST", &format!("/meet/room/{}/token", made.id), &[], Value::Null).await;
+    let room = format!("{}-room-{}", tenant.simple(), made.id.simple());
+    assert_eq!(claims(pass["token"].as_str().unwrap())["video"]["room"], json!(room));
+
+    // An outside guest's link: no account, this meeting only, expiring.
+    let guest = m::guest_link(k, tenant, made.id, "Gus Guest", "Gus@Mail.test").await.unwrap();
+    assert!(guest.url.starts_with(&format!("https://erp.acme.test/meet/guest/acme/m.{}.", made.id.simple())), "{}", guest.url);
+    assert_eq!(guest.expires_at, made.ends_at + chrono::Duration::hours(2));
+    assert_eq!(m::guest_link(k, tenant, made.id, "Gus Guest", "gus@mail.test").await.unwrap(), guest, "the same link again");
+    assert!(matches!(m::guest_link(k, tenant, made.id, "Gus", "not an address").await, Err(MeetingError::Invalid(_))));
+    let token = guest.url.rsplit('/').next().unwrap().to_string();
+    let join = |token: String| t.call(None, "POST", "/meet/guest", &[], json!({"token": token}));
+    let pass = join(token.clone()).await.unwrap();
+    assert_eq!((pass["name"].clone(), pass["title"].clone()), (json!("Gus Guest"), json!("Haircut")));
+    let c = claims(pass["token"].as_str().unwrap());
+    assert_eq!(c["video"]["room"], json!(room), "admits to this meeting only");
+    assert_eq!(c["name"], json!("Gus Guest (guest)"));
+    // A link altered (another address, another meeting) is refused.
+    let parts: Vec<&str> = token.split('.').collect();
+    let other_address = format!("m.{}.{}.{}.{}", parts[1], base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("eve@mail.test"), parts[3], parts[4]);
+    refused(join(other_address).await, "not found");
+    let other = m::create(k, tenant, new_meeting(Uuid::new_v4(), alice.user)).await.unwrap();
+    refused(join(format!("m.{}.{}.{}.{}", other.id.simple(), parts[2], parts[3], parts[4])).await, "not found");
+    // Long over: the link stops. Moved: it follows.
+    let over = chrono::Utc::now() - chrono::Duration::hours(3);
+    t.exec(
+        &format!(
+            "update comms_meeting set starts_at = '{}', ends_at = '{}' where tenant_id = $1 and id = '{}'",
+            over - chrono::Duration::hours(1),
+            over,
+            made.id
+        ),
+        None,
+    )
+    .await;
+    refused(join(token.clone()).await, "not found");
+    let moved_to = chrono::Utc::now() + chrono::Duration::days(2);
+    let moved = m::reschedule(k, tenant, made.id, moved_to, moved_to + chrono::Duration::minutes(30)).await.unwrap();
+    assert_eq!(moved.ends_at, moved_to + chrono::Duration::minutes(30));
+    join(token.clone()).await.expect("the same link works at the new time");
+    assert!(matches!(m::reschedule(k, tenant, made.id, moved_to, moved_to).await, Err(MeetingError::Invalid(_))));
+
+    // Attendance from the room service: Bob joined three minutes ago and is still there; Gus
+    // came from a phone and a laptop at overlapping times.
+    let now = chrono::Utc::now().timestamp();
+    let (bob_id, gus_hex) = (format!("{}.ab12cd34", bob.user.simple()), hex::encode("gus@mail.test"));
+    *livekit.here.lock().unwrap() = vec![
+        json!({"identity": bob_id, "name": "Bob Shah", "joined_at": (now - 180).to_string()}),
+        json!({"identity": format!("guest.{gus_hex}.11111111"), "name": "Gus Guest (guest)", "joined_at": now - 120}),
+        json!({"identity": format!("guest.{gus_hex}.22222222"), "name": "Gus Guest (guest)", "joined_at": now - 60}),
+        json!({"identity": "agent-1", "name": "Recorder"}),
+    ];
+    m::record_attendance(k, tenant, made.id).await.unwrap();
+    let who = m::attendance(k, tenant, made.id).await.unwrap();
+    assert_eq!(who.len(), 2, "the recorder is not a person: {who:?}");
+    let bob_in = who.iter().find(|a| a.user == Some(bob.user)).unwrap();
+    assert!((179..=185).contains(&bob_in.seconds), "{}", bob_in.seconds);
+    let gus = who.iter().find(|a| a.email.as_deref() == Some("gus@mail.test")).unwrap();
+    assert_eq!((gus.joinings, gus.user), (2, None));
+    assert!((119..=125).contains(&gus.seconds), "two devices at once count once: {}", gus.seconds);
+    // The upkeep reads rooms of meetings that are on: this one is two days away, so it does not.
+    let before: i64 = t.scalar("select count(*) from comms_attendance where tenant_id = $1 and ($2::uuid is null or true)", None).await;
+    livekit.here.lock().unwrap().clear();
+    t.maintenance(&FakeImap::default()).await;
+    assert_eq!(t.scalar::<i64>("select count(*) from comms_attendance where tenant_id = $1 and ($2::uuid is null or true)", None).await, before);
+    // Held now, the upkeep keeps the last time seen current.
+    let now_on = chrono::Utc::now();
+    m::reschedule(k, tenant, made.id, now_on - chrono::Duration::minutes(10), now_on + chrono::Duration::minutes(20)).await.unwrap();
+    *livekit.here.lock().unwrap() = vec![json!({"identity": bob_id, "name": "Bob Shah", "joined_at": (now - 180).to_string()})];
+    t.exec(&format!("update comms_attendance set last_seen = last_seen - interval '1 minute' where tenant_id = $1 and room_id = '{}'", made.id), None).await;
+    let seen_before = m::attendance(k, tenant, made.id).await.unwrap().iter().find(|a| a.user == Some(bob.user)).unwrap().last_seen;
+    t.maintenance(&FakeImap::default()).await;
+    assert!(m::attendance(k, tenant, made.id).await.unwrap().iter().find(|a| a.user == Some(bob.user)).unwrap().last_seen > seen_before);
+
+    // Ending: the room is closed, links stop, attendance stays, ending again changes nothing.
+    livekit.calls.lock().unwrap().clear();
+    let ended = m::end(k, tenant, made.id).await.unwrap();
+    assert!(ended.ended_at.is_some());
+    let paths: Vec<String> = livekit.calls.lock().unwrap().iter().map(|c| c.0.clone()).collect();
+    assert_eq!(paths, ["/twirp/livekit.RoomService/ListParticipants", "/twirp/livekit.RoomService/DeleteRoom"]);
+    assert_eq!(m::end(k, tenant, made.id).await.unwrap().ended_at, ended.ended_at);
+    assert!(matches!(m::guest_link(k, tenant, made.id, "Gus", "gus@mail.test").await, Err(MeetingError::Ended)));
+    refused(join(token).await, "not found");
+    refused(t.call(Some(bob), "POST", &format!("/meet/room/{}/token", made.id), &[], Value::Null).await, "not found");
+    assert_eq!(m::attendance(k, tenant, made.id).await.unwrap().len(), 2);
+    // A record gets a new meeting once the last one ended.
+    assert_ne!(m::create(k, tenant, new_meeting(record, alice.user)).await.unwrap().id, made.id);
+    assert!(matches!(m::get(k, tenant, Uuid::new_v4()).await, Err(MeetingError::NotFound)));
+    // A room someone started in Meet is not an app's meeting.
+    let quick = uid(&t.ok(alice, "POST", "/meet/rooms", &[], json!({})).await);
+    assert!(matches!(m::guest_link(k, tenant, quick, "Gus", "gus@mail.test").await, Err(MeetingError::NotFound)));
+    // The next meeting of the record is on within a quarter of an hour, so later upkeep reads its room too: Bob's
+    // second row is what his erasure, further on, finds beside the first.
 }

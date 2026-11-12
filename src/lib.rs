@@ -17,6 +17,7 @@ mod itip;
 mod mail;
 mod mailadmin;
 pub(crate) mod meet;
+pub mod meetings;
 mod newsletter;
 pub mod recur;
 mod reports;
@@ -60,6 +61,7 @@ pub fn register(hooks: &mut HookRegistry) {
         .add_event_sink(Arc::new(mail::MailSink))
         .add_site("comms", Arc::new(site::CommsSite));
     hooks.add_personal_held(Arc::new(meet::Transcripts));
+    hooks.add_personal_held(Arc::new(meetings::Attendance));
 }
 
 /// This package's reports.
@@ -96,6 +98,7 @@ pub async fn maintenance_with(k: &Kernel, mailboxes: &dyn MailboxConnector) -> R
             ("mail polling", inbound::poll_due(k, tenant, mailboxes, POLL_BUDGET).await),
             ("newsletters", newsletter::run(k, tenant, SEND_BUDGET).await),
             ("reminders", calendar::fire_reminders(k, tenant).await),
+            ("meeting attendance", meetings::upkeep(k, tenant).await),
             ("hosted mail", hosted::reconcile_due(k, tenant).await.map(|_| 0)),
             ("purge", purge(k, tenant).await),
         ];
@@ -116,7 +119,7 @@ async fn purge(k: &Kernel, tenant: Uuid) -> Result<usize> {
     for sql in [
         "delete from comms_reminder_log where tenant_id = $1 and fired_at < now() - interval '60 days'",
         "delete from comms_mail_notice where tenant_id = $1 and created_at < now() - interval '60 days'",
-        "delete from comms_meeting where tenant_id = $1 and coalesce(used_at, created_at) < now() - interval '90 days'",
+        "delete from comms_meeting where tenant_id = $1 and coalesce(used_at, created_at) < now() - interval '90 days' and (source_entity is null or coalesce(ends_at, created_at) < now() - interval '90 days')",
     ] {
         n += sqlx::query(sql).bind(tenant).execute(&mut *tx).await?.rows_affected();
     }
