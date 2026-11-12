@@ -3,7 +3,7 @@
 // the empty field takes the last chip off, and a chip can be dragged to another field (To, Cc, Bcc).
 
 import { X } from "lucide-react";
-import { useId, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from "react";
+import { useId, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
 import { cn } from "@ferrum/kit";
 import { isolate, t } from "@ferrum/client";
 import { parseAddresses, type Address } from "./lib/mail";
@@ -27,6 +27,7 @@ export function RecipientField({
   suggest,
   onTake,
   autoFocus,
+  end,
 }: {
   field: string;
   label: string;
@@ -37,6 +38,8 @@ export function RecipientField({
   /** A chip dragged here from another field. */
   onTake: (a: Address, from: string) => void;
   autoFocus?: boolean;
+  /** At the row's end (Cc and Bcc on the To row). */
+  end?: ReactNode;
 }) {
   const id = useId();
   const [text, setText] = useState("");
@@ -103,7 +106,7 @@ export function RecipientField({
   return (
     <div className="relative">
       <div
-        className={cn("flex min-h-10 flex-wrap items-center gap-1 border-b px-1 py-1", over && "bg-accent")}
+        className={cn("mail-row", over && "bg-accent")}
         onDragOver={(e) => {
           if (e.dataTransfer.types.includes(DRAG)) {
             e.preventDefault();
@@ -114,7 +117,7 @@ export function RecipientField({
         onDrop={onDrop}
         onClick={(e) => e.target === e.currentTarget && input.current?.focus()}
       >
-        <label htmlFor={id} className="px-1 text-sm text-muted-foreground">
+        <label htmlFor={id} className="mail-row-label">
           {isolate(label)}
         </label>
         <ul className="contents" aria-label={t("{label}: {n} recipients", { label, n: value.length })}>
@@ -178,6 +181,7 @@ export function RecipientField({
           aria-describedby={bad.length ? `${id}-bad` : undefined}
           className="h-8 min-w-24 flex-1 bg-transparent px-1 text-sm outline-none"
         />
+        {end}
       </div>
       {choices.length > 0 && (
         <ul id={`${id}-list`} role="listbox" aria-label={t("People for {label}", { label })} className="absolute top-full end-0 start-0 z-30 mt-1 max-h-56 overflow-y-auto rounded-md border bg-popover p-1 shadow-md">

@@ -4,30 +4,57 @@
 @source "../../../ferrum/web/src";
 @source ".";
 
-/* The body of a message being written (MailEditor): lists, quotes, links and images as they go out. */
-.mail-editor ul { list-style: disc; padding-inline-start: 1.75em; }
-.mail-editor ol { list-style: decimal; padding-inline-start: 1.75em; }
-.mail-editor blockquote { border-inline-start: 1px solid var(--border); padding-inline-start: 1ex; margin-inline-start: 0.8ex; color: var(--muted-foreground); }
-.mail-editor a { color: var(--primary); text-decoration: underline; }
-/* An event's notes as rich text (made safe on the server). */
-.event-notes ul { list-style: disc; padding-inline-start: 1.5em; }
-.event-notes ol { list-style: decimal; padding-inline-start: 1.5em; }
-.event-notes blockquote { border-inline-start: 2px solid var(--border); padding-inline-start: 1ex; }
-.event-notes a { color: var(--primary); text-decoration: underline; }
-.event-notes p { margin-block: 0.25em; }
-.mail-editor p.is-editor-empty:first-child::before { content: attr(data-placeholder); color: var(--muted-foreground); float: inline-start; height: 0; pointer-events: none; }
-.mail-img { position: relative; display: inline-block; max-width: 100%; line-height: 0; }
-.mail-img img { max-width: 100%; height: auto; }
-.mail-img.is-selected { outline: 2px solid var(--ring); }
-.mail-img.is-uploading img { opacity: 0.5; }
-.mail-img.is-remote { min-width: 4rem; min-height: 2rem; background: var(--muted); }
-.mail-img-handle { position: absolute; inset-inline-end: -4px; bottom: -4px; width: 12px; height: 12px; border-radius: 2px; background: var(--primary); cursor: nwse-resize; display: none; touch-action: none; }
-.mail-img.is-selected .mail-img-handle, .mail-img:hover .mail-img-handle { display: block; }
+/* ── the composer (MailCompose.tsx) ──
+   One window, one frame: the kit's editor (`.rte`) is the window's body, its toolbar at the top of the text and sticky while
+   the text scrolls, no border or ring of its own. The text is set as the reader shows a message (lib/mail.ts `frameDocument`
+   and the body style a message goes out with, lib/compose.ts): the system face at the base size, line height 1.5, lines without
+   a gap between them (each goes out as a line of its own), lists, quotes and headings spaced as a mail program draws them. */
+.mail-compose { color: var(--popover-foreground); }
+.mail-compose[data-frame="inline"], .mail-compose[data-frame="page"] { color: var(--card-foreground); }
+.mail-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-height: 44px; padding: 4px 12px 4px 16px; border-block-end: 1px solid var(--border); }
+.mail-row-label { inline-size: 2.5rem; flex: none; font-size: var(--text-sm); color: var(--muted-foreground); }
+.mail-subject { inline-size: 100%; block-size: 52px; padding-inline: 16px; border-block-end: 1px solid var(--border); background: transparent; outline: none; font-size: var(--text-lg); font-weight: 600; letter-spacing: -0.005em; }
+.mail-subject::placeholder { color: var(--faint); font-weight: 500; }
+.mail-subject:focus-visible { background: var(--surface-2); }
+.mail-compose .rte { border: 0; border-radius: 0; background: transparent; outline: none; }
+.mail-compose .rte:has(.rte-content:focus) { outline: none; }
+.mail-compose .rte-bar { position: sticky; top: 0; z-index: 2; border-radius: 0; background: var(--popover); }
+.mail-compose[data-frame="inline"] .rte-bar, .mail-compose[data-frame="page"] .rte-bar { background: var(--card); }
+.mail-compose .rte-scroll { max-height: none; overflow: visible; }
+.mail-compose .rte-content { padding: 14px 16px; font-size: var(--text-base); line-height: 1.5; }
+.mail-compose .rte-footer { display: none; }
+.mail-compose .rich-text > * + * { margin-block-start: 0; }
+.mail-compose .rich-text :is(ul, ol) { margin-block: 1em; padding-inline-start: 40px; }
+.mail-compose .rich-text li + li { margin-block-start: 0; }
+.mail-compose .rich-text blockquote { margin-block: 0; margin-inline: 0.8ex 0; padding-inline-start: 1ex; border-inline-start: 1px solid var(--border-strong); color: inherit; }
+.mail-compose .rich-text h1 { font-size: 2em; margin-block: 0.67em; }
+.mail-compose .rich-text h2 { font-size: 1.5em; margin-block: 0.83em; }
+.mail-compose .rich-text h3 { font-size: 1.17em; margin-block: 1em; }
+/* Full screen and a page keep a measure that reads well, centred, as a letter. */
+.mail-compose:is([data-frame="max"], [data-frame="page"]) .mail-compose-column { inline-size: 100%; max-inline-size: 58rem; margin-inline: auto; }
+.mail-compose-scroll { overscroll-behavior: contain; }
+/* Under a conversation the answer scrolls with it: the toolbar stays at the top of the view and the send bar at its foot. */
+.mail-compose[data-frame="inline"] .mail-compose-scroll { overflow: visible; }
+.mail-compose[data-frame="inline"] .mail-compose-bar { position: sticky; inset-block-end: 0; z-index: 2; background: var(--card); border-end-start-radius: var(--radius); border-end-end-radius: var(--radius); }
+.mail-signature { font-size: var(--text-sm); line-height: 1.5; }
+.mail-signature > * + * { margin-block-start: 0; }
+.mail-quote-fold { display: inline-grid; place-items: center; justify-self: start; inline-size: 36px; block-size: 20px; border-radius: 999px; background: var(--surface-3); color: var(--muted-foreground); }
+.mail-quote-fold:hover { background: var(--border-strong); color: var(--text); }
+.mail-quote-fold:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.mail-remote-picture { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border: 1px dashed var(--border-strong); border-radius: 4px; color: var(--muted-foreground); font-size: var(--text-sm); }
+.mail-remote-picture.is-selected { outline: 2px solid var(--ring); }
+.mail-file { display: flex; align-items: center; gap: 10px; min-inline-size: 0; padding: 6px 6px 6px 8px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.mail-compose-bar { display: flex; flex: none; align-items: center; gap: 8px; padding: 10px 12px; border-block-start: 1px solid var(--border); }
+/* The top start corner of a window at the bottom end: drag (or arrow keys) to size it; the size is kept for the next one. */
+.mail-compose-grip { position: absolute; inset-block-start: -4px; inset-inline-start: -4px; z-index: 3; inline-size: 16px; block-size: 16px; cursor: nwse-resize; border-start-start-radius: 12px; }
+.mail-compose-grip:dir(rtl) { cursor: nesw-resize; }
+.mail-compose-grip:focus-visible { outline: 2px solid var(--ring); }
+/* A phone: one composer filling the visible screen; the formatting toolbar sits on the on-screen keyboard (the window is its
+   containing block, and its height follows the visual viewport), the send bar just above it. */
+.mail-compose[data-frame="phone"] .rte-bar { position: fixed; inset-inline: 0; inset-block-end: 0; inset-block-start: auto; border-block-start: 1px solid var(--border); border-block-end: 0; }
+.mail-compose[data-frame="phone"]:has(.rte-bar) .mail-compose-bar { margin-block-end: 45px; }
+.mail-compose[data-frame="phone"] .mail-compose-bar { gap: 2px; padding: 6px 8px; }
 
 /* The kit's toast action (Undo) comes out white on the toast's white in this app's build: the button's own
    colour wins over the kit's legacy-layer `.toast-action`. Drawn in the primary colour here until the kit fixes it. */
 .toaster .toast-action { color: var(--primary); }
-/* While messages are being written in windows at the bottom end, notices go to the bottom start (as Gmail's do), not over the Send button. */
-@media (min-width: 768px) {
-  body:has([data-compose-stack]) .toaster { inset-inline-end: auto; inset-inline-start: max(16px, env(safe-area-inset-left)); }
-}

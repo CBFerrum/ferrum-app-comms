@@ -21,7 +21,7 @@ import { ensureFolder } from "./MailActions";
 import { ruleFromSender, type Rule } from "./lib/filters";
 import { SNOOZED_NAME, isSnoozed } from "./lib/folders";
 import { snoozeChoices, wakeKeys, wakeKeyword, wakeOf } from "./lib/watch";
-import { Composer, loadDraft } from "./MailCompose";
+import { Composer, loadDraft, preloadComposer } from "./MailCompose";
 import { CounterCard, InviteAnswer, ReplyCard } from "./MailInvite";
 import { ExternalMark, ImagesBar, InviteCard, MessageMenu, WarningBanner, WhySpam, unsubscribeNow, useExtras } from "./MailSafety";
 import { ActionBar } from "./MailToolbar";
@@ -209,7 +209,7 @@ export function Conversation(p: { account: string; id: string; me: string; own: 
   const junkId = role("junk")?.id;
   return (
     <article className="grid h-full min-h-0 grid-rows-[auto_auto_minmax(0,1fr)]" aria-label={subject ?? tr("Conversation")}>
-      <header className="flex flex-wrap items-center gap-1 border-b px-2 py-1.5">
+      <header className="flex flex-wrap items-center gap-1 border-b px-2 py-1.5" onPointerEnter={preloadComposer} onFocusCapture={preloadComposer}>
         <Button variant="ghost" size="icon-sm" aria-label={tr("Back to the list")} title={tr("Back to the list (u)")} onClick={p.onBack}>
           <ArrowLeft />
         </Button>
@@ -292,14 +292,15 @@ export function Conversation(p: { account: string; id: string; me: string; own: 
           </Button>
         )}
       </div>
-      <div className={cn("min-h-0", single ? "grid grid-rows-[minmax(0,1fr)]" : "overflow-y-auto")}>
+      {/* One message fills the pane; with an answer under it the pane scrolls, the answer's send bar staying in view. */}
+      <div className={cn("min-h-0", single && !answer ? "grid grid-rows-[minmax(0,1fr)]" : "overflow-y-auto")}>
         {messages.map((m) => (
           <Card
             key={m.id}
             account={p.account}
             summary={m}
             open={open(m)}
-            fill={single}
+            fill={single && !answer}
             onToggle={() => setFolded((f) => ({ ...f, [m.id]: open(m) }))}
             me={p.me}
             domains={p.domains}
@@ -314,7 +315,7 @@ export function Conversation(p: { account: string; id: string; me: string; own: 
           />
         ))}
         {answer && (
-          <div ref={answerAt} className="p-3">
+          <div ref={answerAt} className="px-3 pt-3">
             <Composer
               key={`${answer.kind}-${answer.original?.id}`}
               mode="inline"
@@ -325,6 +326,7 @@ export function Conversation(p: { account: string; id: string; me: string; own: 
               onClose={() => setAnswer(null)}
               onSent={() => prefs.sendArchive && answer.kind !== "forward" && offered(folderRole).archive && void verb("archive")}
               onPopOut={(d) => (setAnswer(null), p.onDraft(d))}
+              onArchive={offered(folderRole).archive && !prefs.sendArchive ? () => void verb("archive") : undefined}
               open={p.onDraft}
             />
           </div>
