@@ -459,12 +459,17 @@ fn range(from: Option<&str>, to: Option<&str>) -> Result<(DateTime<Utc>, DateTim
 /// public ones), recurring events expanded into occurrences.
 async fn my_calendar(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
     let (from, to) = range(util::param(req, "from"), util::param(req, "to"))?;
+    let q = util::param(req, "q").map(str::trim).filter(|q| !q.is_empty()).map(|q| util::cut(q, 200));
     let me = ctx.email.to_lowercase();
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let events = events_of(&mut tx, ctx.tenant, &me, from, to, true, true).await?;
     tx.commit().await?;
     let mut out = Vec::new();
     for (doc, response) in events {
+        // A search: what I can see of the event (its guests only when I organize it or am one).
+        if q.as_deref().is_some_and(|q| !found(&doc, q)) {
+            continue;
+        }
         let Some(sr) = series(&doc) else { continue };
         let recurring = sr.rule.is_some();
         for (start, end) in recur::occurrences(&sr, from, to) {
@@ -496,7 +501,7 @@ async fn my_calendar(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> 
         }
     }
     out.sort_by(|a, b| a["start"].as_str().cmp(&b["start"].as_str()));
-    Ok(json!({"from": util::ts(from), "to": util::ts(to), "occurrences": out}))
+    Ok(json!({"from": util::ts(from), "to": util::ts(to), "q": q, "occurrences": out}))
 }
 
 /// How far ahead Home's My work looks for invitations to answer.
@@ -823,23 +828,56 @@ pub async fn feed(k: &Kernel, tenant: Uuid, token: &str) -> Result<SiteResponse>
     .fetch_optional(&mut *tx)
     .await?;
     let (email, name) = row.ok_or_else(|| Error::NotFound("calendar".into()))?;
+    let text = ics_of(&mut tx, tenant, &email, &name).await?;
+    tx.commit().await?;
+    let mut r = SiteResponse::text(200, "text/calendar; charset=utf-8", text);
+    r.headers.push(("cache-control".into(), "private, max-age=300".into()));
+    Ok(r)
+}
+
+/// A person's calendar as iCalendar text: their events and invitations from 180 days back to ten
+/// years on (what the secret feed and an export carry).
+async fn ics_of(tx: &mut Tx, tenant: Uuid, email: &str, name: &str) -> Result<String> {
     let from = util::now() - Duration::days(180);
-    let events = events_of(&mut tx, tenant, &email, from, util::now() + Duration::days(3660), false, false).await?;
+    let events = events_of(tx, tenant, email, from, util::now() + Duration::days(3660), false, false).await?;
     let mut organizers: BTreeMap<String, Option<String>> = BTreeMap::new();
     let mut list = Vec::new();
     for (doc, _) in &events {
         let owner = lower(s(doc, "owner"));
         if !organizers.contains_key(&owner) {
-            let n = display_name(&mut tx, tenant, &owner).await?;
+            let n = display_name(tx, tenant, &owner).await?;
             organizers.insert(owner.clone(), n);
         }
         list.extend(vevent(doc, organizers.get(&owner).cloned().flatten(), false, true));
     }
-    tx.commit().await?;
     let label = if name.trim().is_empty() { email } else { name };
-    let mut r = SiteResponse::text(200, "text/calendar; charset=utf-8", ics::calendar(None, Some(&label), &list));
-    r.headers.push(("cache-control".into(), "private, max-age=300".into()));
+    Ok(ics::calendar(None, Some(label), &list))
+}
+
+/// `GET /calendar/export`: my calendar as an `.ics` file to save.
+async fn export(k: &Kernel, ctx: &Ctx) -> Result<SiteResponse> {
+    let me = ctx.email.to_lowercase();
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let name = display_name(&mut tx, ctx.tenant, &me).await?.unwrap_or_default();
+    let text = ics_of(&mut tx, ctx.tenant, &me, &name).await?;
+    tx.commit().await?;
+    let mut r = SiteResponse::text(200, "text/calendar; charset=utf-8", text);
+    r.headers.push(("content-disposition".into(), "attachment; filename=\"calendar.ics\"".into()));
+    r.headers.push(("cache-control".into(), "no-store".into()));
     Ok(r)
+}
+
+/// Whether every word of `q` is in the event's title, place, notes, organizer or guests (any case).
+fn found(doc: &Doc, q: &str) -> bool {
+    let mut hay = ["subject", "location", "description", "owner"].iter().filter_map(|f| s(doc, f)).collect::<Vec<_>>().join(" ");
+    for (email, name, _) in attendees(doc) {
+        hay.push(' ');
+        hay.push_str(&email);
+        hay.push(' ');
+        hay.push_str(name.as_deref().unwrap_or_default());
+    }
+    let hay = hay.to_lowercase();
+    q.split_whitespace().all(|w| hay.contains(&w.to_lowercase()))
 }
 
 /// An event's own fields from iCalendar, for imports and calendar apps.
@@ -1022,6 +1060,7 @@ pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> 
         ("POST", ["events", e, "rsvp"]) => rsvp(k, ctx, uuid(e)?, util::body_json(req)?).await?,
         (m, ["feed"]) => feed_token(k, ctx, m).await?,
         ("POST", ["import"]) => import(k, ctx, req).await?,
+        ("GET", ["export"]) => return export(k, ctx).await,
         _ => return Err(Error::NotFound("calendar endpoint".into())),
     };
     Ok(util::ok(out))
@@ -1052,6 +1091,7 @@ mod tests {
         assert_eq!((ev.tzid.map(|z| z.name()), ev.rrule.as_deref()), (Some("Asia/Kolkata"), Some("FREQ=WEEKLY;COUNT=2")));
         let all_day = event(json!({"subject": "Offsite", "starts_at": "2026-12-24T00:00:00Z", "ends_at": "2026-12-26T00:00:00Z", "all_day": true}));
         assert_eq!(when(&all_day), "Thu 24 Dec 2026 – Fri 25 Dec 2026 (all day)");
+        assert!(found(&d, "board ASHA") && found(&d, "guest@partner") && found(&d, "Guest") && !found(&d, "board lunch"));
         assert_eq!(merge(vec![]), vec![]);
         let t = |h: u32| NaiveDate::from_ymd_opt(2026, 11, 2).unwrap().and_hms_opt(h, 0, 0).unwrap().and_utc();
         assert_eq!(merge(vec![(t(9), t(10)), (t(12), t(13)), (t(9), t(11))]), vec![(t(9), t(11)), (t(12), t(13))]);
