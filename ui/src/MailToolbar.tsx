@@ -122,8 +122,29 @@ export function mailActions(p: BarProps): MailAction[] {
   return list.filter((a): a is MailAction => !!a);
 }
 
-/** The selection's actions for the kit's `SelectionToolbar` (`actions`): it keeps what fits and folds the rest into More. */
-export const selectionActions = (p: BarProps): SelectionAction[] => mailActions(p).map((a) => ({ id: a.id, label: a.label, icon: a.kitIcon, onSelect: a.run, danger: a.danger, priority: a.priority, title: a.keys ? `${a.label} (${a.keys})` : a.label }));
+/** The selection's actions for the kit's `SelectionToolbar` (`actions`): it keeps what fits and folds the rest into More. Archive
+ *  and Delete are not among them: a list column is too narrow for their words beside the count, so they stay as icons
+ *  (`PinnedActions`, the bar's `children`, never folded). */
+export const selectionActions = (p: BarProps): SelectionAction[] =>
+  mailActions(p)
+    .filter((a) => !a.priority)
+    .map((a) => ({ id: a.id, label: a.label, icon: a.kitIcon, onSelect: a.run, danger: a.danger, title: a.keys ? `${a.label} (${a.keys})` : a.label }));
+
+/** Archive and Delete as named icons on the selection's bar, with the anchors of the folder popovers. */
+export function PinnedActions(p: BarProps) {
+  return (
+    <span className="flex shrink-0 items-center">
+      {mailActions(p)
+        .filter((a) => a.priority)
+        .map((a) => (
+          <IconAction key={a.id} label={a.label} keys={a.keys} onClick={a.run}>
+            {a.icon}
+          </IconAction>
+        ))}
+      <FolderPopovers {...p} />
+    </span>
+  );
+}
 
 /** The anchors the folder popovers open from when a bar draws its actions as words (the selection's bar): out of sight and out of the tab order. */
 export function FolderPopovers(p: BarProps) {

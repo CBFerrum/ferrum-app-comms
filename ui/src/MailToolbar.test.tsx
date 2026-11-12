@@ -2,7 +2,7 @@
 
 import { renderToString } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { ActionBar, selectionActions } from "./MailToolbar";
+import { ActionBar, PinnedActions, selectionActions } from "./MailToolbar";
 import type { Mailbox } from "./lib/mail";
 
 const box = (id: string, name: string, role: string): Mailbox => ({ id, name, role, sortOrder: 0, totalEmails: 0, unreadEmails: 0 });
@@ -44,11 +44,12 @@ describe("the actions bar", () => {
 
 describe("the selection's actions, as the kit's SelectionToolbar folds them", () => {
   const base = { boxes: BOXES, anyUnread: false, allStarred: false, onVerb: () => {}, onMove: () => {}, onForever: () => {}, moveOpen: false, onMoveOpen: () => {} };
-  it("is one list in the bar's order, Archive and Delete kept last when it folds, each with its key in the title", () => {
+  it("is one list in the bar's order, each with its key in the title; Archive and Delete stay as icons beside it", () => {
     const a = selectionActions({ ...base, role: "inbox", onExport: () => {}, onSelectAll: () => {} });
-    expect(a.map((x) => x.label)).toEqual(["Archive", "Delete", "Report spam", "Mark as unread", "Star", "Move to", "Export as .mbox", "Select all"]);
-    expect(a.filter((x) => x.priority).map((x) => x.id)).toEqual(["archive", "trash"]);
-    expect(a.find((x) => x.id === "trash")?.title).toBe("Delete (#)");
+    expect(a.map((x) => x.label)).toEqual(["Report spam", "Mark as unread", "Star", "Move to", "Export as .mbox", "Select all"]);
+    expect(a.find((x) => x.id === "read")?.title).toBe("Mark as unread (Shift+U)");
+    const pinned = renderToString(<PinnedActions {...base} role="inbox" />);
+    expect([...pinned.matchAll(/<button[^>]*aria-label="([^"]+)"[^>]*>/g)].filter((m) => !m[0].includes('aria-hidden="true"') && !m[0].includes('tabindex="-1"')).map((m) => m[1])).toEqual(["Archive", "Delete"]);
   });
   it("Spam offers Not spam and Delete forever (marked as dangerous), never Archive", () => {
     const a = selectionActions({ ...base, role: "junk" });
