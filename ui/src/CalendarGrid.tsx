@@ -10,7 +10,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEve
 import { Skeleton } from "@ferrum/kit/primitives";
 import { cn } from "@ferrum/kit";
 import { direction, isolate, t } from "@ferrum/client";
-import { atMinutes, barsAcross, isoDay, minutesOf, movable, placeDay, colorOf, snap, userLocale, type Occurrence } from "./lib/calendar";
+import { atMinutes, barsAcross, isoDay, minutesOf, movable, placeDay, colorOf, safeColor as safeHex, snap, toneVar, userLocale, type Occurrence } from "./lib/calendar";
 
 /** Pixels per hour. */
 export const HOUR = 48;
@@ -274,7 +274,7 @@ export function TimeGrid(p: {
                     <div
                       key={pl.o.id}
                       className={cn("absolute z-10 overflow-hidden rounded-sm border-s-4 bg-primary-soft text-xs leading-tight shadow-xs", dragged && "opacity-40", off && "text-muted-foreground line-through")}
-                      style={{ top: (pl.from / 60) * HOUR + 1, height: Math.max(((pl.to - pl.from) / 60) * HOUR - 2, 18), insetInlineStart: `calc(${(pl.lane / pl.lanes) * 100}% + 1px)`, width: `calc(${100 / pl.lanes}% - 3px)`, borderInlineStartColor: color }}
+                      style={{ top: (pl.from / 60) * HOUR + 1, height: Math.max(((pl.to - pl.from) / 60) * HOUR - 2, 18), insetInlineStart: `calc(${(pl.lane / pl.lanes) * 100}% + 1px)`, width: `calc(${100 / pl.lanes}% - 3px)`, borderInlineStartColor: color, background: pl.o.tone && !safeHex(pl.o.color) ? toneVar(pl.o.tone, true) : undefined }}
                     >
                       <button
                         type="button"
