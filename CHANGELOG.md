@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.15.0
+
+Meetings other apps can make. The crate has a public module, `ferrum_app_comms::meetings`, for an app to give one of its records (a booking, a live class) a video meeting: `create` (entity and id as its source, a title, a start and end, a host; the record's open meeting is returned if it has one), `find`, `get`, `member_link` (the page a signed-in member opens), `guest_link` (for an outside guest by name and address: no account, admits only to that meeting, stops two hours after it was due to end or when it is ended), `reschedule` (links keep working at the new time), `end` (reads attendance one last time, closes the room, stops every link) and `attendance`. Comms sends no invitation; the calling app sends its own. Such a meeting is a room: in nobody's calendar. Without the app or a meeting server the functions answer `MeetingError::NotInstalled` or `NotConfigured`, which the caller can branch on.
+
+Attendance: LiveKit keeps no history of who was in a room, so Comms asks the room service who is in it every minute while a meeting is on (a quarter of an hour before to two hours after it was due to end) and keeps each joining with LiveKit's own time of joining. Time spent is accurate to about a minute; joinings from several devices count once. It is part of a person's personal-data copy and erasure. Rooms made this way are removed 90 days after they were due to end. No operator setup beyond the meeting server.
+
 ## 0.14.0
 
 Mail works when nobody has it open. Tried throughout against a real Stalwart, with the server's new work running on it. Built with the Ferrum-Frontend commit named in `ui/dist/.source`; a database change (`comms/006_mail_arrivals.sql`) is applied at startup.

@@ -298,6 +298,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.15.0** | Meetings other apps can make for their records: public `meetings` functions to create, give members and outside guests their join links, move and end a meeting, and read who joined and for how long. |
 | **0.14.0** | Mail on the server: new-mail notifications with no tab open, calendar answers and snoozed mail on arrival, administration (storage, shared mailboxes, allow and block lists), one-click unsubscribe, download all. |
 | **0.13.1** | Outgoing mail can carry extra headers (List-Unsubscribe and the other bulk-sender ones), from an allow-list, for apps that send marketing mail. |
 | **0.13.0** | Mail: folders with icons, bulk actions with exact Undo, spam and phishing warnings, a rich-text composer, drafts that cannot be lost, undo and schedule send, search operators, server-side filters, previews, snooze, invitations answered from the message. |
