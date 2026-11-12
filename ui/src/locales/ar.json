@@ -1400,5 +1400,6 @@
   "{name} removed": "أُزيل {name}",
   "{name} saved": "حُفظ {name}",
   "{room} declined: {why}": "رفضت {room}: {why}",
-  "{who} is told the time stays.": "أُبلغ {who} بأن الوقت باقٍ كما هو."
+  "{who} is told the time stays.": "أُبلغ {who} بأن الوقت باقٍ كما هو.",
+  "You cannot open this file in Drive: it is not shared with you.": "لا يمكنك فتح هذا الملف في Drive: لم تتم مشاركته معك."
 }
