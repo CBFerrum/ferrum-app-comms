@@ -33,6 +33,7 @@ import {
   suggestSlots,
   tally,
   toInputIn,
+  userLocale,
   type Busy,
   type BusyMap,
   type Guest,
@@ -337,7 +338,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
             </select>
             <p className="text-xs text-muted-foreground">
               {zone !== mine && when
-                ? t("That is {start} – {end} in your time zone ({mine}).", { start: when.starts.toLocaleString(currentLanguage(), { weekday: "short", hour: "numeric", minute: "2-digit" }), end: when.ends.toLocaleTimeString(currentLanguage(), { hour: "numeric", minute: "2-digit" }), mine: mine.replaceAll("_", " ") })
+                ? t("That is {start} – {end} in your time zone ({mine}).", { start: when.starts.toLocaleString(userLocale(), { weekday: "short", hour: "numeric", minute: "2-digit" }), end: when.ends.toLocaleTimeString(userLocale(), { hour: "numeric", minute: "2-digit" }), mine: mine.replaceAll("_", " ") })
                 : t("It repeats at this time of day in this zone, also when its clocks change. Guests see it in their own time.")}
             </p>
           </div>

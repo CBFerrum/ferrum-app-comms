@@ -9,15 +9,15 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { Skeleton } from "@ferrum/kit/primitives";
 import { cn } from "@ferrum/kit";
-import { currentLanguage, direction, isolate, t } from "@ferrum/client";
-import { atMinutes, barsAcross, isoDay, minutesOf, movable, placeDay, safeColor, snap, type Occurrence } from "./lib/calendar";
+import { direction, isolate, t } from "@ferrum/client";
+import { atMinutes, barsAcross, isoDay, minutesOf, movable, placeDay, safeColor, snap, userLocale, type Occurrence } from "./lib/calendar";
 
 /** Pixels per hour. */
 export const HOUR = 48;
 const STEP = 15;
 
-export const timeFmt = (d: Date, zone?: string) => new Intl.DateTimeFormat(currentLanguage(), { hour: "numeric", minute: "2-digit", timeZone: zone }).format(d);
-const hourFmt = (d: Date, zone?: string) => new Intl.DateTimeFormat(currentLanguage(), { hour: "numeric", timeZone: zone }).format(d);
+export const timeFmt = (d: Date, zone?: string) => new Intl.DateTimeFormat(userLocale(), { hour: "numeric", minute: "2-digit", timeZone: zone }).format(d);
+const hourFmt = (d: Date, zone?: string) => new Intl.DateTimeFormat(userLocale(), { hour: "numeric", timeZone: zone }).format(d);
 const range = (a: Date, b: Date) => `${timeFmt(a)} – ${timeFmt(b)}`;
 
 /** The current time, again every minute. */
@@ -66,7 +66,7 @@ export function TimeGrid(p: {
   const suppress = useRef(false);
   const [ghost, setGhost] = useState<Ghost | null>(null);
   const now = useNow();
-  const rtl = direction(currentLanguage()) === "rtl";
+  const rtl = direction(userLocale()) === "rtl";
   useLayoutEffect(() => {
     // Opens at the start of the working day, the current time in view when it is later.
     const at = Math.max(p.work.from / 60 - 0.5, 0);
@@ -204,12 +204,12 @@ export function TimeGrid(p: {
               key={key}
               type="button"
               onClick={() => p.onDay(d)}
-              aria-label={t("Show {day}", { day: d.toLocaleDateString(currentLanguage(), { weekday: "long", day: "numeric", month: "long" }) })}
+              aria-label={t("Show {day}", { day: d.toLocaleDateString(userLocale(), { weekday: "long", day: "numeric", month: "long" }) })}
               aria-current={key === p.today ? "date" : undefined}
               className={cn("grid min-w-0 justify-items-center gap-0.5 px-1 py-1.5 hover:bg-accent focus-visible:-outline-offset-2", key === p.today && "text-primary")}
             >
-              <span className="truncate uppercase">{isolate(d.toLocaleDateString(currentLanguage(), { weekday: "short" }))}</span>
-              <span className={cn("grid size-7 place-items-center rounded-full text-base font-semibold text-foreground tabular-nums", key === p.today && "bg-primary text-primary-foreground")}>{isolate(d.toLocaleDateString(currentLanguage(), { day: "numeric" }))}</span>
+              <span className="truncate uppercase">{isolate(d.toLocaleDateString(userLocale(), { weekday: "short" }))}</span>
+              <span className={cn("grid size-7 place-items-center rounded-full text-base font-semibold text-foreground tabular-nums", key === p.today && "bg-primary text-primary-foreground")}>{isolate(d.toLocaleDateString(userLocale(), { day: "numeric" }))}</span>
             </button>
           );
         })}
@@ -249,7 +249,7 @@ export function TimeGrid(p: {
                   cols.current[i] = el;
                 }}
                 role="group"
-                aria-label={d.toLocaleDateString(currentLanguage(), { weekday: "long", day: "numeric", month: "long" })}
+                aria-label={d.toLocaleDateString(userLocale(), { weekday: "long", day: "numeric", month: "long" })}
                 className="relative touch-pan-y border-s select-none"
                 style={{ backgroundImage: `${lines}, ${shade(d)}` }}
                 onPointerDown={(e) => startCreate(e, i)}
@@ -292,7 +292,7 @@ export function TimeGrid(p: {
                         onKeyDown={(e) => onKey(e, pl.o)}
                       >
                         <span dir="auto" className="block truncate font-medium">{pl.o.subject}</span>
-                        <span className="block truncate text-muted-foreground tabular-nums">{isolate(range(s, z))}</span>
+                        <span dir="ltr" className="block truncate text-start text-muted-foreground tabular-nums">{range(s, z)}</span>
                       </button>
                       {can && (
                         <span
@@ -310,7 +310,7 @@ export function TimeGrid(p: {
                 {ghostHere && (
                   <div className="pointer-events-none absolute inset-x-0.5 z-30 rounded-sm border-2 border-primary bg-primary/15 px-1 text-xs font-medium text-primary" style={{ top: (ghostHere.from / 60) * HOUR, height: Math.max(((ghostHere.to - ghostHere.from) / 60) * HOUR, 16) }}>
                     {ghostHere.o && <span dir="auto" className="block truncate">{ghostHere.o.subject}</span>}
-                    <span className="tabular-nums" role="status">{isolate(range(atMinutes(d, ghostHere.from), atMinutes(d, ghostHere.to)))}</span>
+                    <span dir="ltr" className="tabular-nums" role="status">{range(atMinutes(d, ghostHere.from), atMinutes(d, ghostHere.to))}</span>
                   </div>
                 )}
               </div>
@@ -331,7 +331,7 @@ const daysTouched = (o: Occurrence) => {
 /** "GMT+5:30" or "PST" for a zone, now. */
 export function zoneShort(zone: string): string {
   try {
-    return new Intl.DateTimeFormat(currentLanguage(), { timeZone: zone, timeZoneName: "short" }).formatToParts(new Date()).find((x) => x.type === "timeZoneName")?.value ?? zone;
+    return new Intl.DateTimeFormat(userLocale(), { timeZone: zone, timeZoneName: "short" }).formatToParts(new Date()).find((x) => x.type === "timeZoneName")?.value ?? zone;
   } catch {
     return zone;
   }
@@ -348,7 +348,7 @@ export function EventBar({ o, style, before, after, onOpen }: { o: Occurrence; s
       className={cn("z-10 mx-0.5 flex min-w-0 items-center gap-1 overflow-hidden rounded-sm px-1.5 text-start text-xs font-medium text-primary-foreground hover:brightness-95 focus-visible:outline-offset-1", before && "ms-0 rounded-s-none", after && "me-0 rounded-e-none", off && "line-through opacity-60")}
       style={{ ...style, background: color }}
     >
-      {!o.all_day && <span className="shrink-0 tabular-nums">{isolate(timeFmt(new Date(o.start)))}</span>}
+      {!o.all_day && <span dir="ltr" className="shrink-0 tabular-nums">{timeFmt(new Date(o.start))}</span>}
       <span dir="auto" className="truncate">{o.subject}</span>
     </button>
   );

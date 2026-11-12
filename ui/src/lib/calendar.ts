@@ -1,4 +1,4 @@
-import { t as tr } from "@ferrum/client";
+import { currentLanguage, t as tr } from "@ferrum/client";
 // The calendar screen's pure parts, on the Mail app's `/api/app/comms/calendar`: the month grid
 // and which occurrences (recurrences already expanded by the server) fall on which day.
 
@@ -40,6 +40,13 @@ export interface Guest {
 export function isoDay(d: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/** The locale dates are written in: the browser's own (en-GB, hi-IN) when it is in the page's language, else the page's language. */
+export function userLocale(): string {
+  const lang = currentLanguage();
+  const own = typeof navigator !== "undefined" ? navigator.language : "";
+  return own && own.toLowerCase().split("-")[0] === lang.toLowerCase().split("-")[0] ? own : lang;
 }
 
 /** The first day of the week in a locale (0 Sunday … 6 Saturday), from `Intl.Locale`'s week information; Monday where it is not known. */

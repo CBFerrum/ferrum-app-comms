@@ -13,7 +13,7 @@ import { useNavigate, useSearchParams } from "react-router";
 import { Badge, Button, Input, Label, Skeleton, Textarea } from "@ferrum/kit/primitives";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@ferrum/kit/primitives";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@ferrum/kit/primitives";
-import { api, currentLanguage, docPath, errorMessage, isolate, t } from "@ferrum/client";
+import { api, docPath, errorMessage, isolate, t } from "@ferrum/client";
 import { announce, cn, ListSkeleton, StatePanel, toast, useDismiss, useLiveEntity } from "@ferrum/kit";
 import { meetLink, meetPath, openCall, useMeetAvailable } from "./lib/meet";
 import {
@@ -40,6 +40,7 @@ import {
   type Occurrence,
   type Scope,
   type View,
+  userLocale,
 } from "./lib/calendar";
 import { changeTimes, removeOccurrence, type Undo } from "./lib/calendarChanges";
 import { EventBar, TimeGrid, timeFmt, useNow, type WorkHours } from "./CalendarGrid";
@@ -79,7 +80,7 @@ function useMedia(query: string) {
 
 const viewName = (v: View) => ({ day: t("Day"), workweek: t("Work week"), week: t("Week"), month: t("Month"), agenda: t("Agenda"), year: t("Year") })[v];
 const VIEW_KEYS: Record<string, View> = { d: "day", x: "workweek", w: "week", m: "month", a: "agenda", y: "year" };
-const longDay = (d: Date) => d.toLocaleDateString(currentLanguage(), { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+const longDay = (d: Date) => d.toLocaleDateString(userLocale(), { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 const plus = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
 
 /** Whether a key press belongs to a field or an open dialog, not to the calendar. */
@@ -92,7 +93,7 @@ export function CalendarPage() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const narrow = useMedia("(max-width: 767px)");
-  const lang = currentLanguage();
+  const lang = userLocale();
   const first = useMemo(() => firstDayOf(lang), [lang]);
   const weekend = useMemo(() => weekendOf(lang), [lang]);
   const work = useMemo(() => workHours(weekend), [weekend]);
@@ -278,7 +279,7 @@ export function CalendarPage() {
         <Button className="justify-self-start" onClick={() => create(new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate(), 9), new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate(), 10))}>
           <Plus /> {t("New event")}
         </Button>
-        <MiniMonth selected={anchor} first={first} today={today} shown={days} onPick={(d) => go({ date: d })} />
+        <MiniMonth selected={anchor} first={first} today={today} shown={days.length <= 7 ? days : []} onPick={(d) => go({ date: d })} />
         <div className="grid gap-1.5 text-sm">
           <Label htmlFor="cal-zone2" className="text-xs text-muted-foreground">
             {t("Second time zone")}
@@ -307,7 +308,7 @@ export function CalendarPage() {
               <ChevronRight className="rtl:rotate-180" />
             </Button>
           </div>
-          <h1 className="me-auto min-w-0 truncate text-lg font-semibold" aria-live="polite">
+          <h1 dir="auto" className="me-auto min-w-0 truncate text-lg font-semibold" aria-live="polite">
             {isolate(query !== null ? t("Search") : title)}
           </h1>
           {query !== null ? (
@@ -406,7 +407,7 @@ export function MiniMonth({ selected, first, today, shown, onPick, compact }: { 
   useEffect(() => setMonth(new Date(selected.getFullYear(), selected.getMonth(), 1)), [selected]);
   const grid = monthGrid(month, first);
   const marked = new Set((shown ?? []).map(isoDay));
-  const lang = currentLanguage();
+  const lang = userLocale();
   return (
     <div className="grid gap-1 text-xs">
       <div className="flex items-center gap-1">
@@ -454,7 +455,7 @@ function MonthView(p: { month: Date; first: number; list: Occurrence[]; loading:
   const grid = useMemo(() => monthGrid(p.month, p.first), [p.month, p.first]);
   const days = useMemo(() => byDay(p.list), [p.list]);
   const [picked, setPicked] = useState(() => isoDay(p.month));
-  const lang = currentLanguage();
+  const lang = userLocale();
   const weeks = Array.from({ length: 6 }, (_, i) => grid.slice(i * 7, i * 7 + 7));
   const inMonth = (d: Date) => d.getMonth() === p.month.getMonth();
   if (p.narrow) {
@@ -504,7 +505,7 @@ function MonthView(p: { month: Date; first: number; list: Occurrence[]; loading:
         const bars = barsOf(spanning, week);
         const shown = bars.filter((b) => b.row < 2);
         return (
-          <div key={keys[0]} className="relative grid min-h-28 grid-cols-7 border-b last:border-b-0" style={{ gridTemplateRows: `auto repeat(${Math.min(2, bars.reduce((n, b) => Math.max(n, b.row + 1), 0))}, 1.375rem) 1fr` }}>
+          <div key={keys[0]} className="relative grid min-h-28 grid-cols-7 border-b last:border-b-0" style={{ gridTemplateRows: ["auto", ...Array.from({ length: Math.min(2, bars.reduce((n, b) => Math.max(n, b.row + 1), 0)) }, () => "1.375rem"), "1fr"].join(" ") }}>
             {week.map((d, i) => (
               <div
                 key={keys[i]}
@@ -538,10 +539,10 @@ function MonthView(p: { month: Date; first: number; list: Occurrence[]; loading:
               const room = 3;
               const extra = Math.max(0, timed.length - room) + hidden;
               return (
-                <ul key={`l${k}`} className="z-10 grid min-w-0 content-start gap-0.5 p-0.5" style={{ gridColumn: i + 1, gridRow: -2 }}>
+                <ul key={`l${k}`} className="z-10 grid min-w-0 content-start gap-0.5 overflow-hidden p-0.5" style={{ gridColumn: i + 1, gridRow: "-2 / -1" }}>
                   {p.loading && i % 3 === 0 && <Skeleton className="h-4" />}
                   {timed.slice(0, room).map((o) => (
-                    <li key={o.id}>
+                    <li key={o.id} className="min-w-0">
                       <OccurrenceChip o={o} onOpen={() => p.onOpen(o)} />
                     </li>
                   ))}
@@ -653,7 +654,8 @@ function OccurrenceChip({ o, onOpen, large }: { o: Occurrence; onOpen: () => voi
       className={cn("flex w-full min-w-0 items-center gap-1.5 rounded px-1 text-start hover:bg-accent focus-visible:-outline-offset-2", large ? "border bg-card p-2 text-sm pointer-coarse:min-h-11" : "text-xs", off && "text-muted-foreground line-through")}
     >
       <span className="size-2 shrink-0 rounded-full" style={{ background: color }} aria-hidden="true" />
-      {!o.all_day && <span className="shrink-0 tabular-nums">{isolate(large ? `${timeFmt(new Date(o.start))} – ${timeFmt(new Date(o.end))}` : timeFmt(new Date(o.start)))}</span>}
+      {/* Times read left to right in every language: they do not mirror with the grid. */}
+      {!o.all_day && <span dir="ltr" className="shrink-0 tabular-nums">{large ? `${timeFmt(new Date(o.start))} – ${timeFmt(new Date(o.end))}` : timeFmt(new Date(o.start))}</span>}
       {/* dir="auto": a left-to-right title in a right-to-left cell is cut at its end, not its start. */}
       <span dir="auto" className="min-w-0 truncate text-start" title={o.subject}>
         {o.subject}
@@ -984,7 +986,7 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit, onDelete }: { o: Occu
   const cancelled = o.status === "Cancelled";
   const guests = detail.data?.attendees ?? [];
   const by = detail.data?.owner_name || detail.data?.owner || o.owner;
-  const lang = currentLanguage();
+  const lang = userLocale();
   const mine = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const addMeeting = async () => {
     setBusy(true);
