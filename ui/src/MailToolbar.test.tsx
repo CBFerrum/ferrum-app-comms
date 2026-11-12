@@ -2,7 +2,7 @@
 
 import { renderToString } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { ActionBar } from "./MailToolbar";
+import { ActionBar, selectionActions } from "./MailToolbar";
 import type { Mailbox } from "./lib/mail";
 
 const box = (id: string, name: string, role: string): Mailbox => ({ id, name, role, sortOrder: 0, totalEmails: 0, unreadEmails: 0 });
@@ -42,10 +42,25 @@ describe("the actions bar", () => {
   });
 });
 
-describe("the actions bar on a phone", () => {
-  it("keeps Archive and Delete as buttons and folds the rest into one menu", () => {
-    const html = renderToString(<ActionBar compact role="inbox" boxes={BOXES} anyUnread={false} allStarred={false} onVerb={() => {}} onMove={() => {}} onForever={() => {}} moveOpen={false} onMoveOpen={() => {}} />);
-    // Move to keeps an anchor for its popover, hidden from readers and out of the tab order (the menu opens it).
-    expect([...html.matchAll(/<button[^>]*aria-label="([^"]+)"[^>]*>/g)].filter((m) => !m[0].includes('aria-hidden="true"')).map((m) => m[1])).toEqual(["Archive", "Delete", "More actions"]);
+describe("the selection's actions, as the kit's SelectionToolbar folds them", () => {
+  const base = { boxes: BOXES, anyUnread: false, allStarred: false, onVerb: () => {}, onMove: () => {}, onForever: () => {}, moveOpen: false, onMoveOpen: () => {} };
+  it("is one list in the bar's order, Archive and Delete kept last when it folds, each with its key in the title", () => {
+    const a = selectionActions({ ...base, role: "inbox", onExport: () => {}, onSelectAll: () => {} });
+    expect(a.map((x) => x.label)).toEqual(["Archive", "Delete", "Report spam", "Mark as unread", "Star", "Move to", "Export as .mbox", "Select all"]);
+    expect(a.filter((x) => x.priority).map((x) => x.id)).toEqual(["archive", "trash"]);
+    expect(a.find((x) => x.id === "trash")?.title).toBe("Delete (#)");
+  });
+  it("Spam offers Not spam and Delete forever (marked as dangerous), never Archive", () => {
+    const a = selectionActions({ ...base, role: "junk" });
+    expect(a.map((x) => x.id)).toEqual(["notSpam", "forever", "read", "star", "move"]);
+    expect(a.find((x) => x.id === "forever")?.danger).toBe(true);
+  });
+  it("Move to opens its folder list after the menu that asked has closed", async () => {
+    let opened = false;
+    const move = selectionActions({ ...base, role: "inbox", onMoveOpen: (o) => void (opened = o) }).find((x) => x.id === "move")!;
+    move.onSelect();
+    expect(opened).toBe(false);
+    await new Promise((r) => setTimeout(r));
+    expect(opened).toBe(true);
   });
 });

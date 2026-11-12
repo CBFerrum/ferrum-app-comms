@@ -3,7 +3,7 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Inbox } from "lucide-react";
-import { lazy, Suspense, useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router";
 import { Button } from "@ferrum/kit/primitives";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@ferrum/kit/primitives";
@@ -14,7 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ferrum/kit/primitives
 import { Textarea } from "@ferrum/kit/primitives";
 import { errorMessage, formatDateTime, fromZonedInput, t, isolate, toZonedInput } from "@ferrum/client";
 import { can, useMetaIndex } from "@ferrum/records";
-import { confirmDialog, FormSkeleton, toast, placed } from "@ferrum/kit";
+import { confirmDialog, FormSkeleton, isRichTextEmpty, RichTextEditor, sanitizeRichText, toast, placed } from "@ferrum/kit";
 import { Failure } from "./States";
 import { readBlocked, writeBlocked } from "./lib/blocklist";
 import { jmap, refusal, useServerDoes, type Mailbox } from "./lib/mail";
@@ -26,9 +26,6 @@ import { FiltersSettings } from "./MailFilters";
 import { MailTransfer } from "./MailTransfer";
 import { MailAdmin } from "./MailAdmin";
 import { signatureOf, useIdentities, useTemplates } from "./MailCompose";
-import type { EditorHandle } from "./MailEditor";
-
-const MailEditor = lazy(() => import("./MailEditor"));
 
 interface Vacation {
   isEnabled: boolean;
@@ -450,33 +447,28 @@ function WritingSettings({ account, boxes }: { account: string; boxes: Mailbox[]
 /** One address's signature, written as rich text and kept on the mail server's identity, so other mail programs that read it share it. */
 function SignatureEditor({ account, identity }: { account: string; identity: { id: string; name: string; email: string; htmlSignature?: string | null; textSignature?: string | null } }) {
   const qc = useQueryClient();
-  const editor = useRef<EditorHandle>(null);
+  const [html, setHtml] = useState(() => signatureOf(identity as never));
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
+  const label = `sig-${identity.id}`;
   // Pictures go in the signature itself (it is kept on the identity), small ones only; they become parts of each message sent.
-  const addPictures = async (files: File[]) => {
-    for (const f of files) {
-      if (!/^image\/(png|jpeg|gif|webp)$/.test(f.type)) toast(t("Only PNG, JPEG, GIF and WebP pictures can go into a signature."), "error");
-      else if (f.size > 200 * 1024) toast(t("“{name}” is too large for a signature: at most 200 KB.", { name: f.name }), "error");
-      else {
-        const src = await new Promise<string>((ok, no) => {
-          const r = new FileReader();
-          r.onload = () => ok(String(r.result));
-          r.onerror = () => no(r.error);
-          r.readAsDataURL(f);
-        });
-        editor.current?.insertImage({ src, name: f.name, upload: "" });
-        setDirty(true);
-      }
-    }
+  const picture = async (f: File) => {
+    if (f.size > 200 * 1024) throw new Error(t("“{name}” is too large for a signature: at most 200 KB.", { name: f.name }));
+    const src = await new Promise<string>((ok, no) => {
+      const r = new FileReader();
+      r.onload = () => ok(String(r.result));
+      r.onerror = () => no(r.error);
+      r.readAsDataURL(f);
+    });
+    return { src, alt: f.name.replace(/\.[^.]+$/, "") };
   };
   const save = async () => {
-    const raw = editor.current?.html() ?? "";
-    const empty = !htmlToText(raw).trim();
-    const html = empty ? "" : fromEditor(raw);
+    const clean = sanitizeRichText(html, { mail: true, inlineImages: true });
+    const empty = isRichTextEmpty(clean);
+    const out = empty ? "" : fromEditor(clean);
     setBusy(true);
     try {
-      const r = await jmap([["Identity/set", { accountId: account, update: { [identity.id]: { htmlSignature: html, textSignature: empty ? "" : htmlToText(html) } } }, "0"]]);
+      const r = await jmap([["Identity/set", { accountId: account, update: { [identity.id]: { htmlSignature: out, textSignature: empty ? "" : htmlToText(out) } } }, "0"]]);
       const failed = (r["0"].notUpdated as Record<string, { type?: string; description?: string }> | undefined)?.[identity.id];
       if (failed) throw new Error(refusal(failed, t("The mail server refused the change.")));
       setDirty(false);
@@ -490,12 +482,22 @@ function SignatureEditor({ account, identity }: { account: string; identity: { i
   };
   return (
     <div className="grid gap-1.5">
-      <span className="text-sm">{isolate(identity.name ? `${identity.name} <${identity.email}>` : identity.email)}</span>
-      <div className="h-40 overflow-hidden rounded-md border">
-        <Suspense fallback={<Skeleton className="h-full" />}>
-          <MailEditor ref={editor} initial={signatureOf(identity as never)} label={t("Signature for {address}", { address: identity.email })} placeholder={t("Your name, role, phone")} onChange={() => setDirty(true)} onFiles={(files) => void addPictures(files)} onSend={() => void save()} />
-        </Suspense>
-      </div>
+      <span id={label} className="text-sm">
+        {isolate(identity.name ? `${identity.name} <${identity.email}>` : identity.email)}
+      </span>
+      <RichTextEditor
+        toolbar="compact"
+        labelledBy={label}
+        placeholder={t("Your name, role, phone")}
+        value={html}
+        onChange={(v) => (setHtml(v), setDirty(true))}
+        images="inline"
+        onUploadImage={picture}
+        onSubmit={() => void save()}
+        minHeight="6rem"
+        maxHeight="16rem"
+        status={dirty ? t("Not saved yet") : undefined}
+      />
       <Button size="sm" className="justify-self-end" disabled={!dirty || busy} onClick={() => void save()}>
         {t("Save signature")}
       </Button>

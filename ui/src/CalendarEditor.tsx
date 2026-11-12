@@ -5,13 +5,12 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, DoorOpen, Paperclip, Plus, X } from "lucide-react";
-import { lazy, Suspense, useMemo, useRef, useState, type FormEvent, type MouseEvent } from "react";
+import { useMemo, useState, type FormEvent, type MouseEvent } from "react";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router";
-import { Badge, Button, Input, Label, Skeleton, Textarea } from "@ferrum/kit/primitives";
-import { Alert, confirmDialog, FormSkeleton, StatePanel, toast, useCanIntent, useShellTitle, placed } from "@ferrum/kit";
+import { Badge, Button, Input, Label, Skeleton } from "@ferrum/kit/primitives";
+import { Alert, confirmDialog, FormSkeleton, RichTextEditor, richTextToPlain, sanitizeRichText, StatePanel, toast, useCanIntent, useShellTitle, placed } from "@ferrum/kit";
 import { Failure } from "./States";
 import { api, currentLanguage, docPath, errorMessage, shell, t, isolate } from "@ferrum/client";
-import type { EditorHandle } from "./MailEditor";
 import { fileKind, isRoom, type Attachment } from "./lib/calendar";
 import { RoomPicker, useRooms } from "./CalendarRooms";
 import { useMe, usePeople } from "@ferrum/records";
@@ -50,8 +49,6 @@ import { meetLink, meetPath, useMeetAvailable } from "./lib/meet";
 import { useCalendars } from "./CalendarList";
 import { routesFor } from "./lib/calendarChanges";
 
-// The rich-text editor is Mail's: loaded only when an event's editor opens, so Calendar's own chunk does not carry it.
-const NotesEditor = lazy(() => import("./MailEditor"));
 
 /** An event as the records API gives it (or Calendar's route, for a calendar shared with me to make changes: then with `level`). */
 interface EventDoc {
@@ -151,10 +148,11 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
   const [start, setStart] = useState(() => (wholeDays ? first.starts.toISOString().slice(0, 10) : toInputIn(first.starts, zone)));
   const [end, setEnd] = useState(() => (wholeDays ? new Date(first.ends.getTime() - DAY).toISOString().slice(0, 10) : toInputIn(first.ends, zone)));
   const [location, setLocation] = useState(doc?.location ?? "");
-  const [description, setDescription] = useState(doc?.description ?? "");
+  const description = doc?.description ?? "";
   // The notes start from their HTML, else their plain words as paragraphs.
   const notesHtml = useMemo(() => doc?.description_html ?? (doc?.description ? doc.description.split(/\n/).map((l) => `<p>${l.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</p>`).join("") : ""), [doc]);
-  const notes = useRef<EditorHandle>(null);
+  // The notes as the kit's editor gives them (its code is loaded when the editor is drawn, not with Calendar).
+  const [notes, setNotes] = useState(notesHtml);
   const [notesTouched, setNotesTouched] = useState(false);
   const [files, setFiles] = useState<Attachment[]>(doc?.attachments ?? []);
   const fromDrive = useCanIntent("pick", "file");
@@ -243,8 +241,8 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
     const list = [...new Set([...guests, ...left.emails.filter((x) => x !== organizer)])];
     const sameDay = (d: Date) => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
     // Rich notes: their HTML (the server makes it safe) and their words; untouched notes are sent as they were.
-    const html = notesTouched ? (notes.current?.html() ?? "") : (doc?.description_html ?? null);
-    const words = notesTouched ? (notes.current?.text() ?? description).trim() : description.trim();
+    const html = notesTouched ? sanitizeRichText(notes) : (doc?.description_html ?? null);
+    const words = notesTouched ? richTextToPlain(notes).trim() : description.trim();
     const body: Record<string, unknown> = {
       subject: subject.trim(),
       starts_at: allDay ? new Date(sameDay(when.starts)).toISOString() : when.starts.toISOString(),
@@ -492,19 +490,16 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
           <span className="text-sm font-medium" id="ev-notes-label">
             {t("Notes")}
           </span>
-          <div className="rounded-md border border-input bg-card">
-            <Suspense fallback={<Textarea id="ev-notes" rows={4} aria-labelledby="ev-notes-label" value={description} onChange={(e) => setDescription(e.target.value)} />}>
-              <NotesEditor
-                ref={notes}
-                initial={notesHtml}
-                label={t("Notes")}
-                placeholder={t("Agenda, links, what to bring")}
-                onChange={() => setNotesTouched(true)}
-                onFiles={() => toast(t("Pictures cannot go in an event's notes. Attach a file from Drive instead."), "error")}
-                onSend={() => void save()}
-              />
-            </Suspense>
-          </div>
+          <RichTextEditor
+            toolbar="compact"
+            labelledBy="ev-notes-label"
+            placeholder={t("Agenda, links, what to bring")}
+            value={notes}
+            onChange={(v) => (setNotes(v), setNotesTouched(true))}
+            onSubmit={() => void save()}
+            minHeight="6rem"
+            maxHeight="18rem"
+          />
         </div>
         <div className="grid gap-1.5">
           <div className="flex items-center gap-2">

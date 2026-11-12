@@ -16,7 +16,7 @@ import { FilterDialog } from "./MailFilters";
 import { FolderChips } from "./MailLabels";
 import { Marked, SaveSearchDialog, SearchBox, SearchChips } from "./MailSearch";
 import { useMedia } from "./MailCompose";
-import { ActionBar, IconAction } from "./MailToolbar";
+import { FolderPopovers, IconAction, selectionActions, type BarProps } from "./MailToolbar";
 import { conversations, offered, rangeBetween, type Verb } from "./lib/actions";
 import { ALL_MAIL, LARGEST, SAVED, STARRED, folderName, isVirtual, purgeLine } from "./lib/folders";
 import { ruleFromQuery, type Rule } from "./lib/filters";
@@ -289,6 +289,23 @@ export function MessageList(p: ListProps) {
   const allStarred = chosen.length > 0 && chosen.every((r) => r.keywords?.$flagged);
   const all = chosen.length === rows.length && rows.length > 0;
   const holds = role === "trash" || role === "junk";
+  const bar: BarProps = {
+    onSelectAll: all || !phone ? undefined : () => setSelected(new Set(ids)),
+    role: actRole,
+    boxes: p.boxes,
+    anyUnread,
+    allStarred,
+    folderId: p.mailboxId,
+    onVerb: (v) => void apply(v, chosen),
+    onMove: (to) => void apply("move", chosen, to),
+    onForever: () => void forever(chosen),
+    moveOpen,
+    onMoveOpen: setMoveOpen,
+    onLabel: label,
+    labelOpen,
+    onLabelOpen: setLabelOpen,
+    onExport: () => void exportChosen(),
+  };
   return (
     <div className="flex h-full min-h-0 flex-col">
       {chosen.length > 0 ? (
@@ -297,34 +314,16 @@ export function MessageList(p: ListProps) {
           count={chosen.length}
           onClear={clear}
           extend={
-            // A phone's bar has no room for it: it is in the bar's menu there.
+            // A phone's bar has no room for it: it is one of the actions there (folded into More).
             !all && !phone && (
               <Button size="sm" variant="ghost" onClick={() => setSelected(new Set(ids))}>
                 {tr("Select all {n}", { n: rows.length })}
               </Button>
             )
           }
+          actions={selectionActions(bar)}
         >
-          <span className="flex shrink-0 items-center">
-            <ActionBar
-              compact={phone}
-              onSelectAll={all ? undefined : () => setSelected(new Set(ids))}
-              role={actRole}
-              boxes={p.boxes}
-              anyUnread={anyUnread}
-              allStarred={allStarred}
-              folderId={p.mailboxId}
-              onVerb={(v) => void apply(v, chosen)}
-              onMove={(to) => void apply("move", chosen, to)}
-              onForever={() => void forever(chosen)}
-              moveOpen={moveOpen}
-              onMoveOpen={setMoveOpen}
-              onLabel={label}
-              labelOpen={labelOpen}
-              onLabelOpen={setLabelOpen}
-              onExport={() => void exportChosen()}
-            />
-          </span>
+          <FolderPopovers {...bar} />
         </SelectionToolbar>
       ) : (
         <div className="flex items-center gap-2 border-b p-2">

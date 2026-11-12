@@ -292,14 +292,15 @@ export function Conversation(p: { account: string; id: string; me: string; own: 
           </Button>
         )}
       </div>
-      <div className={cn("min-h-0", single ? "grid grid-rows-[minmax(0,1fr)]" : "overflow-y-auto")}>
+      {/* One message fills the pane; with an answer under it the pane scrolls, the answer's send bar staying in view. */}
+      <div className={cn("min-h-0", single && !answer ? "grid grid-rows-[minmax(0,1fr)]" : "overflow-y-auto")}>
         {messages.map((m) => (
           <Card
             key={m.id}
             account={p.account}
             summary={m}
             open={open(m)}
-            fill={single}
+            fill={single && !answer}
             onToggle={() => setFolded((f) => ({ ...f, [m.id]: open(m) }))}
             me={p.me}
             domains={p.domains}
@@ -314,7 +315,7 @@ export function Conversation(p: { account: string; id: string; me: string; own: 
           />
         ))}
         {answer && (
-          <div ref={answerAt} className="p-3">
+          <div ref={answerAt} className="px-3 pt-3">
             <Composer
               key={`${answer.kind}-${answer.original?.id}`}
               mode="inline"
@@ -325,6 +326,7 @@ export function Conversation(p: { account: string; id: string; me: string; own: 
               onClose={() => setAnswer(null)}
               onSent={() => prefs.sendArchive && answer.kind !== "forward" && offered(folderRole).archive && void verb("archive")}
               onPopOut={(d) => (setAnswer(null), p.onDraft(d))}
+              onArchive={offered(folderRole).archive && !prefs.sendArchive ? () => void verb("archive") : undefined}
               open={p.onDraft}
             />
           </div>
