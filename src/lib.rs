@@ -24,6 +24,7 @@ mod newsletter;
 mod proposals;
 pub mod recur;
 mod reports;
+mod rooms;
 mod site;
 pub mod subscribe;
 mod template;

@@ -21,6 +21,13 @@
     - {name: role, type: data, label: Group, in_list: true, description: "A group of the workspace (a role): everyone holding it now, checked on every request"}
     - {name: level, type: select, options: [Free/busy, Details, Edit], default: Details, required: true, in_list: true, description: "Free/busy: when, as Busy; Details: everything; Edit: everything, and changes"}
 
+- name: CalendarBooker
+  label: Who may book
+  kind: child
+  fields:
+    - {name: person, type: email, in_list: true, description: "A colleague's sign-in email (or a group: role)"}
+    - {name: role, type: data, label: Group, in_list: true}
+
 - name: Calendar
   label: Calendar
   label_plural: Calendars
@@ -47,6 +54,11 @@
     - {name: next_fetch_at, type: datetime, read_only: true}
     - {name: fetch_etag, type: data, read_only: true}
     - {name: fetch_modified, type: data, read_only: true}
+    - {name: kind, type: select, options: [Calendar, Room, Resource], default: Calendar, in_filter: true, description: "A room or a resource is booked by adding its address (its owner) to an event as a guest; kept by Comms Managers"}
+    - {name: capacity, type: int, min: 1, description: How many people a room holds}
+    - {name: place, type: data, description: "Where a room or resource is (building, floor)"}
+    - {name: bookable, type: json, description: "When a room or resource may be booked: {days, from, to, timezone}; any time when empty"}
+    - {name: bookers, type: table, of: CalendarBooker, description: Who may book a room or resource; everyone when empty}
   indexes: [[owner], [next_fetch_at]]
   list: {columns: [calendar_name, owner], sort: calendar_name asc}
 

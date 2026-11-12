@@ -1492,6 +1492,7 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     calendar_delegates(&t, &admin, &users).await;
     calendar_subscriptions(&t, &users).await;
     calendar_proposals(&t, &users, &smtp).await;
+    calendar_rooms(&t, &users).await;
     hosted_mail(&t, &admin, &users, &imap).await;
 
     // What meetings keep of a person, in Comms' own table: in their copy, and gone with their erasure,
@@ -2538,6 +2539,114 @@ async fn calendar_proposals(t: &T, users: &HashMap<String, Ctx>, smtp: &Smtp) {
     assert!(ics.contains("X-ALT-DESC;FMTTYPE=text/html:<p><b>Agenda</b></p>") && ics.contains("DESCRIPTION:Agenda\\nBudget"), "{ics}");
     assert!(content.contains("<b>Agenda</b>") && content.contains("Budget.xlsx") && !content.contains("steal()"), "{content}");
     t.ok(alice, "DELETE", &format!("/calendar/calendars/{}", notes["id"].as_str().unwrap()), &[("events", "delete")], Value::Null).await;
+}
+
+/// Comms 0.18: rooms and resources, kept by Comms Managers; booked like a guest; answering at once,
+/// one booking of a time when two come together; in free/busy and Find a time; suggested by size.
+async fn calendar_rooms(t: &T, users: &HashMap<String, Ctx>) {
+    let (alice, bob, carol, mgr) = (&users["alice"], &users["bob"], &users["carol"], &users["mgr"]);
+    let k = &t.k;
+    let hours = json!({"days": [1, 2, 3, 4, 5], "from": "08:00", "to": "18:00", "timezone": "Europe/London"});
+    refused(t.call(Some(alice), "POST", "/calendar/rooms", &[], json!({"name": "Mine"})).await, "forbidden");
+    let board = t.ok(mgr, "POST", "/calendar/rooms", &[], json!({"name": "Board room", "capacity": 8, "place": "3rd floor", "hours": hours})).await;
+    let van = t.ok(mgr, "POST", "/calendar/rooms", &[], json!({"name": "Van", "kind": "Resource", "bookers": [{"role": "Sales User"}]})).await;
+    let (room, vanmail) = (board["address"].as_str().unwrap().to_string(), van["address"].as_str().unwrap().to_string());
+    assert!(room.ends_with("@rooms.ferrum.invalid"), "{room}");
+    let listed = t.ok(carol, "GET", "/calendar/rooms", &[], Value::Null).await;
+    let flags: Vec<(String, bool)> =
+        listed["rooms"].as_array().unwrap().iter().map(|r| (r["name"].as_str().unwrap().to_string(), r["may_book"].as_bool().unwrap())).collect();
+    assert_eq!(flags, [("Board room".to_string(), true), ("Van".to_string(), false)]);
+    let book = |who: &Ctx, subject: &str, start: &str, end: &str, rooms: &[&str], extra: Value| {
+        let mut doc =
+            json!({"subject": subject, "starts_at": start, "ends_at": end, "attendees": rooms.iter().map(|r| json!({"email": r})).collect::<Vec<_>>()});
+        if let (Some(d), Some(x)) = (doc.as_object_mut(), extra.as_object()) {
+            d.extend(x.clone());
+        }
+        let who = who.clone();
+        async move { k.insert(&who, "CalendarEvent", obj(doc)).await.unwrap() }
+    };
+    let answer = |d: &Doc, address: &str| {
+        let row = util_rows(d).into_iter().find(|a| a["email"] == json!(address)).unwrap();
+        (row["response"].as_str().unwrap().to_string(), row["comment"].as_str().map(str::to_string))
+    };
+    let first = book(alice, "Budget", "2027-03-15T09:00:00Z", "2027-03-15T10:00:00Z", &[&room], json!({})).await;
+    assert_eq!(answer(&first, &room).0, "Accepted");
+    let second = book(bob, "Hiring", "2027-03-15T09:30:00Z", "2027-03-15T10:30:00Z", &[&room], json!({})).await;
+    let (r, why) = answer(&second, &room);
+    assert!(r == "Declined" && why.as_deref().is_some_and(|w| w.contains("already booked")), "{r} {why:?}");
+    let saturday = book(alice, "Weekend", "2027-03-13T09:00:00Z", "2027-03-13T10:00:00Z", &[&room], json!({})).await;
+    assert!(answer(&saturday, &room).1.unwrap().contains("outside the hours"));
+    // A weekly booking that runs into Alice's on the 15th is declined.
+    let weekly = book(
+        bob,
+        "Stand-up",
+        "2027-03-01T09:15:00Z",
+        "2027-03-01T09:30:00Z",
+        &[&room],
+        json!({"recurrence": "FREQ=WEEKLY;COUNT=4", "timezone": "Europe/London"}),
+    )
+    .await;
+    assert!(answer(&weekly, &room).1.unwrap().contains("2027-03-15T09:15"), "the occurrence that clashes");
+    // Who may book: the van is for Sales.
+    assert!(
+        answer(&book(carol, "Move", "2027-03-17T09:00:00Z", "2027-03-17T10:00:00Z", &[&vanmail], json!({})).await, &vanmail)
+            .1
+            .unwrap()
+            .contains("may not book")
+    );
+    assert_eq!(answer(&book(alice, "Delivery", "2027-03-17T09:00:00Z", "2027-03-17T10:00:00Z", &[&vanmail], json!({})).await, &vanmail).0, "Accepted");
+    // Two people book the same time at once: exactly one gets the room.
+    let (a, b) = tokio::join!(
+        book(alice, "Race A", "2027-03-16T11:00:00Z", "2027-03-16T12:00:00Z", &[&room], json!({})),
+        book(bob, "Race B", "2027-03-16T11:00:00Z", "2027-03-16T12:00:00Z", &[&room], json!({}))
+    );
+    let accepted = [answer(&a, &room).0, answer(&b, &room).0].iter().filter(|r| *r == "Accepted").count();
+    assert_eq!(accepted, 1, "one booking of the time, not two");
+    // Nothing is mailed to a room; free/busy and Find a time read it like a person.
+    let mailed: i64 =
+        t.scalar("select count(*) from e_communication where tenant_id = $1 and recipients like '%rooms.ferrum.invalid%' and $2::uuid is null", None).await;
+    assert_eq!(mailed, 0);
+    let fb = t.ok(carol, "POST", "/calendar/freebusy", &[], json!({"users": [room], "from": "2027-03-15", "to": "2027-03-16"})).await;
+    assert_eq!(fb["busy"][&room].as_array().unwrap().len(), 1, "{fb}");
+    // Suggested: free, big enough, bookable then.
+    let names = |v: Value| v["rooms"].as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let at = |from: &str, to: &str, people: &str| [("from", from.to_string()), ("to", to.to_string()), ("people", people.to_string())];
+    let ask = |q: [(&'static str, String); 3]| async move {
+        let q: Vec<(&str, &str)> = q.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        t.ok(carol, "GET", "/calendar/rooms/suggest", &q, Value::Null).await
+    };
+    assert!(names(ask(at("2027-03-15T09:00:00Z", "2027-03-15T10:00:00Z", "4")).await).is_empty(), "booked then");
+    assert_eq!(names(ask(at("2027-03-15T13:00:00Z", "2027-03-15T14:00:00Z", "4")).await), ["Board room"]);
+    assert!(names(ask(at("2027-03-15T13:00:00Z", "2027-03-15T14:00:00Z", "20")).await).is_empty(), "too small");
+    // The room's calendar: what and who for those who may book, Busy for others.
+    let sched = |who: &Ctx, id: &str| {
+        let (who, path) = (who.clone(), format!("/calendar/rooms/{id}/events"));
+        async move { t.ok(&who, "GET", &path, &[("from", "2027-03-15T00:00:00Z"), ("to", "2027-03-18T00:00:00Z")], Value::Null).await }
+    };
+    let b_sched = sched(carol, board["id"].as_str().unwrap()).await;
+    assert!(b_sched["bookings"].as_array().unwrap().iter().any(|x| x["subject"] == json!("Budget")), "{b_sched}");
+    let v_sched = sched(carol, van["id"].as_str().unwrap()).await;
+    assert!(v_sched["bookings"].as_array().unwrap().iter().all(|x| x["subject"] == json!("Busy")) && !v_sched.to_string().contains("Delivery"), "{v_sched}");
+    // Moving the declined event to a free time: the room accepts.
+    let moved = k
+        .update(
+            bob,
+            "CalendarEvent",
+            uid(&Value::Object(second.clone())),
+            obj(json!({"starts_at": "2027-03-15T13:00:00Z", "ends_at": "2027-03-15T14:00:00Z"})),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(answer(&moved, &room).0, "Accepted");
+    refused(t.call(Some(alice), "DELETE", &format!("/calendar/rooms/{}", board["id"].as_str().unwrap()), &[], Value::Null).await, "forbidden");
+    for id in [&board, &van] {
+        t.ok(mgr, "DELETE", &format!("/calendar/rooms/{}", id["id"].as_str().unwrap()), &[], Value::Null).await;
+    }
+}
+
+fn util_rows(d: &Doc) -> Vec<Value> {
+    d.get("attendees").and_then(Value::as_array).cloned().unwrap_or_default()
 }
 
 async fn hosted_mail(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>, imap: &FakeImap) {
