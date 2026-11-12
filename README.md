@@ -118,6 +118,18 @@ flowchart LR
     class OUT,IN,TL app
 ```
 
+### For app developers
+
+Other apps use Mail through a few public functions (the details are in `packages/comms/README.md`):
+
+| What | Where |
+|---|---|
+| Send an email on a record, with Reply-To, In-Reply-To, References and an envelope sender, and get its Message-ID back | `ferrum_app_comms::outbound::send` |
+| Take mail sent to an address or pattern on the workspace's domain (`support@`, `ticket-*@`, plus-addressing), once, behind a savepoint | `ferrum_app_comms::routes` (`add_handler`, `register`) |
+| Read what a received message carried (Message-ID, References, Reply-To, delivered-to, Auto-Submitted, List-Id, authentication) | `Communication.headers` |
+| File every message of a mailbox whose owner allows it | outbox events `MailMessage.received` and `MailMessage.sent` |
+| Create and run meetings for records | `ferrum_app_comms::meetings` |
+
 ### Inside Ferrum
 
 ```mermaid
@@ -298,6 +310,7 @@ CHANGELOG.md  what changed in each version
 
 | Version | Highlights |
 |---|---|
+| **0.20.0** | Mail for other apps: received mail keeps its headers, apps send with Reply-To and threading headers and get the Message-ID back, register an address or pattern to take inbound mail, and file every message of mailboxes whose owners allow it. |
 | **0.19.0** | Mail: a composer on the kit's rich-text editor, in a window with presence (resize, full screen, pop out, a phone composer), pictures as parts, reading and writing set alike; rich vacation replies and signatures. |
 | **0.18.0** | Calendar: sharing with groups and events made in a shared calendar, every calendar over CalDAV, subscriptions by address, proposing a new time, rich notes and Drive files, rooms and resources. |
 | **0.17.0** | Calendar: several calendars with colours, sharing at three levels enforced on the server for every route, "Busy only" events. |

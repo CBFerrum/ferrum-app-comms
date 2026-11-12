@@ -12,6 +12,7 @@ use futures::StreamExt;
 use mail_parser::{Address, HeaderValue, MessageParser, MimeHeaders};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -51,6 +52,102 @@ pub struct ParsedMail {
     pub attachments: Vec<ParsedAttachment>,
     /// Auto-replies, bounces and bulk mail (they never create records).
     pub automatic: bool,
+    /// What apps need to thread mail and tell noise from people (see [`received_headers`]).
+    pub headers: BTreeMap<String, String>,
+}
+
+/// Headers kept as they came (first occurrence), besides the ones kept in their own form below and every
+/// `x-ferrum-` one (an app's own marker on mail it sent).
+const KEPT_HEADERS: &[&str] = &[
+    "auto-submitted",
+    "precedence",
+    "list-id",
+    "list-unsubscribe",
+    "return-path",
+    "delivered-to",
+    "x-original-to",
+    "envelope-to",
+    "x-envelope-to",
+    "x-autoreply",
+    "x-autorespond",
+    "x-auto-response-suppress",
+    "x-failed-recipients",
+    "content-type",
+];
+/// One kept value, all of them together, and how many.
+const MAX_HEADER_VALUE: usize = 2000;
+const MAX_HEADERS_TOTAL: usize = 12_000;
+const MAX_HEADERS_KEPT: usize = 40;
+
+/// A header value as one line: encoded words decoded by the parser, line breaks and control characters removed, so what
+/// is stored can be printed into another message or a log without starting a header of its own.
+fn one_line(v: &str) -> String {
+    util::clean_line(&v.replace(['\r', '\n'], " "), MAX_HEADER_VALUE)
+}
+
+/// A header the parser keeps as it came, with its encoded words (`=?utf-8?q?...?=`) decoded, by letting it read the
+/// text as a subject.
+fn decode_words(raw: &str) -> String {
+    if !raw.contains("=?") {
+        return raw.to_string();
+    }
+    let text = format!("Subject:{raw}\r\n\r\n");
+    MessageParser::default().parse(text.as_bytes()).and_then(|m| m.subject().map(str::to_string)).unwrap_or_else(|| raw.to_string())
+}
+
+fn header_text(v: &HeaderValue<'_>) -> Option<String> {
+    match v {
+        HeaderValue::Text(t) => Some(decode_words(t)),
+        HeaderValue::TextList(l) => Some(l.join(", ")),
+        HeaderValue::Address(a) => Some(addresses(Some(a)).join(", ")),
+        _ => None,
+    }
+}
+
+/// The headers of a received message worth keeping for the apps that route, thread and sort it: Message-ID,
+/// In-Reply-To, References, Reply-To, To, Cc, the recipient it was delivered to, Auto-Submitted, Precedence,
+/// List-Id, List-Unsubscribe, Return-Path, the usual auto-reply and bounce markers, any `x-ferrum-` marker, and
+/// two that say what the mail server found: `authentication-results` (the topmost, the receiving server's own) and
+/// `x-ferrum-auth`, `verified` when that says the From domain was authenticated (DMARC, or an aligned DKIM pass) and
+/// `unverified` otherwise, including when there is no such header. Names are lower case. A message without a header
+/// has no entry for it.
+pub fn received_headers(msg: &mail_parser::Message<'_>, parsed: &ParsedMail) -> BTreeMap<String, String> {
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    let mut total = 0;
+    let mut put = |name: &str, value: String| {
+        let value = one_line(&value);
+        if !value.is_empty() && out.len() < MAX_HEADERS_KEPT && total + value.len() <= MAX_HEADERS_TOTAL && !out.contains_key(name) {
+            total += value.len();
+            out.insert(name.to_string(), value);
+        }
+    };
+    if let Some(m) = &parsed.message_id {
+        put("message-id", m.clone());
+    }
+    put("in-reply-to", parsed.in_reply_to.join(" "));
+    put("references", parsed.references.join(" "));
+    put("reply-to", addresses(msg.reply_to()).join(", "));
+    put("to", parsed.to.join(", "));
+    put("cc", parsed.cc.join(", "));
+    // The topmost line of a name is the first: it is the one the receiving server wrote last.
+    let raw: Vec<(String, &str)> = msg.headers_raw().map(|(n, v)| (n.to_ascii_lowercase(), v)).collect();
+    let first_raw = |name: &str| raw.iter().find(|(n, _)| n == name).map(|(_, v)| *v);
+    for h in msg.headers() {
+        let name = h.name().to_ascii_lowercase();
+        if (KEPT_HEADERS.contains(&name.as_str()) || name.starts_with("x-ferrum-"))
+            && let Some(v) = header_text(h.value()).filter(|v| !v.trim().is_empty()).or_else(|| first_raw(&name).map(decode_words))
+        {
+            put(&name, v);
+        }
+    }
+    let top = first_raw("authentication-results").map(one_line).filter(|a| !a.is_empty());
+    let domain = parsed.from.as_ref().and_then(|f| f.1.rsplit_once('@')).map(|(_, d)| d.to_ascii_lowercase()).unwrap_or_default();
+    let verified = top.as_deref().is_some_and(|a| !domain.is_empty() && crate::itip::authenticated(a, &domain));
+    if let Some(a) = top {
+        put("authentication-results", a);
+    }
+    put("x-ferrum-auth", if verified { "verified" } else { "unverified" }.into());
+    out
 }
 
 fn ids(v: &HeaderValue<'_>) -> Vec<String> {
@@ -106,7 +203,7 @@ pub fn parse_mime(raw: &[u8]) -> Result<ParsedMail> {
         || msg.header_raw("X-Autoreply").is_some()
         || msg.header_raw("X-Autorespond").is_some()
         || sender_is_system;
-    Ok(ParsedMail {
+    let mut parsed = ParsedMail {
         message_id: msg.message_id().map(|m| m.trim().trim_start_matches('<').trim_end_matches('>').to_string()).filter(|m| !m.is_empty()),
         in_reply_to: ids(msg.in_reply_to()),
         references: ids(msg.references()),
@@ -119,7 +216,10 @@ pub fn parse_mime(raw: &[u8]) -> Result<ParsedMail> {
         text,
         attachments,
         automatic,
-    })
+        headers: BTreeMap::new(),
+    };
+    parsed.headers = received_headers(&msg, &parsed);
+    Ok(parsed)
 }
 
 /// The raw message of a provider's inbound webhook: the body itself, or the `body-mime`
@@ -272,9 +372,12 @@ async fn store(k: &Kernel, ctx: &Ctx, raw: &[u8], truncated: bool, account: Opti
         if let Some((e, r)) = record {
             reference = Some((e.to_string(), r.to_string()));
         }
+        // Apps that registered an address this message is for take it (after it is stored); then no record is made of it here.
+        let taken = if account.is_some() && record.is_none() { crate::routes::matching(&mut tx, tenant, &mail).await? } else { vec![] };
         if parent.is_none()
             && let Some(account) = account.filter(|a| a.append_to.is_some())
             && !mail.automatic
+            && taken.is_empty()
         {
             sqlx::query("savepoint append_to").execute(&mut *tx).await?;
             match create_record(k, ctx, &mut tx, account, &mail, &text).await {
@@ -317,6 +420,7 @@ async fn store(k: &Kernel, ctx: &Ctx, raw: &[u8], truncated: bool, account: Opti
             "in_reply_to": mail.in_reply_to.first().map(|m| util::cut(m, 500)),
             "mail_references": util::cut(&mail.references.join(" "), 50_000),
             "thread_key": util::cut(&thread_key, 500),
+            "headers": if mail.headers.is_empty() { Value::Null } else { json!(mail.headers) },
             "seen": record.is_some(),
         });
         match k.insert_tx(ctx, &mut tx, "Communication", util::obj(doc)).await {
@@ -334,6 +438,10 @@ async fn store(k: &Kernel, ctx: &Ctx, raw: &[u8], truncated: bool, account: Opti
                 return Ok(Ingested::Duplicate(e));
             }
             Err(e) => return Err(e),
+        }
+        if !taken.is_empty() {
+            let threaded = reference.as_ref().and_then(|(e, r)| Some((e.clone(), r.parse::<Uuid>().ok()?)));
+            crate::routes::deliver(k, ctx, &mut tx, comm, &mail, &text, &attachments, threaded, &taken).await?;
         }
         if let Some((_, _, _, Some(user))) = &parent
             && !sent
@@ -681,5 +789,21 @@ JVBERi0xLjQKJcfsj6IK\r\n\
         assert!(
             webhook_payload(Some("multipart/form-data; boundary=b1"), b"--b1\r\nContent-Disposition: form-data; name=\"x\"\r\n\r\ny\r\n--b1--\r\n").is_err()
         );
+    }
+
+    #[test]
+    fn received_headers_are_decoded_one_line_and_bounded() {
+        let raw = format!(
+            "From: a@x.test\r\nTo: s@acme.test\r\nSubject: hi\r\nMessage-ID: <h@x.test>\r\nAuto-Submitted: =?utf-8?q?auto-replied?=\r\n\
+             List-Id: Tickets\r\n <t.x.test>\r\nX-Ferrum-Helpdesk: {}\r\nX-Other: not kept\r\n\r\nbody\r\n",
+            "9".repeat(5000)
+        );
+        let h = parse_mime(raw.as_bytes()).unwrap().headers;
+        assert_eq!(h.get("auto-submitted").map(String::as_str), Some("auto-replied"));
+        assert!(h["list-id"].contains("Tickets") && h["list-id"].contains("t.x.test"), "unfolded: {:?}", h["list-id"]);
+        assert_eq!(h["x-ferrum-helpdesk"].len(), MAX_HEADER_VALUE, "cut");
+        assert!(!h.contains_key("x-other") && !h.contains_key("subject"), "only what apps use: {h:?}");
+        assert_eq!(h["x-ferrum-auth"], "unverified");
+        assert!(h.values().all(|v| !v.contains(['\r', '\n'])));
     }
 }

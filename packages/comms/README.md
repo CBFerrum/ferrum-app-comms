@@ -100,6 +100,8 @@ endpoints answer 404, and with a locked one 403.
 | `GET /mail/blob/{account}/{blob}?name=&type=` | an attachment, as a download, never as a type a browser runs |
 | `GET /mail/message/{account}/{email}?images=1` | a message to read: its headers, `text`, `attachments` and `html`. The `html` is made safe (see below) |
 | `POST /mail/file {account, email, entity, record}` | puts the message on a record's timeline as the person's communication: Sent when it is from them, Received otherwise. Needs a Comms role and a record they can read. A message already in the log on no record moves there; one on another record is a 409 |
+| `GET /mail/filing`, `PUT /mail/filing {apps_may_file}` | whether apps may file the person's own mail, as `{apps_may_file, private, filed}`; **off until the owner turns it on**, and only mail from then on |
+| `PUT /mail/filing/private {email, private}` | Comms managers: a mailbox no app files, whatever its owner chose |
 
 What makes `html` safe:
 * no scripts, forms or frames;
@@ -313,6 +315,52 @@ Bell notifications (`{"notification": {...}}` on the same socket, `GET /api/noti
 @mentions (`entity: ChatMessage`, the message id), failed emails and replies to your mail
 (`Communication`), calendar invitations, changes, cancellations, RSVPs and reminders
 (`CalendarEvent`).
+
+## For other apps (Rust)
+
+What an app that sends, receives or files mail calls; all in the caller's transaction, nothing is taken
+or sent unless it commits.
+
+**Received mail keeps its headers.** Every stored message (inbound webhook, IMAP polling, a message filed from a
+mailbox) has `Communication.headers`: an object of lower-case names to one-line, decoded values, at most 2,000
+characters each and 12,000 together, with only the ones apps use: `message-id`, `in-reply-to`, `references`, `reply-to`,
+`to`, `cc`, `delivered-to` (and `x-original-to`, `envelope-to`), `auto-submitted`, `precedence`, `list-id`,
+`list-unsubscribe`, `return-path`, `x-autoreply`, `x-autorespond`, `x-auto-response-suppress`, `x-failed-recipients`,
+`content-type`, any `x-ferrum-*` marker an app put on mail it sent, `authentication-results` (the receiving
+server's own, the topmost) and `x-ferrum-auth`: `verified` when that header says DMARC passed for the From domain or an
+aligned DKIM signature did (the check the calendar uses for invitations), else `unverified`, also when there is no such
+header. A header the message lacked has no entry. Mail stored before 0.20 has no `headers`, and reads as before. Erasing
+a person by their address as sender empties `headers` with the rest of their message. The detail endpoint returns
+`headers`; the list does not.
+
+**Sending** (`ferrum_app_comms::outbound::send(k, ctx, tx, &Message)` → `Sent {communication, message_id}`): the
+Message-ID the mail goes out with is returned and stored, so an answer is found by it. `reply_to` is one address,
+`in_reply_to` and `references` are message ids (with or without `<>`), `envelope_sender` is one plain address on the
+workspace's mail domain or an outgoing email account's domain (or below one): each is checked, none is header text, and
+a refused one queues nothing. Where `in_reply_to` names a message Mail has, the new one takes its thread and its record.
+Without an email account the server's own mailer carries none of Reply-To, envelope sender or extra headers (logged).
+
+**Registering for inbound mail** (`ferrum_app_comms::routes`): at startup `add_handler("app", Arc<dyn Handler>)`; per
+workspace `register(tx, tenant, &Registration {app, address, keep_in_mailbox})`, `unregister`, `registered`.
+`address` is `local@domain` on a domain of the workspace (its mail domain, or an email account's), the local part
+holding at most one `*`: `support@acme.test` also takes `support+anything@`, `ticket-*@acme.test` takes
+`ticket-0042-x7@`; `Received.token` is what follows the `+` or what the `*` matched. A message is matched on To, Cc and
+the recipient the server delivered it to (so a Bcc is found) and goes to each matching app once, as the system, in the
+transaction that stores it, behind a savepoint: the handler's writes stand only if it returns `Ok`; an error (or an app
+no longer installed) leaves the message stored, logged (`route_error`, and the warning log), its writes undone. The
+message records which app took it (`routed_to`). `keep_in_mailbox: false` leaves it out of `GET /communications` once an
+app took it (`hidden_from_inbox`); the default keeps it where it was addressed. Two apps cannot hold overlapping
+addresses (`Conflict`); an address a hosted or shared mailbox owns cannot be taken (`Conflict`); other domains or
+malformed addresses are `Invalid`. An account's `append_to` makes no record of a message an app took. Mail that stays on
+the hosted mail server is not stored here and is not routed: have the server forward the address to the account's
+inbound webhook. The older hook on `Communication` keeps working beside it.
+
+**Filing mail** (hosted mailboxes): for each message that arrives in a mailbox's Inbox, and each one sent from it (not
+drafts, not junk), Mail raises the outbox event `MailMessage.received` or `MailMessage.sent` (entity `MailMessage`; the
+record id stands for the message). Payload: `{kind, mailbox, mailbox_address, owner, account, email, thread, message_id,
+in_reply_to, from, to, cc, subject, at}`: never the body or the files. Raised once, in the transaction that moves the
+look forward, only from the time the owner allows it and never for a mailbox marked private. Mail kept as
+`Communication` raises `Communication.created` as before.
 
 ## Newsletters
 

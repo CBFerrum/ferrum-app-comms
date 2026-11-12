@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.20.0
+
+Mail becomes something other apps build on: what Helpdesk and CRM asked of it. A database change (`comms/009_inbound_apps.sql`: `comms_mail_route`, `comms_mail_filing`) and new `Communication` fields (`reply_to_address`, `envelope_sender`, `routed_to`, `route_error`, `hidden_from_inbox`) are applied at startup; nothing existing moves. No interface change.
+
+**Received mail keeps its headers.** `Communication.headers` is written for every received (and filed) message: Message-ID, In-Reply-To, References, Reply-To, To, Cc, the recipient it was delivered to, Auto-Submitted, Precedence, List-Id, List-Unsubscribe, Return-Path, the auto-reply and bounce markers, any `x-ferrum-*` marker, the receiving server's Authentication-Results and `x-ferrum-auth` (`verified` or `unverified`, from the DMARC or aligned DKIM result, as the calendar judges invitations). Names lower case, values decoded and on one line, 2,000 characters each and 12,000 together. Erased with the sender. Older rows have none and work as before.
+
+**An app sets Reply-To and threading on what it sends.** `outbound::send` takes Reply-To, In-Reply-To, References (checked as an address and message ids, never header text) and an envelope sender on a domain of the workspace; it returns the Message-ID, which is stored. A message that answers one Mail has takes its thread and record.
+
+**Apps register for inbound mail.** `routes::add_handler` and `routes::register`: an address or a pattern (`ticket-*@`, plus-addressing, the token handed over) on a workspace domain; Mail hands a received message to each registered app once, in its own transaction behind a savepoint, so a failing handler loses nothing (`route_error`); `routed_to` says which app took it; `keep_in_mailbox: false` leaves it out of lists. Two apps cannot overlap; a person's or a shared mailbox's address cannot be taken. The hook on `Communication` keeps working.
+
+**Every message of a mailbox can be filed without a person.** Hosted mail raises `MailMessage.received` and `MailMessage.sent` (ids, addresses, thread, mailbox, subject; never the body) once per message. Off until the owner turns it on (`PUT /mail/filing`), never for a mailbox a manager marks private (`PUT /mail/filing/private`).
+
+Tested against a real PostgreSQL with a fixture app: a message to the registered address reaches the handler once with its headers, a reply is delivered in the same thread, an auto-reply, a bounce and list mail carry their marking headers, a failing handler leaves the mail delivered and logged with its writes undone, an app's send goes out with Reply-To, In-Reply-To, References and its envelope sender, and filing events are raised once across concurrent rounds and not for private or switched-off mailboxes.
+
+Not in this release: the setting's switch in Mail's settings screen (the endpoints are there); routing of mail that stays on the hosted mail server (forward the address to the account's inbound webhook); events for mail kept as a `Communication` (it has `Communication.created`).
+
 ## 0.19.0
 
 Mail gets a composer you want to write in. No database change. Tried on a running server beside a real mail server; built with the Ferrum-Frontend commit named in `ui/dist/.source`.

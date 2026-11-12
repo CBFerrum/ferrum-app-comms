@@ -23,6 +23,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
 use ferrum_kernel::{Error, Kernel, Result, notify};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -183,6 +184,24 @@ pub(crate) struct Cursor {
     pub state: Option<String>,
     pub notify: Notify,
     pub script_blob: Option<String>,
+    /// Whether apps may file this mailbox's mail: its owner said so and the workspace has not marked it private.
+    pub filing: bool,
+}
+
+/// A message of a mailbox, told to the apps that file mail: who it is from and to, its thread, never what it says.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct MailEvent {
+    /// `received` or `sent`.
+    pub kind: &'static str,
+    pub id: String,
+    pub thread: String,
+    pub message_id: Option<String>,
+    pub in_reply_to: Vec<String>,
+    pub from: String,
+    pub to: Vec<String>,
+    pub cc: Vec<String>,
+    pub subject: String,
+    pub at: String,
 }
 
 /// A message that notifies.
@@ -210,6 +229,8 @@ pub(crate) struct Look {
     pub reset: bool,
     pub filed: usize,
     pub woke: usize,
+    /// What apps may file of the new mail (empty unless the cursor allows it).
+    pub events: Vec<MailEvent>,
 }
 
 fn mailbox_with(boxes: &[Value], f: impl Fn(&Value) -> bool) -> Option<&str> {
@@ -237,7 +258,15 @@ pub(crate) fn wake_of(keywords: &Value) -> Option<(String, DateTime<Utc>)> {
     Some((k.clone(), at))
 }
 
-const ARRIVED: &[&str] = &["threadId", "mailboxIds", "keywords", "from", "subject", "receivedAt", "attachments"];
+const ARRIVED: &[&str] = &["threadId", "mailboxIds", "keywords", "from", "to", "cc", "messageId", "inReplyTo", "subject", "receivedAt", "attachments"];
+
+fn emails(list: &Value) -> Vec<String> {
+    list.as_array().into_iter().flatten().filter_map(|a| a["email"].as_str()).map(str::to_lowercase).collect()
+}
+
+fn ids_of(list: &Value) -> Vec<String> {
+    list.as_array().into_iter().flatten().filter_map(Value::as_str).map(|i| i.trim().trim_matches(['<', '>']).to_string()).filter(|i| !i.is_empty()).collect()
+}
 
 /// Looks at `account` (owned by the addresses `own`) since `cur`, files and wakes what the
 /// workspace's senders and snooze say, and returns what notifies.
@@ -330,10 +359,35 @@ pub(crate) async fn look(
             }
             _ => {}
         }
+        let kw = &m["keywords"];
+        // For apps that file mail, when its owner lets them: what arrived in the Inbox and what was sent, not drafts or junk.
+        if cur.filing && cur.state.is_some() && !out.reset && kw["$draft"] != json!(true) && !from.is_empty() {
+            let in_sent = sent.as_ref().is_some_and(|s| ids.contains_key(s));
+            let kind = if mine && in_sent {
+                Some("sent")
+            } else if !mine && in_inbox {
+                Some("received")
+            } else {
+                None
+            };
+            if let Some(kind) = kind {
+                out.events.push(MailEvent {
+                    kind,
+                    id: id.to_string(),
+                    thread: m["threadId"].as_str().unwrap_or_default().to_string(),
+                    message_id: ids_of(&m["messageId"]).into_iter().next(),
+                    in_reply_to: ids_of(&m["inReplyTo"]),
+                    from: from.clone(),
+                    to: emails(&m["to"]),
+                    cc: emails(&m["cc"]),
+                    subject: util::cut(&util::clean_line(m["subject"].as_str().unwrap_or_default(), 300), 300),
+                    at: m["receivedAt"].as_str().unwrap_or_default().to_string(),
+                });
+            }
+        }
         if !in_inbox {
             continue;
         }
-        let kw = &m["keywords"];
         let calendar = m["attachments"].as_array().into_iter().flatten().any(|p| itip::is_calendar(p["type"].as_str().unwrap_or_default()));
         if calendar && kw[itip::APPLIED] != json!(true) && !mine {
             out.calendar.push(id.to_string());
@@ -465,9 +519,11 @@ pub async fn run(k: &Kernel, tenant: Uuid, budget: Duration) -> Result<usize> {
     }
     let started = Instant::now();
     let mut tx = k.db.tenant_tx(tenant).await?;
-    let rows: Vec<(Uuid, String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<i32>, bool)> = sqlx::query_as(
-        "select m.id, m.user_id, lower(m.email), m.account_id, c.email_state, c.notify, c.script_blob, c.failures, c.mailbox_id is not null \
+    let rows: Vec<(Uuid, String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<i32>, bool, bool)> = sqlx::query_as(
+        "select m.id, m.user_id, lower(m.email), m.account_id, c.email_state, c.notify, c.script_blob, c.failures, c.mailbox_id is not null, \
+         coalesce(f.apps_may_file and not f.private, false) \
          from e_hosted_mailbox m left join comms_mail_cursor c on c.tenant_id = m.tenant_id and c.mailbox_id = m.id \
+         left join comms_mail_filing f on f.tenant_id = m.tenant_id and f.mailbox_id = m.id \
          where m.tenant_id = $1 and m.status = 'Active' and m.account_id is not null and (c.retry_at is null or c.retry_at <= now()) \
          order by c.checked_at nulls first",
     )
@@ -482,7 +538,7 @@ pub async fn run(k: &Kernel, tenant: Uuid, budget: Duration) -> Result<usize> {
         block: senders.iter().filter(|s| s.1 == "block").map(|s| s.0.clone()).collect(),
     };
     let mut looked = 0;
-    for (mailbox, user, email, account, state, notify, blob, failures, known) in rows {
+    for (mailbox, user, email, account, state, notify, blob, failures, known, filing) in rows {
         if started.elapsed() >= budget {
             break;
         }
@@ -492,7 +548,7 @@ pub async fn run(k: &Kernel, tenant: Uuid, budget: Duration) -> Result<usize> {
         tx.commit().await?;
         let Some(secret) = secret else { continue };
         let owner = Owner { k, url: url.clone(), auth: hosted::basic(&email, &secret) };
-        let cur = Cursor { state: state.clone(), notify: Notify::from_word(notify.as_deref().unwrap_or("all")), script_blob: blob };
+        let cur = Cursor { state: state.clone(), notify: Notify::from_word(notify.as_deref().unwrap_or("all")), script_blob: blob, filing };
         looked += 1;
         match look(&owner, &account, std::slice::from_ref(&email), &cur, &senders, util::now()).await {
             Ok(found) => {
@@ -501,7 +557,7 @@ pub async fn run(k: &Kernel, tenant: Uuid, budget: Duration) -> Result<usize> {
                         tracing::warn!(%tenant, %mailbox, "a calendar message was not applied: {e}");
                     }
                 }
-                if let Err(e) = commit(k, tenant, mailbox, user, &account, state.as_deref(), known, &cur, &found).await {
+                if let Err(e) = commit(k, tenant, mailbox, &email, user, &account, state.as_deref(), known, &cur, &found).await {
                     tracing::warn!(%tenant, %mailbox, "new mail not recorded: {e}");
                 }
             }
@@ -523,7 +579,18 @@ pub async fn run(k: &Kernel, tenant: Uuid, budget: Duration) -> Result<usize> {
 /// Moves the cursor from `old` to what `found` saw and, in the same transaction, notifies. When
 /// another replica moved it first, nothing is stored or sent.
 #[allow(clippy::too_many_arguments)]
-async fn commit(k: &Kernel, tenant: Uuid, mailbox: Uuid, user: Uuid, account: &str, old: Option<&str>, known: bool, cur: &Cursor, found: &Look) -> Result<()> {
+async fn commit(
+    k: &Kernel,
+    tenant: Uuid,
+    mailbox: Uuid,
+    address: &str,
+    user: Uuid,
+    account: &str,
+    old: Option<&str>,
+    known: bool,
+    cur: &Cursor,
+    found: &Look,
+) -> Result<()> {
     let notify = found.notify.unwrap_or(cur.notify).word();
     let blob = if found.notify.is_some() { found.script_blob.clone() } else { cur.script_blob.clone() };
     let mut tx = k.db.tenant_tx(tenant).await?;
@@ -559,6 +626,17 @@ async fn commit(k: &Kernel, tenant: Uuid, mailbox: Uuid, user: Uuid, account: &s
     };
     if moved == 0 {
         return Ok(());
+    }
+    // Told to the apps that file mail, in the transaction that moves the cursor: once per message.
+    if old.is_some() && !found.reset {
+        for e in &found.events {
+            let record = Uuid::from_slice(&Sha256::digest(format!("{mailbox}|{}", e.id))[..16]).unwrap_or_else(|_| Uuid::now_v7());
+            let payload = json!({
+                "kind": e.kind, "mailbox": mailbox, "mailbox_address": address, "owner": user, "account": account, "email": e.id, "thread": e.thread,
+                "message_id": e.message_id, "in_reply_to": e.in_reply_to, "from": e.from, "to": e.to, "cc": e.cc, "subject": e.subject, "at": e.at,
+            });
+            ferrum_kernel::outbox::enqueue(&mut tx, tenant, &format!("MailMessage.{}", e.kind), Some("MailMessage"), Some(record), payload).await?;
+        }
     }
     if !found.news.is_empty() && old.is_some() {
         let (title, line) = wording(&found.news);
@@ -596,6 +674,71 @@ async fn fail(k: &Kernel, tenant: Uuid, mailbox: Uuid, account: &str, failures: 
     .await?;
     tx.commit().await?;
     Ok(())
+}
+
+/// The signed-in person's hosted mailbox.
+async fn own_mailbox(tx: &mut ferrum_kernel::Tx, tenant: Uuid, user: Uuid) -> Result<Uuid> {
+    sqlx::query_scalar("select id from e_hosted_mailbox where tenant_id = $1 and user_id = $2")
+        .bind(tenant)
+        .bind(user.to_string())
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(|| Error::NotFound("hosted mailbox".into()))
+}
+
+/// `GET /mail/filing`: whether apps may file the caller's mail (their own setting, off until they turn it on)
+/// and whether the workspace marked the mailbox private.
+pub(crate) async fn filing(k: &Kernel, ctx: &ferrum_kernel::Ctx) -> Result<Value> {
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let mailbox = own_mailbox(&mut tx, ctx.tenant, ctx.user).await?;
+    let row: Option<(bool, bool)> = sqlx::query_as("select apps_may_file, private from comms_mail_filing where tenant_id = $1 and mailbox_id = $2")
+        .bind(ctx.tenant)
+        .bind(mailbox)
+        .fetch_optional(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    let (allow, private) = row.unwrap_or((false, false));
+    Ok(json!({"apps_may_file": allow, "private": private, "filed": allow && !private}))
+}
+
+/// `PUT /mail/filing {apps_may_file}`: the caller's own choice; mail from then on, never what is already there.
+pub(crate) async fn set_filing(k: &Kernel, ctx: &ferrum_kernel::Ctx, allow: bool) -> Result<Value> {
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let mailbox = own_mailbox(&mut tx, ctx.tenant, ctx.user).await?;
+    sqlx::query(
+        "insert into comms_mail_filing (tenant_id, mailbox_id, apps_may_file) values ($1, $2, $3) \
+         on conflict (tenant_id, mailbox_id) do update set apps_may_file = excluded.apps_may_file, changed_at = now()",
+    )
+    .bind(ctx.tenant)
+    .bind(mailbox)
+    .bind(allow)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    filing(k, ctx).await
+}
+
+/// `PUT /mail/filing/private {email, private}` (Comms managers): a mailbox no app files, whatever its owner chose.
+pub(crate) async fn set_private(k: &Kernel, ctx: &ferrum_kernel::Ctx, email: &str, private: bool) -> Result<Value> {
+    ctx.require("CommsSettings", ferrum_kernel::Action::Write)?;
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let mailbox: Uuid = sqlx::query_scalar("select id from e_hosted_mailbox where tenant_id = $1 and lower(email) = $2")
+        .bind(ctx.tenant)
+        .bind(email.trim().to_lowercase())
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| Error::NotFound("hosted mailbox".into()))?;
+    sqlx::query(
+        "insert into comms_mail_filing (tenant_id, mailbox_id, private) values ($1, $2, $3) \
+         on conflict (tenant_id, mailbox_id) do update set private = excluded.private, changed_at = now()",
+    )
+    .bind(ctx.tenant)
+    .bind(mailbox)
+    .bind(private)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(json!({"email": email.trim().to_lowercase(), "private": private}))
 }
 
 /// `GET /mail/notice/{id}`: what a new-mail notification of the signed-in person opens.
@@ -686,7 +829,7 @@ pub(crate) mod tests {
     }
 
     fn cursor(state: Option<&str>, notify: Notify) -> Cursor {
-        Cursor { state: state.map(String::from), notify, script_blob: Some("blob1".into()) }
+        Cursor { state: state.map(String::from), notify, script_blob: Some("blob1".into()), filing: false }
     }
 
     fn now() -> DateTime<Utc> {
@@ -707,7 +850,9 @@ pub(crate) mod tests {
                 ]),
             ])
         };
-        let found = look(&fake, "h", &[ME.into()], &Cursor { state: None, notify: Notify::All, script_blob: None }, &Senders::default(), now()).await.unwrap();
+        let found = look(&fake, "h", &[ME.into()], &Cursor { state: None, notify: Notify::All, script_blob: None, filing: false }, &Senders::default(), now())
+            .await
+            .unwrap();
         assert_eq!(found.state, "s9");
         assert!(found.news.is_empty());
         assert_eq!(found.notify, Some(Notify::People), "the wave 3 setting, read from the person's Mail script");

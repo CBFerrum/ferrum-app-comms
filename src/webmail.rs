@@ -110,6 +110,17 @@ pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> 
         }
         ("GET", ["message", account, email]) => Ok(util::ok(message(k, ctx, jmap_id(account)?, jmap_id(email)?, q("images") == Some("1")).await?)),
         ("POST", ["file"]) => Ok(util::created(file(k, ctx, util::body_json(req)?).await?)),
+        ("GET", ["filing"]) => Ok(util::ok(arrivals::filing(k, ctx).await?)),
+        ("PUT", ["filing"]) => {
+            let allow = util::body_json(req)?.get("apps_may_file").and_then(Value::as_bool).ok_or_else(|| Error::field("apps_may_file", "true or false"))?;
+            Ok(util::ok(arrivals::set_filing(k, ctx, allow).await?))
+        }
+        ("PUT", ["filing", "private"]) => {
+            let body = util::body_json(req)?;
+            let email = body.get("email").and_then(Value::as_str).ok_or_else(|| Error::field("email", "required"))?;
+            let private = body.get("private").and_then(Value::as_bool).ok_or_else(|| Error::field("private", "true or false"))?;
+            Ok(util::ok(arrivals::set_private(k, ctx, email, private).await?))
+        }
         ("GET", ["notice", id]) => {
             let id = id.parse().map_err(|_| Error::NotFound("notification".into()))?;
             Ok(util::ok(arrivals::notice(k, ctx.tenant, ctx.user, id).await?))

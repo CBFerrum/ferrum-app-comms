@@ -351,6 +351,8 @@ async fn render_and_send(
                     ("List-Unsubscribe-Post".into(), "List-Unsubscribe=One-Click".into()),
                     ("Precedence".into(), "bulk".into()),
                 ],
+                reply_to: None,
+                envelope_from: None,
             })
             .map_err(fail)?;
             mail::smtp_send(server, &message).await

@@ -134,7 +134,12 @@
     - {name: delivered_to, type: json, read_only: true, hidden: true, no_copy: true}
     - {name: ics, type: text, read_only: true, hidden: true, no_copy: true}
     - {name: headers, type: json, read_only: true, hidden: true, no_copy: true,
-       description: "Extra headers on the outgoing message, set by the app that queued it: {\"List-Unsubscribe\": \"<https://...>\"}. Only List-Unsubscribe, List-Unsubscribe-Post, List-Id, Precedence, Auto-Submitted, Feedback-ID and X- names, on one line each"}
+       description: "Outgoing: extra headers set by the app that queued it: {\"List-Unsubscribe\": \"<https://...>\"}. Only List-Unsubscribe, List-Unsubscribe-Post, List-Id, Precedence, Auto-Submitted, Feedback-ID and X- names, on one line each. Received: what the message carried that apps thread and sort by, names in lower case, one line each, at most 12,000 characters: message-id, in-reply-to, references, reply-to, to, cc, delivered-to (and x-original-to, envelope-to), auto-submitted, precedence, list-id, list-unsubscribe, return-path, x-autoreply, x-autorespond, x-failed-recipients, content-type, any x-ferrum-* marker, authentication-results (the receiving server's own) and x-ferrum-auth (verified | unverified). Mail stored before 0.20 has none"}
+    - {name: reply_to_address, type: data, max_length: 320, read_only: true, hidden: true, no_copy: true, description: "Reply-To of an outgoing message, set by the app that sent it (one address)"}
+    - {name: envelope_sender, type: data, max_length: 320, read_only: true, hidden: true, no_copy: true, description: "The envelope sender (Return-Path) of an outgoing message, on a domain of the workspace, set by the app that sent it"}
+    - {name: routed_to, type: data, max_length: 200, read_only: true, no_copy: true, in_filter: true, description: "The app (or apps) that took this received message through its registered address"}
+    - {name: route_error, type: text, read_only: true, no_copy: true, description: "Why an app did not take the message it was registered for; the message was stored all the same"}
+    - {name: hidden_from_inbox, type: check, read_only: true, no_copy: true, description: "An app took this message and its registration says people's lists leave it out"}
   indexes: [[reference_entity, reference_id], [status, next_attempt_at], [communication_date]]
   actions:
     - {name: retry, label: Retry Sending, permission: write, condition: "doc.status == 'Failed' || doc.status == 'Withheld'"}
