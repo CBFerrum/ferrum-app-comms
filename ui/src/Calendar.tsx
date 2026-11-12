@@ -117,6 +117,8 @@ export function CalendarPage() {
   const mine = useQuery({ queryKey: ["calendar", "hours"], queryFn: ({ signal }) => api.get<{ saved: boolean; hours: PersonHours }>(`${CALENDAR}/hours`, undefined, signal), retry: false, staleTime: 300_000 });
   const work = useMemo(() => workHours(weekend, mine.data?.saved ? mine.data.hours : undefined), [weekend, mine.data]);
   const [hoursOpen, setHoursOpen] = useState(false);
+  // On a phone the side panel's calendars open from the menu.
+  const [calsOpen, setCalsOpen] = useState(false);
   const [params, setParams] = useSearchParams();
   // A link to an event (`?event={id}&at={start}`: Home's My work, a notification) opens it.
   const wanted = params.get("event");
@@ -251,7 +253,7 @@ export function CalendarPage() {
   // Keyboard: views, today, previous/next, create, search, help.
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || typing(e) || draft || open || scopeAsk || keys || feed || hoursOpen) return;
+      if (e.metaKey || e.ctrlKey || e.altKey || typing(e) || draft || open || scopeAsk || keys || feed || hoursOpen || calsOpen) return;
       const k = e.key;
       const rtl = document.documentElement.dir === "rtl";
       if (VIEW_KEYS[k]) go({ view: VIEW_KEYS[k] });
@@ -270,7 +272,7 @@ export function CalendarPage() {
     };
     window.addEventListener("keydown", on);
     return () => window.removeEventListener("keydown", on);
-  }, [go, view, anchor, narrow, draft, open, scopeAsk, keys, feed, hoursOpen]);
+  }, [go, view, anchor, narrow, draft, open, scopeAsk, keys, feed, hoursOpen, calsOpen]);
 
   const title =
     view === "day"
@@ -387,6 +389,9 @@ export function CalendarPage() {
                   <Download /> {t("Export my calendar (.ics)")}
                 </a>
               </DropdownMenuItem>
+              <DropdownMenuItem className="md:hidden" onSelect={() => setCalsOpen(true)}>
+                <CalendarDays /> {t("Calendars")}
+              </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => setHoursOpen(true)}>
                 <Clock /> {t("Working hours and time away")}
               </DropdownMenuItem>
@@ -418,6 +423,17 @@ export function CalendarPage() {
       )}
       {keys && <Shortcuts onClose={() => setKeys(false)} />}
       {feed && <FeedDialog onClose={() => setFeed(false)} />}
+      {calsOpen && (
+        <Dialog open onOpenChange={(o) => !o && setCalsOpen(false)}>
+          <DialogContent className="max-h-[92dvh] overflow-y-auto sm:max-w-sm">
+            <DialogHeader>
+              <DialogTitle>{t("Calendars")}</DialogTitle>
+              <DialogDescription>{t("Show or hide each, and change your own.")}</DialogDescription>
+            </DialogHeader>
+            <CalendarList cals={calendars.cals} hidden={calendars.hidden} sharedHidden={calendars.sharedHidden} hideShared={calendars.hideShared} failed={!!calendars.q.error} />
+          </DialogContent>
+        </Dialog>
+      )}
       {hoursOpen && <HoursDialog current={mine.data?.hours} missing={!!mine.error} first={first} onClose={() => setHoursOpen(false)} onSaved={() => void qc.invalidateQueries({ queryKey: ["calendar"] })} />}
     </div>
   );
