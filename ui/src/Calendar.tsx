@@ -1080,6 +1080,8 @@ function HoursDialog({ current, missing, first, onClose, onSaved }: { current?: 
 }
 
 const RESPONSES = ["Accepted", "Tentative", "Declined"] as const;
+/** An answer as people say it, in the page's language. */
+const answerLabel = (r: string | null | undefined) => ({ Yes: t("Yes"), Maybe: t("Maybe"), No: t("No"), "No reply yet": t("No reply yet") })[answerWord(r)];
 
 /** Who is on an event and what each answered (`GET /calendar/events/{id}`: for the organizer and the guests). */
 interface Detail {
@@ -1133,7 +1135,7 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit, onDelete }: { o: Occu
       setNote("");
       onChanged();
       void qc.invalidateQueries({ queryKey: ["calendar", "detail", o.event] });
-      toast(`${t("Replied: {answer}.", { answer: t(answerWord(r)).toLowerCase() })} ${by ? t("{by} is told.", { by }) : ""}`.trim());
+      toast(`${t("Replied: {answer}.", { answer: answerLabel((r)).toLowerCase() })} ${by ? t("{by} is told.", { by }) : ""}`.trim());
     } catch (e) {
       setProblem(t("Your answer was not sent: {e}", { e: errorMessage(e) }));
     } finally {
@@ -1208,7 +1210,7 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit, onDelete }: { o: Occu
               <div className="flex gap-2">
                 {RESPONSES.map((r) => (
                   <Button key={r} size="sm" variant={response === r ? "default" : "outline"} disabled={busy} aria-pressed={response === r} onClick={() => void rsvp(r)}>
-                    {t(answerWord(r))}
+                    {answerLabel((r))}
                   </Button>
                 ))}
               </div>
@@ -1230,7 +1232,7 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit, onDelete }: { o: Occu
                   <li key={g.email} className="grid">
                     <span className="flex items-baseline gap-2">
                       <span className="min-w-0 flex-1 truncate">{g.name || g.email}</span>
-                      <span className={cn("shrink-0 text-xs", g.response === "Accepted" ? "text-success" : g.response === "Declined" ? "text-destructive" : "text-muted-foreground")}>{t(answerWord(g.response))}</span>
+                      <span className={cn("shrink-0 text-xs", g.response === "Accepted" ? "text-success" : g.response === "Declined" ? "text-destructive" : "text-muted-foreground")}>{answerLabel((g.response))}</span>
                     </span>
                     {g.comment && <span className="border-s-2 ps-2 text-xs text-muted-foreground">{isolate(g.comment)}</span>}
                   </li>
