@@ -1,1 +1,0 @@
-import"./index-C2TA755d.js";import{u as o}from"./useQuery-DS1uZBC1.js";import{b as r}from"./meta-B_EvENt7.js";const i=()=>o({queryKey:["people"],queryFn:({signal:e})=>r.get("/api/users",void 0,e),staleTime:5*6e4});export{i as u};
