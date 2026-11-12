@@ -1915,11 +1915,13 @@ async fn calendar_delegates(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>) {
     let k = &t.k;
     let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
     sqlx::query("insert into role (tenant_id, name, description) values ($1, 'Planners', 'Plans the week')").bind(t.tenant).execute(&mut *tx).await.unwrap();
+    sqlx::query("insert into role (tenant_id, name) values ($1, 'plugin:demo-connector')").bind(t.tenant).execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
     k.set_user_roles(admin, carol.user, &["Comms User".to_string(), "Planners".to_string()]).await.unwrap();
     let carol = &k.load_ctx(t.tenant, carol.user, None, "it".into()).await.unwrap();
     let groups = t.ok(alice, "GET", "/calendar/groups", &[], Value::Null).await;
     assert!(groups["groups"].as_array().unwrap().iter().any(|g| g["name"] == json!("Planners") && g["members"] == json!(1)), "{groups}");
+    assert!(!groups.to_string().contains("plugin:"), "plugins' own roles are not groups of people");
     refused(
         t.call(Some(alice), "POST", "/calendar/calendars", &[], json!({"name": "X", "shares": [{"role": "Nobody's group", "level": "Edit"}]})).await,
         "invalid",
@@ -2487,6 +2489,23 @@ async fn calendar_proposals(t: &T, users: &HashMap<String, Ctx>, smtp: &Smtp) {
     let p = t.ok(alice, "GET", &path, &[], Value::Null).await["proposals"][0]["id"].as_str().unwrap().to_string();
     t.ok(alice, "POST", &format!("{path}/proposals/{p}"), &[], json!({"action": "decline"})).await;
     assert_eq!(t.notifications(bob, "Your proposed time was not taken: Weekly review").await, 1);
+    // It names the occurrence that stays (the 15th), not the series' first.
+    let body: String = t
+        .scalar("select body from notification where tenant_id = $1 and title like 'Your proposed time was not taken%' and $2::uuid is null order by created_at desc limit 1", None)
+        .await;
+    assert!(body.starts_with("Mon 15 Mar 2027"), "{body}");
+    // An all-day event is a day's label, not busy time (as Google Calendar has it by default).
+    let day = k
+        .insert(
+            alice,
+            "CalendarEvent",
+            obj(json!({"subject": "Stock count day", "all_day": true, "starts_at": "2027-03-05T00:00:00Z", "ends_at": "2027-03-06T00:00:00Z"})),
+        )
+        .await
+        .unwrap();
+    let fb = t.ok(bob, "POST", "/calendar/freebusy", &[], json!({"users": ["alice@acme.test"], "from": "2027-03-05", "to": "2027-03-06"})).await;
+    assert_eq!(fb["busy"]["alice@acme.test"], json!([]), "{fb}");
+    k.delete(alice, "CalendarEvent", uid(&Value::Object(day)), None).await.unwrap();
     for e in [ev, moved] {
         k.delete(alice, "CalendarEvent", e, None).await.unwrap();
     }

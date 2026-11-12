@@ -126,13 +126,14 @@ pub async fn shared_with(tx: &mut Tx, tenant: Uuid, me: &str) -> Result<Shared> 
     Ok(out)
 }
 
-/// `GET /calendar/groups`: the groups (roles) a calendar can be shared with, with how many active people hold each.
+/// `GET /calendar/groups`: the groups (roles) a calendar can be shared with, with how many active people
+/// hold each (plugins' own roles, held by service users, are not groups of people).
 pub async fn groups(k: &Kernel, ctx: &Ctx) -> Result<Value> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let rows: Vec<(String, Option<String>, i64)> = sqlx::query_as(
         "select r.name, r.description, (select count(*) from user_role ur join app_user u on u.tenant_id = ur.tenant_id and u.id = ur.user_id and u.is_active \
             where ur.tenant_id = r.tenant_id and ur.role = r.name and (ur.expires_at is null or ur.expires_at > now())) \
-         from role r where r.tenant_id = $1 order by r.name",
+         from role r where r.tenant_id = $1 and r.name not like 'plugin:%' order by r.name",
     )
     .bind(ctx.tenant)
     .fetch_all(&mut *tx)
