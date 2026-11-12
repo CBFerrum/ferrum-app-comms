@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.16.0
+
+Calendar becomes a calendar people can plan in. Tried on a running server beside a real mail server; a database change (`comms/007_calendar_hours.sql`) is applied at startup. Built with the Ferrum-Frontend commit named in `ui/dist/.source`.
+
+**Repeating events keep their time of day across daylight saving.** A weekly 09:00 meeting in London stays at 09:00 when the clocks change; its instant moves instead (it used to repeat at the start's UTC time, an hour off for half the year). A time the spring-forward jump skips is read with the offset from before the jump (02:30 becomes 03:30), as phones and Google Calendar do; a time the fall-back hour repeats is the first of the two. All-day events repeat as dates. `UNTIL` and `COUNT` are read as the iCalendar standard says. Events made before this version are right without any change to stored data; exceptions stored earlier still remove their occurrences; a reminder that already went out is not sent again. Calendar files, the secret feed, CalDAV and invitations write repeating events in their zone with a `VTIMEZONE`, and imports keep the zone they came in. Tested over Europe/London, America/New_York, Australia/Sydney, Asia/Kolkata, America/Sao_Paulo and Australia/Lord_Howe, weekly, monthly and yearly, across both changes of clocks.
+
+**Views.** Day, work week, week, month, agenda and year; Today and previous / next; a small month to jump to a date; the current time; working hours shaded; a second time zone down the side. The view and the date are in the address, so a link opens the same view. On a phone: the day first, three days for a week, and the month as dots with the chosen day's list beneath.
+
+**Making and changing events.** Click or drag on empty time for a quick form (title, time, guests, More options). Drag an event to move it and its lower edge to resize it, in 15-minute steps, or use Alt and the arrow keys; every change offers Undo. For a repeating event every change and deletion asks: this event, this and following, or all events. The editor has a time-zone picker and shows your own time beside it when the zones differ.
+
+**Working hours and time away.** Your days and hours in your zone, and an out-of-office period that shows on your calendar, can decline invitations that fall in it with your message, and links to Mail's vacation reply.
+
+**Find a time** draws each guest's working hours and time away and suggests only times inside everyone's hours, on each person's own clock. A guest outside the workspace shows as no information.
+
+**Search** in Calendar by title, guest, place or notes, and from the bar's search (only events the person can see). **Files and feed**: import an `.ics` file, export your calendar, and copy, renew or turn off the secret feed address. **Keys**: d, x, w, m, a, y, t, j, k, n, p, c, / and ?, in a help list.
+
+Seen on the running server: the London and New York weekly events on both sides of the change; the feed, export and a CalDAV report carrying the zone; an imported New York event; an invitation declined at once during time away and one outside it left to answer; suggestions inside both people's hours; a reminder arriving at the corrected minute; every shortcut. 65 Rust unit tests, 215 interface tests. The new words are in Arabic and Hindi.
+
+Not in this release: several calendars per person with colours, sharing a calendar, subscribing to an outside calendar by its address, public holidays, and one CalDAV collection per calendar; event attachments, a rich-text description, proposing a new time, rooms and resources; a change to one occurrence becomes an event of its own rather than an override inside the series; time away shows to colleagues only in Find a time; dragging on a touch screen is hold-then-drag and was not tried on a phone; a screen-reader audit.
+
 ## 0.15.0
 
 Meetings other apps can make. The crate has a public module, `ferrum_app_comms::meetings`, for an app to give one of its records (a booking, a live class) a video meeting: `create` (entity and id as its source, a title, a start and end, a host; the record's open meeting is returned if it has one), `find`, `get`, `member_link` (the page a signed-in member opens), `guest_link` (for an outside guest by name and address: no account, admits only to that meeting, stops two hours after it was due to end or when it is ended), `reschedule` (links keep working at the new time), `end` (reads attendance one last time, closes the room, stops every link) and `attendance`. Comms sends no invitation; the calling app sends its own. Such a meeting is a room: in nobody's calendar. Without the app or a meeting server the functions answer `MeetingError::NotInstalled` or `NotConfigured`, which the caller can branch on.

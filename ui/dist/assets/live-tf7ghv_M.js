@@ -1,1 +1,0 @@
-import{r as i,C as f}from"./index-WX68ISS0.js";function r(s,e){i.useEffect(()=>f().live.subscribe(s,u=>{u.entity===s&&typeof u.id=="string"&&e(u)}),[s,e])}function o(s,e){i.useEffect(()=>f().live.subscribe(`push:${s}`,u=>{const t=u.push;t?.kind===s&&e(t.data??{})},{resync:()=>e(null)}),[s,e])}export{o as a,r as u};
