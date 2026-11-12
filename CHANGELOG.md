@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.17.0
+
+Several calendars, and sharing them. Tried on a running server with three people; built with the Ferrum-Frontend commit named in `ui/dist/.source`.
+
+**Your calendars.** Everyone has their own calendars: "Personal" to start, and any you make, each with a colour from the kit's tones. Show or hide each, show only one, rename it, recolour it, choose the default for new events, or delete it and say where its events go (moved to another of yours, or deleted with the guests told; the default cannot be deleted). An event belongs to one calendar and can be moved between yours. Events take their calendar's colour in every view, and the calendar's name is always beside it, in each event's label and in its dialog. Your existing events go into "Personal" the first time your calendars are read: one indexed update, safe to run twice, 0.63 s per 10,000 events in a debug build; on the server it took 1.2 s for the person with the most events.
+
+**Sharing.** Share a calendar with colleagues so that they see only when you are busy, see all details, or make changes. They find it under "Other calendars" with your name. Removing someone ends their access at once; so does either person leaving the workspace. "Busy only" keeps an event's details to you and its guests, even in a shared calendar.
+
+**One rule for every way in** (`calendars::level`): the organiser owns; a "make changes" share may change; a guest, a "see all details" share and a public event show details; a "free and busy" share, and a "Busy only" event in any shared calendar, show "Busy" and the times, with place, notes, link and guests removed on the server; anyone else gets nothing. It is applied by the events list and its search, an event's detail, the bar's search and changes. Reminders go to the organiser and guests only. The feed, export and CalDAV carry only a person's own events and invitations, so nothing shared can leave through them. A database test walks every route at each level and unshared, and checks that a free-and-busy viewer never receives a title.
+
+Places have an "Open in maps" link. Calendar's one-key shortcuts no longer fire while typing in the bar's search. Showing or hiding a calendar takes effect at once and is put back with a message if the server refuses.
+
+Seen on the running server: the move into "Personal" for three people with counts equal before and after; a calendar shared at each level from the other person's side, reading the responses; removal emptying the other person's view at once; delete with "move to Personal"; an invitation and a reminder for an event in a shared calendar; exports and CalDAV reports without the shared events; and 0.16.0's checks again (the London weekly across the change of clocks, drag with Undo, the series scopes). 66 Rust unit tests, the sharing scenario on a database, 217 interface tests. The new words are in Arabic and Hindi.
+
+Not in this release: subscribing to an outside calendar by its address; public holidays (the platform does not yet let an app read a workspace's working calendar); calendar programs (CalDAV) see one collection per person, not one per calendar, and nothing shared; sharing with groups; creating events in someone else's calendar, and changing a repeating event there; proposing a new time; rich-text descriptions and attachments from Drive; rooms and resources; a screen-reader audit.
+
 ## 0.16.0
 
 Calendar becomes a calendar people can plan in. Tried on a running server beside a real mail server; a database change (`comms/007_calendar_hours.sql`) is applied at startup. Built with the Ferrum-Frontend commit named in `ui/dist/.source`.

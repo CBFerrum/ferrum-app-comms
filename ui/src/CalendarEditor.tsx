@@ -44,6 +44,7 @@ import {
   type Repeat,
 } from "./lib/calendar";
 import { meetLink, meetPath, useMeetAvailable } from "./lib/meet";
+import { useCalendars } from "./CalendarList";
 
 /** An event as the records API gives it. */
 interface EventDoc {
@@ -54,6 +55,7 @@ interface EventDoc {
   ends_at: string;
   all_day?: boolean;
   timezone?: string | null;
+  calendar?: string | null;
   location?: string | null;
   meeting_link?: string | null;
   description?: string | null;
@@ -133,6 +135,10 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
   const [until, setUntil] = useState(rule.until);
   const [reminder, setReminder] = useState<number | "none" | "custom">(remind);
   const [visibility, setVisibility] = useState(doc?.visibility ?? "Private");
+  // Which of my calendars it is in (the default one for a new event).
+  const mineCals = (useCalendars().cals ?? []).filter((c) => c.level === "owner");
+  const [calendar, setCalendar] = useState<string | null>(doc?.calendar ?? null);
+  const shownCalendar = calendar ?? mineCals.find((c) => c.is_default)?.id ?? "";
   const [guests, setGuests] = useState<string[]>(() => (doc ? (doc.attendees ?? []).map((a) => a.email.toLowerCase()) : parseGuests(params.get("guests") ?? "").emails.filter((e) => e !== me)));
   const [typed, setTyped] = useState("");
   const link = doc?.meeting_link ?? null;
@@ -208,6 +214,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
       location: location.trim() || null,
       description: description.trim() || null,
       visibility,
+      ...(shownCalendar ? { calendar: shownCalendar } : {}),
       attendees: mergeGuests((doc?.attendees ?? []).map((a) => ({ email: a.email, name: a.attendee_name, response: a.response ?? "Needs Action", comment: a.comment })) as Guest[], list, names),
     };
     if (repeat !== "custom") body.recurrence = ruleFor(repeat, until);
@@ -433,8 +440,21 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
             <select id="ev-visible" className="h-(--control-h) w-full min-w-0 rounded-md border border-input bg-card px-2 text-sm" value={visibility} onChange={(e) => setVisibility(e.target.value)}>
               <option value="Private">{t("Only you and your guests (others see busy time)")}</option>
               <option value="Public">{t("Everyone in the workspace")}</option>
+              <option value="Busy only">{t("Only you and your guests, also in shared calendars (others see busy)")}</option>
             </select>
           </div>
+          {mineCals.length > 0 && (
+            <div className="grid gap-1.5 sm:col-span-2">
+              <Label htmlFor="ev-calendar">{t("Calendar")}</Label>
+              <select id="ev-calendar" className="h-(--control-h) w-full min-w-0 rounded-md border border-input bg-card px-2 text-sm" value={shownCalendar} onChange={(e) => setCalendar(e.target.value)}>
+                {mineCals.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2 border-t pt-4">
           <Button type="submit" disabled={busy}>

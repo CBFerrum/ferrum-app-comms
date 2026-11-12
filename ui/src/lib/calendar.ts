@@ -23,6 +23,12 @@ export interface Occurrence {
   is_organizer?: boolean;
   my_response?: string | null;
   recurring?: boolean;
+  /** The calendar it is in, and what I may do with it: owner, edit, details, free_busy. */
+  calendar?: string | null;
+  level?: string;
+  /** Its calendar's tone and name, filled in by the page from the calendars list. */
+  tone?: string;
+  calendarName?: string;
   /** "away": my time away, drawn as a bar (not an event). */
   kind?: string;
   /** Guests' addresses and names, for search (sent when asked with `q`). */
@@ -304,7 +310,7 @@ export function placeDay(list: Occurrence[], day: Date): Placed[] {
 }
 
 /** Whether the user may move or resize an occurrence: their own event, not cancelled (a repeating one asks which occurrences). */
-export const movable = (o: Occurrence) => !!o.is_organizer && o.status !== "Cancelled";
+export const movable = (o: Occurrence) => (!!o.is_organizer || (o.level === "edit" && !o.recurring)) && o.status !== "Cancelled";
 
 /**
  * Where an occurrence goes when it now starts at `start`, its length kept. All-day events move by
@@ -320,6 +326,46 @@ export function moved(o: Occurrence, start: Date): { starts_at: string; ends_at:
 export function sameTimeOn(o: Occurrence, day: Date): Date {
   const s = new Date(o.start);
   return new Date(day.getFullYear(), day.getMonth(), day.getDate(), s.getHours(), s.getMinutes());
+}
+
+/** A calendar: mine or shared with me (`GET /calendar/calendars`). */
+export interface Cal {
+  id: string;
+  name: string;
+  tone: string;
+  hidden: boolean;
+  is_default: boolean;
+  owner: string;
+  owner_name?: string | null;
+  level: "owner" | "edit" | "details" | "free_busy";
+  shares: { person: string; level: "Free/busy" | "Details" | "Edit" }[];
+}
+
+export const TONES = ["blue", "green", "amber", "red", "purple", "neutral"] as const;
+const TONE_VARS: Record<string, [string, string]> = {
+  blue: ["--primary", "--primary-soft"],
+  green: ["--success", "--success-soft"],
+  amber: ["--warning", "--warning-soft"],
+  red: ["--danger", "--danger-soft"],
+  purple: ["--purple", "--purple-soft"],
+  neutral: ["--faint", "--surface-2"],
+};
+/** A tone's strong and soft colours, as the kit's tokens. */
+export const toneVar = (tone: string | undefined, soft = false) => `var(${(TONE_VARS[tone ?? "blue"] ?? TONE_VARS.blue!)[soft ? 1 : 0]})`;
+
+/** An occurrence's colour: its own (a safe hex), else its calendar's tone. */
+export const colorOf = (o: Pick<Occurrence, "color" | "tone">) => safeColor(o.color) ?? toneVar(o.tone);
+
+/** Occurrences with their calendar's tone and name, and only those of calendars shown (an event without one is in the default). */
+export function withCalendars(list: Occurrence[], cals: Cal[], hidden: Set<string>): Occurrence[] {
+  const byId = new Map(cals.map((c) => [c.id, c]));
+  const fallback = cals.find((c) => c.is_default);
+  return list.flatMap((o) => {
+    if (o.kind === "away") return [o];
+    const c = (o.calendar && byId.get(o.calendar)) || (o.level === "owner" || o.is_organizer ? fallback : undefined);
+    if (c && hidden.has(c.id)) return [];
+    return [{ ...o, tone: c?.tone ?? o.tone, calendarName: c?.name, subject: o.level === "free_busy" ? tr("Busy") : o.subject }];
+  });
 }
 
 /** Only colors that cannot smuggle anything into a style: `#rgb`, `#rrggbb` or `#rrggbbaa`. */

@@ -31,12 +31,13 @@ import {
   monthGrid,
   moved,
   parseGuests,
-  safeColor,
+  colorOf,
   safeLink,
   stepped,
   tally,
   VIEWS,
   weekendOf,
+  withCalendars,
   zoneList,
   type Guest,
   DEFAULT_HOURS,
@@ -48,6 +49,7 @@ import {
 } from "./lib/calendar";
 import { changeTimes, removeOccurrence, type Undo } from "./lib/calendarChanges";
 import { EventBar, TimeGrid, timeFmt, useNow, type WorkHours } from "./CalendarGrid";
+import { CalendarList, levelName, useCalendars } from "./CalendarList";
 import { Failure } from "./States";
 
 const VIEW_KEY = "ferrum.calendar.view";
@@ -100,7 +102,9 @@ const plus = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.g
 
 /** Whether a key press belongs to a field or an open dialog, not to the calendar. */
 const typing = (e: KeyboardEvent) => {
-  const el = e.target as HTMLElement | null;
+  // The real target, also inside the bar's search (a shadow root retargets e.target to its host).
+  const el = (e.composedPath()[0] ?? e.target) as HTMLElement | null;
+  if (el && el !== e.target && el instanceof HTMLElement && (el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName))) return true;
   return !!el && (el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName) || !!el.closest("[role=dialog],[role=menu],[role=listbox]"));
 };
 
@@ -115,6 +119,8 @@ export function CalendarPage() {
   const mine = useQuery({ queryKey: ["calendar", "hours"], queryFn: ({ signal }) => api.get<{ saved: boolean; hours: PersonHours }>(`${CALENDAR}/hours`, undefined, signal), retry: false, staleTime: 300_000 });
   const work = useMemo(() => workHours(weekend, mine.data?.saved ? mine.data.hours : undefined), [weekend, mine.data]);
   const [hoursOpen, setHoursOpen] = useState(false);
+  // On a phone the side panel's calendars open from the menu.
+  const [calsOpen, setCalsOpen] = useState(false);
   const [params, setParams] = useSearchParams();
   // A link to an event (`?event={id}&at={start}`: Home's My work, a notification) opens it.
   const wanted = params.get("event");
@@ -157,7 +163,9 @@ export function CalendarPage() {
   const events = useQuery({ queryKey: key, queryFn: ({ signal }) => api.get<{ occurrences: Occurrence[] }>(`${CALENDAR}/events`, { from, to }, signal) });
   const refresh = useCallback(() => void qc.invalidateQueries({ queryKey: ["calendar"] }), [qc]);
   useLiveEntity("CalendarEvent", refresh);
-  const list = useMemo(() => events.data?.occurrences ?? [], [events.data]);
+  // Each occurrence with its calendar's colour and name; hidden calendars left out.
+  const calendars = useCalendars();
+  const list = useMemo(() => withCalendars(events.data?.occurrences ?? [], calendars.cals, calendars.hidden), [events.data, calendars.cals, calendars.hidden]);
   const today = isoDay(useNow());
 
   // A link that names an event but not when (a notification of an invitation) goes to where it is.
@@ -247,7 +255,7 @@ export function CalendarPage() {
   // Keyboard: views, today, previous/next, create, search, help.
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || typing(e) || draft || open || scopeAsk || keys || feed || hoursOpen) return;
+      if (e.metaKey || e.ctrlKey || e.altKey || typing(e) || draft || open || scopeAsk || keys || feed || hoursOpen || calsOpen) return;
       const k = e.key;
       const rtl = document.documentElement.dir === "rtl";
       if (VIEW_KEYS[k]) go({ view: VIEW_KEYS[k] });
@@ -266,7 +274,7 @@ export function CalendarPage() {
     };
     window.addEventListener("keydown", on);
     return () => window.removeEventListener("keydown", on);
-  }, [go, view, anchor, narrow, draft, open, scopeAsk, keys, feed, hoursOpen]);
+  }, [go, view, anchor, narrow, draft, open, scopeAsk, keys, feed, hoursOpen, calsOpen]);
 
   const title =
     view === "day"
@@ -300,6 +308,7 @@ export function CalendarPage() {
           <Plus /> {t("New event")}
         </Button>
         <MiniMonth selected={anchor} first={first} today={today} shown={days.length <= 7 ? days : []} onPick={(d) => go({ date: d })} />
+        <CalendarList cals={calendars.cals} hidden={calendars.hidden} sharedHidden={calendars.sharedHidden} hideShared={calendars.hideShared} failed={!!calendars.q.error} />
         <div className="grid gap-1.5 text-sm">
           <Label htmlFor="cal-zone2" className="text-xs text-muted-foreground">
             {t("Second time zone")}
@@ -382,6 +391,9 @@ export function CalendarPage() {
                   <Download /> {t("Export my calendar (.ics)")}
                 </a>
               </DropdownMenuItem>
+              <DropdownMenuItem className="md:hidden" onSelect={() => setCalsOpen(true)}>
+                <CalendarDays /> {t("Calendars")}
+              </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => setHoursOpen(true)}>
                 <Clock /> {t("Working hours and time away")}
               </DropdownMenuItem>
@@ -413,6 +425,17 @@ export function CalendarPage() {
       )}
       {keys && <Shortcuts onClose={() => setKeys(false)} />}
       {feed && <FeedDialog onClose={() => setFeed(false)} />}
+      {calsOpen && (
+        <Dialog open onOpenChange={(o) => !o && setCalsOpen(false)}>
+          <DialogContent className="max-h-[92dvh] overflow-y-auto sm:max-w-sm">
+            <DialogHeader>
+              <DialogTitle>{t("Calendars")}</DialogTitle>
+              <DialogDescription>{t("Show or hide each, and change your own.")}</DialogDescription>
+            </DialogHeader>
+            <CalendarList cals={calendars.cals} hidden={calendars.hidden} sharedHidden={calendars.sharedHidden} hideShared={calendars.hideShared} failed={!!calendars.q.error} />
+          </DialogContent>
+        </Dialog>
+      )}
       {hoursOpen && <HoursDialog current={mine.data?.hours} missing={!!mine.error} first={first} onClose={() => setHoursOpen(false)} onSaved={() => void qc.invalidateQueries({ queryKey: ["calendar"] })} />}
     </div>
   );
@@ -508,7 +531,7 @@ function MonthView(p: { month: Date; first: number; list: Occurrence[]; loading:
                 <span className={cn("grid size-6 place-items-center rounded-full tabular-nums", k === p.today && "bg-primary text-primary-foreground")}>{isolate(d.toLocaleDateString(lang, { day: "numeric" }))}</span>
                 <span className="flex h-1.5 gap-0.5" aria-hidden="true">
                   {(days.get(k) ?? []).slice(0, 3).map((o) => (
-                    <span key={o.id} className="size-1.5 rounded-full" style={{ background: safeColor(o.color) ?? "var(--primary)" }} />
+                    <span key={o.id} className="size-1.5 rounded-full" style={{ background: colorOf(o) }} />
                   ))}
                 </span>
               </button>
@@ -677,7 +700,7 @@ function SearchResults({ q, onOpen }: { q: string; onOpen: (o: Occurrence) => vo
 }
 
 function OccurrenceChip({ o, onOpen, large }: { o: Occurrence; onOpen: () => void; large?: boolean }) {
-  const color = safeColor(o.color) ?? "var(--primary)";
+  const color = colorOf(o);
   const off = o.status === "Cancelled" || o.my_response === "Declined";
   return (
     <button
@@ -1118,7 +1141,8 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit, onDelete }: { o: Occu
   const [meetingLink, setMeetingLink] = useState(o.meeting_link);
   const meets = useMeetAvailable();
   const meet = meets.data === true;
-  const detail = useQuery({ queryKey: ["calendar", "detail", o.event], queryFn: ({ signal }) => api.get<Detail>(`${CALENDAR}/events/${o.event}`, undefined, signal), retry: false });
+  const busyOnly = o.level === "free_busy";
+  const detail = useQuery({ queryKey: ["calendar", "detail", o.event], queryFn: ({ signal }) => api.get<Detail>(`${CALENDAR}/events/${o.event}`, undefined, signal), retry: false, enabled: !busyOnly });
   const link = safeLink(meetingLink);
   // A meeting of this app opens here; any other link (another service's meeting) in a new tab.
   const meeting = meetPath(link);
@@ -1176,6 +1200,14 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit, onDelete }: { o: Occu
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-2 text-sm">
+          {o.calendarName && (
+            <p className="flex items-center gap-1.5 text-muted-foreground">
+              <span className="size-2.5 rounded-sm" style={{ background: colorOf(o) }} aria-hidden="true" />
+              {t("In {calendar}", { calendar: o.calendarName })}
+              {o.level && o.level !== "owner" && !o.is_organizer && ` · ${levelName(o.level)}`}
+            </p>
+          )}
+          {busyOnly && <p className="text-muted-foreground">{t("Its calendar is shared with you to see only when it is busy.")}</p>}
           <div className="flex flex-wrap gap-1.5">
             {o.status && o.status !== "Confirmed" && <Badge variant="secondary">{isolate(o.status)}</Badge>}
             {o.recurring && (
@@ -1188,6 +1220,12 @@ function OccurrenceDialog({ o, onClose, onChanged, onEdit, onDelete }: { o: Occu
           {o.location && (
             <p className="flex items-center gap-1.5">
               <MapPin className="size-4 text-muted-foreground" aria-hidden="true" /> {isolate(o.location)}
+              {/* No maps service in the workspace: a search for the place, its text encoded, opening elsewhere. */}
+              {!/^https?:/i.test(o.location) && (
+                <a className="ms-1 text-xs text-primary underline" href={`https://www.openstreetmap.org/search?query=${encodeURIComponent(o.location)}`} target="_blank" rel="noopener noreferrer">
+                  {t("Open in maps")}
+                </a>
+              )}
             </p>
           )}
           {meeting ? (

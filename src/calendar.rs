@@ -3,6 +3,7 @@
 //! is cancelled or deleted) — recurrence, reminders (in-app, once per occurrence), my calendar
 //! for a range, free/busy, RSVP, a personal ICS feed and ICS import. Times are UTC.
 
+use crate::calendars::Level;
 use crate::ics::{self, Attendee, VEvent};
 use crate::recur::{self, Exception, Series};
 use crate::util::{self, b, id, int, rows, s};
@@ -230,6 +231,8 @@ impl DocHook for EventHook {
             // What attendees see changed: a new version of the invitation.
             doc.insert("sequence".into(), json!(int(&old, "sequence") + 1));
         }
+        // Every event is in one of its organizer's calendars.
+        crate::calendars::place_event(hc.kernel, hc.tx, hc.ctx, doc).await?;
         // Guests away then who chose so decline at once, with their message.
         crate::hours::decline_away(hc.tx, hc.ctx.tenant, doc).await?;
         let missing: Vec<String> = attendees(doc).into_iter().filter(|a| a.1.is_none()).map(|a| a.0).collect();
@@ -405,6 +408,7 @@ async fn events_of(
     to: DateTime<Utc>,
     include_public: bool,
     include_declined: bool,
+    shared: &[Uuid],
 ) -> Result<Vec<(Doc, Option<String>)>> {
     let sql = format!(
         "select to_jsonb(e) || jsonb_build_object('attendees', (select coalesce(jsonb_agg(to_jsonb(a) order by a.idx), '[]') from {ATTENDEES} a \
@@ -412,7 +416,7 @@ async fn events_of(
             from {REMINDERS} r where r.tenant_id = e.tenant_id and r.parent_id = e.id)), \
          (select a.response from {ATTENDEES} a where a.tenant_id = e.tenant_id and a.parent_id = e.id and a.email = $2 limit 1) \
          from e_calendar_event e where e.tenant_id = $1 \
-         and (e.owner = $2 or ($5 and e.visibility = 'Public') or exists (select 1 from {ATTENDEES} a where a.tenant_id = e.tenant_id \
+         and (e.owner = $2 or ($5 and e.visibility = 'Public') or e.calendar = any($7) or exists (select 1 from {ATTENDEES} a where a.tenant_id = e.tenant_id \
               and a.parent_id = e.id and a.email = $2 and ($6 or a.response <> 'Declined'))) \
          and e.starts_at < $4 and (e.recurrence is not null or e.ends_at > $3 or (e.ends_at = e.starts_at and e.starts_at >= $3)) \
          order by e.starts_at limit 5000"
@@ -424,6 +428,7 @@ async fn events_of(
         .bind(to)
         .bind(include_public)
         .bind(include_declined)
+        .bind(shared)
         .fetch_all(&mut **tx)
         .await?;
     Ok(rows.into_iter().map(|(v, r)| (normalize(util::obj(v)), r)).collect())
@@ -464,12 +469,18 @@ async fn my_calendar(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> 
     let q = util::param(req, "q").map(str::trim).filter(|q| !q.is_empty()).map(|q| util::cut(q, 200));
     let me = ctx.email.to_lowercase();
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let events = events_of(&mut tx, ctx.tenant, &me, from, to, true, true).await?;
+    let shared = crate::calendars::shared_with(&mut tx, ctx.tenant, &me).await?;
+    let ids: Vec<Uuid> = shared.keys().copied().collect();
+    let events = events_of(&mut tx, ctx.tenant, &me, from, to, true, true, &ids).await?;
     tx.commit().await?;
     let mut out = Vec::new();
     for (doc, response) in events {
-        // A search: what I can see of the event (its guests only when I organize it or am one).
-        if q.as_deref().is_some_and(|q| !found(&doc, q)) {
+        let level = crate::calendars::level(&me, &doc, &shared);
+        if level == Level::None {
+            continue;
+        }
+        // A search: only what I may read of the event (never the title behind a free/busy share).
+        if q.as_deref().is_some_and(|q| level < Level::Details || !found(&doc, q)) {
             continue;
         }
         let Some(sr) = series(&doc) else { continue };
@@ -496,7 +507,14 @@ async fn my_calendar(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> 
                 "recurring": recurring,
                 "reference_entity": doc.get("reference_entity"),
                 "reference_id": doc.get("reference_id"),
+                "calendar": doc.get("calendar"),
+                "level": level.word(),
             }));
+            if level == Level::FreeBusy
+                && let Some(Value::Object(o)) = out.last_mut()
+            {
+                crate::calendars::redact(o);
+            }
         }
         if out.len() > 10_000 {
             break;
@@ -529,7 +547,7 @@ async fn invitations(k: &Kernel, ctx: &Ctx) -> Result<Value> {
     let me = ctx.email.to_lowercase();
     let (from, to) = (Utc::now(), Utc::now() + Duration::days(INVITATIONS_DAYS));
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let events = events_of(&mut tx, ctx.tenant, &me, from, to, false, false).await?;
+    let events = events_of(&mut tx, ctx.tenant, &me, from, to, false, false, &[]).await?;
     let mut items = Vec::new();
     for (doc, response) in events {
         if response.as_deref() != Some("Needs Action") || lower(s(&doc, "owner")) == me || s(&doc, "status") == Some("Cancelled") {
@@ -589,7 +607,7 @@ async fn free_busy(k: &Kernel, ctx: &Ctx, body: Map<String, Value>) -> Result<Va
     let mut busy = Map::new();
     for u in users {
         let mut intervals = Vec::new();
-        for (doc, _) in events_of(&mut tx, ctx.tenant, &u, from, to, false, false).await? {
+        for (doc, _) in events_of(&mut tx, ctx.tenant, &u, from, to, false, false, &[]).await? {
             if s(&doc, "status") == Some("Cancelled") || (exclude.is_some() && id(&doc, "id") == exclude) {
                 continue;
             }
@@ -680,11 +698,16 @@ async fn event_detail(k: &Kernel, ctx: &Ctx, event: Uuid) -> Result<Value> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let doc = k.get_tx(&util::sys(ctx), &mut tx, "CalendarEvent", event, false).await.map_err(|_| Error::NotFound("Event".into()))?;
     let organizer = lower(s(&doc, "owner")) == me;
-    let guest = attendees(&doc).iter().any(|a| a.0 == me);
-    if !organizer && !guest && s(&doc, "visibility") != Some("Public") {
+    let shared = crate::calendars::shared_with(&mut tx, ctx.tenant, &me).await?;
+    let level = crate::calendars::level(&me, &doc, &shared);
+    if level < Level::Details {
         return Err(Error::NotFound("Event".into()));
     }
-    let guests: Vec<Value> = if organizer || guest {
+    // Guests are seen by the organizer, the guests and those the calendar is shared with; not for a public event.
+    let guests: Vec<Value> = if level != Level::Details
+        || attendees(&doc).iter().any(|a| a.0 == me)
+        || shared.contains_key(&id(&doc, "calendar").unwrap_or_default())
+    {
         rows(&doc, "attendees")
             .iter()
             .map(|a| json!({"email": a.get("email"), "name": a.get("attendee_name"), "response": a.get("response"), "comment": if organizer { a.get("comment").cloned() } else { None }}))
@@ -695,7 +718,9 @@ async fn event_detail(k: &Kernel, ctx: &Ctx, event: Uuid) -> Result<Value> {
     let owner = lower(s(&doc, "owner"));
     let owner_name = display_name(&mut tx, ctx.tenant, &owner).await?;
     tx.commit().await?;
-    Ok(json!({"id": event, "version": doc.get("version"), "attendees": guests, "owner": owner, "owner_name": owner_name}))
+    Ok(
+        json!({"id": event, "version": doc.get("version"), "attendees": guests, "owner": owner, "owner_name": owner_name, "level": level.word(), "calendar": doc.get("calendar")}),
+    )
 }
 
 // ───────────────────────────── answering from the invitation ─────────────────────────────
@@ -856,7 +881,8 @@ pub async fn feed(k: &Kernel, tenant: Uuid, token: &str) -> Result<SiteResponse>
 /// years on (what the secret feed and an export carry).
 async fn ics_of(tx: &mut Tx, tenant: Uuid, email: &str, name: &str) -> Result<String> {
     let from = util::now() - Duration::days(180);
-    let events = events_of(tx, tenant, email, from, util::now() + Duration::days(3660), false, false).await?;
+    // My own events and invitations only: a feed never carries calendars shared with me.
+    let events = events_of(tx, tenant, email, from, util::now() + Duration::days(3660), false, false, &[]).await?;
     let mut organizers: BTreeMap<String, Option<String>> = BTreeMap::new();
     let mut list = Vec::new();
     for (doc, _) in &events {
@@ -1082,6 +1108,28 @@ pub async fn fire_reminders(k: &Kernel, tenant: Uuid) -> Result<usize> {
     Ok(fired)
 }
 
+/// `PATCH /calendar/events/{id}`: a change by someone the event's calendar is shared with at
+/// "make changes" (its organizer changes it through the records API). Times, title, place and notes.
+async fn shared_edit(k: &Kernel, ctx: &Ctx, event: Uuid, body: Map<String, Value>) -> Result<Value> {
+    const FIELDS: &[&str] = &["subject", "starts_at", "ends_at", "all_day", "timezone", "location", "description", "recurrence", "recurrence_exceptions"];
+    let me = ctx.email.to_lowercase();
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let doc = k.get_tx(&util::sys(ctx), &mut tx, "CalendarEvent", event, false).await.map_err(|_| Error::NotFound("Event".into()))?;
+    let shared = crate::calendars::shared_with(&mut tx, ctx.tenant, &me).await?;
+    match crate::calendars::level(&me, &doc, &shared) {
+        Level::None | Level::FreeBusy => return Err(Error::NotFound("Event".into())),
+        Level::Details => return Err(Error::Forbidden("you may see this calendar, not change it".into())),
+        Level::Edit | Level::Owner => {}
+    }
+    if let Some(k) = body.keys().find(|k| !FIELDS.contains(&k.as_str())) {
+        return Err(Error::field(k, "cannot be changed here"));
+    }
+    let version = doc.get("version").and_then(Value::as_i64);
+    let saved = k.update_tx(&util::sys(ctx), &mut tx, "CalendarEvent", event, body, version).await?;
+    tx.commit().await?;
+    Ok(Value::Object(saved))
+}
+
 /// Whether a reminder for the occurrence at `start` already went out for one at another instant of
 /// the same local day (in the event's zone): the same occurrence, moved by a change of clocks.
 fn reminded_that_day(start: DateTime<Utc>, fired: &[DateTime<Utc>], zone: Option<chrono_tz::Tz>) -> bool {
@@ -1103,10 +1151,13 @@ async fn search(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> {
     let (from, to) = (now - Duration::days(180), now + Duration::days(215));
     let me = ctx.email.to_lowercase();
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let events = events_of(&mut tx, ctx.tenant, &me, from, to, true, false).await?;
+    let shared = crate::calendars::shared_with(&mut tx, ctx.tenant, &me).await?;
+    let ids: Vec<Uuid> = shared.keys().copied().collect();
+    let events = events_of(&mut tx, ctx.tenant, &me, from, to, true, false, &ids).await?;
     tx.commit().await?;
     let mut results: Vec<(i64, Value)> = Vec::new();
-    for (doc, _) in events.iter().filter(|(d, _)| found(d, &q)) {
+    // Only what the access rule lets me read is searched: a free/busy share never matches a title.
+    for (doc, _) in events.iter().filter(|(d, _)| crate::calendars::level(&me, d, &shared) >= Level::Details && found(d, &q)) {
         let Some(sr) = series(doc) else { continue };
         let all = recur::occurrences(&sr, from, to);
         let Some((start, end)) = all.iter().find(|(s, _)| *s >= now).or(all.last()).copied() else { continue };
@@ -1141,6 +1192,13 @@ pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> 
         ("POST", ["import"]) => import(k, ctx, req).await?,
         ("GET", ["export"]) => return export(k, ctx).await,
         ("GET", ["search"]) => search(k, ctx, req).await?,
+        ("GET", ["calendars"]) => crate::calendars::list(k, ctx).await?,
+        ("POST", ["calendars"]) => crate::calendars::change(k, ctx, "POST", None, util::body_json(req)?, None).await?,
+        (m @ ("PATCH" | "DELETE"), ["calendars", c]) => {
+            let body = if m == "PATCH" { util::body_json(req)? } else { Map::new() };
+            crate::calendars::change(k, ctx, m, Some(uuid(c)?), body, util::param(req, "events")).await?
+        }
+        ("PATCH", ["events", e]) => shared_edit(k, ctx, uuid(e)?, util::body_json(req)?).await?,
         ("GET", ["hours"]) => crate::hours::handle(k, ctx, "GET", None).await?,
         ("PUT", ["hours"]) => crate::hours::handle(k, ctx, "PUT", Some(util::body_json(req)?)).await?,
         _ => return Err(Error::NotFound("calendar endpoint".into())),
