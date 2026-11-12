@@ -1,0 +1,1 @@
+import{c as e}from"./index-D0LRxH4y.js";const a={name:"chevron-up",size:24,node:[["path",{d:"m18 15-6-6-6 6",key:"153udz"}]]};a.node;const t=e(a);const o={name:"type",size:24,node:[["path",{d:"M12 4v16",key:"1654pz"}],["path",{d:"M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2",key:"e0r10z"}],["path",{d:"M9 20h6",key:"s66wpe"}]]};o.node;const p=e(o);export{t as C,p as T};
