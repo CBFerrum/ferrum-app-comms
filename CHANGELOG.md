@@ -15,6 +15,9 @@ Mail works when nobody has it open. Tried throughout against a real Stalwart, wi
 57 Rust unit tests, a database test for the arrival step, 204 interface tests. The new words are in Arabic and Hindi.
 
 Not in this release: notifications for shared mailboxes when Mail is not open; a read-only member of a shared mailbox (members read, answer and send); giving a colleague access to your own mailbox; sending as a shared address from your own mailbox saves the copy in your own Sent; retention is one setting for the whole mail server and is changed there; the mail server's own spam rules and lists are managed on the mail server; counter-proposals are not applied; events taken from an invitation before this version cannot be cancelled by mail; a sent message's delivery status is kept for 3 days; mail to outside addresses, and authenticated SMTP from mail programs as a sign of a local sender, were not tried (the test server has no outside DNS); the new screens were not read right to left; a screen-reader audit.
+## 0.13.1
+
+Outgoing mail can carry extra headers. A Communication has a `headers` field (an object of name to value, set by the app that queues the mail, read-only to people) which is copied onto the message when it is sent through an email account. It is meant for what bulk senders need: `List-Unsubscribe` and `List-Unsubscribe-Post` (RFC 2369, RFC 8058), `List-Id`, `Precedence`, `Auto-Submitted`, `Feedback-ID` and `X-` names. Any other name (From, To, Cc, Bcc, Subject, Reply-To, Content-*), a value with a line break or other control character, an empty or over-long value, or more than 20 headers is refused when the Communication is saved. Mail sent through the server's own mailer (no email account) cannot carry headers: it still goes, the headers are not sent, and the log says so.
 
 ## 0.13.0
 
