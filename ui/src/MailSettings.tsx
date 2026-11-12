@@ -11,10 +11,9 @@ import { Input } from "@ferrum/kit/primitives";
 import { Label } from "@ferrum/kit/primitives";
 import { Skeleton } from "@ferrum/kit/primitives";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ferrum/kit/primitives";
-import { Textarea } from "@ferrum/kit/primitives";
 import { errorMessage, formatDateTime, fromZonedInput, t, isolate, toZonedInput } from "@ferrum/client";
 import { can, useMetaIndex } from "@ferrum/records";
-import { confirmDialog, FormSkeleton, isRichTextEmpty, RichTextEditor, sanitizeRichText, toast, placed } from "@ferrum/kit";
+import { confirmDialog, FormSkeleton, isRichTextEmpty, plainToRichText, RichTextEditor, richTextToPlain, sanitizeRichText, toast, placed } from "@ferrum/kit";
 import { Failure } from "./States";
 import { readBlocked, writeBlocked } from "./lib/blocklist";
 import { jmap, refusal, useServerDoes, type Mailbox } from "./lib/mail";
@@ -33,6 +32,8 @@ interface Vacation {
   toDate: string | null;
   subject: string | null;
   textBody: string | null;
+  /** The mail server sends the reply as text and this HTML (Stalwart: `multipart/alternative`). */
+  htmlBody?: string | null;
 }
 
 interface AppPassword {
@@ -180,7 +181,7 @@ function VacationForm({ account, boxes }: { account: string; boxes: Mailbox[] })
   const [form, setForm] = useState<Vacation | null>(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
-    if (q.data && ours.data && !form) setForm({ ...q.data, isEnabled: vacationOn(ours.data, q.data.isEnabled) });
+    if (q.data && ours.data && !form) setForm({ ...q.data, htmlBody: q.data.htmlBody || (q.data.textBody ? plainToRichText(q.data.textBody) : ""), isEnabled: vacationOn(ours.data, q.data.isEnabled) });
   }, [q.data, ours.data, form]);
   if (q.error) return <Failure error={q.error} onRetry={() => void q.refetch()} />;
   if (!form) return <FormSkeleton fields={4} />;
@@ -194,7 +195,11 @@ function VacationForm({ account, boxes }: { account: string; boxes: Mailbox[] })
         fromDate: form.fromDate ? fromZonedInput(`${day(form.fromDate)}T00:00`) : null,
         toDate: form.toDate ? fromZonedInput(`${day(form.toDate)}T23:59:59`) : null,
         subject: form.subject || null,
-        textBody: form.textBody || null,
+        // Written as rich text; it goes out with its words as the text part, as any message does.
+        ...(() => {
+          const html = sanitizeRichText(form.htmlBody ?? "", { mail: true });
+          return isRichTextEmpty(html) ? { textBody: null, htmlBody: null } : { textBody: richTextToPlain(html), htmlBody: fromEditor(html) };
+        })(),
       };
       const r = await jmap([["VacationResponse/set", { accountId: account, update: { singleton: patch } }, "0"]]);
       const failed = (r["0"].notUpdated as Record<string, { description?: string }> | undefined)?.singleton;
@@ -229,8 +234,10 @@ function VacationForm({ account, boxes }: { account: string; boxes: Mailbox[] })
         <Input id="vac-subject" value={form.subject ?? ""} onChange={(e) => setForm({ ...form, subject: e.target.value })} placeholder={t("Out of office")} />
       </div>
       <div className="grid gap-1.5">
-        <Label htmlFor="vac-body">{t("Message")}</Label>
-        <Textarea id="vac-body" rows={5} value={form.textBody ?? ""} onChange={(e) => setForm({ ...form, textBody: e.target.value })} />
+        <span id="vac-body-label" className="text-sm font-medium">
+          {t("Message")}
+        </span>
+        <RichTextEditor toolbar="compact" labelledBy="vac-body-label" placeholder={t("I am away until Monday. For anything urgent, write to …")} value={form.htmlBody ?? ""} onChange={(v) => setForm({ ...form, htmlBody: v })} minHeight="7rem" maxHeight="18rem" />
       </div>
       <Button type="submit" className="justify-self-end" disabled={busy}>
         {t("Save")}
