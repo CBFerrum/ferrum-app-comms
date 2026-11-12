@@ -74,6 +74,7 @@ const router = createBrowserRouter([
       { path: `${at("mail")}/_intent/compose`, lazy: page(intents, "ComposeIntentPage") },
       { path: `${at("mail")}/compose`, lazy: () => mail().then((m) => ({ Component: () => <m.MailPage compose /> })) },
       { path: `${at("mail")}/domain`, lazy: page(domain, "DomainPage") },
+      { path: `${at("mail")}/n/:notice`, lazy: page(mail, "MailNoticePage") },
       { path: `${at("mail")}/:mailbox?/:email?`, lazy: page(mail, "MailPage") },
       { path: `${at("chat")}/_intent/share`, lazy: page(intents, "ShareIntentPage") },
       { path: `${at("chat")}/_panel/*`, lazy: page(intents, "ChatPanel") },

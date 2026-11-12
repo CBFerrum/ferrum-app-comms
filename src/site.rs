@@ -4,7 +4,7 @@
 //! signed token). See README.md.
 
 use crate::util::{self, created, ok};
-use crate::{calendar, chat, dav, dns, hosted, inbound, mail, meet, newsletter, webmail};
+use crate::{calendar, chat, dav, dns, hosted, inbound, mail, mailadmin, meet, newsletter, webmail};
 use async_trait::async_trait;
 use ferrum_kernel::{Access, Action, Ctx, Error, Kernel, Result, Site, SiteRequest, SiteResponse};
 use serde_json::{Value, json};
@@ -68,6 +68,12 @@ async fn app(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> Result<
         (_, ["dav", rest @ ..]) => return dav::handle(k, ctx, req, rest).await,
         ("GET", ["domain"]) => ok(dns::health(k, ctx).await?),
         ("GET", ["domain", "mailboxes"]) => ok(hosted::usage(k, ctx).await?),
+        ("PUT", ["domain", "mailboxes", account, "quota"]) => ok(mailadmin::set_quota(k, ctx, account, &body()?).await?),
+        ("GET", ["domain", "spam"]) => ok(mailadmin::spam(k, ctx).await?),
+        ("GET", ["domain", "retention"]) => ok(mailadmin::retention(k, ctx).await?),
+        ("GET", ["domain", "senders"]) => ok(mailadmin::senders(k, ctx).await?),
+        ("POST", ["domain", "senders"]) => created(mailadmin::add_sender(k, ctx, &body()?).await?),
+        ("DELETE", ["domain", "senders", who]) => ok(mailadmin::remove_sender(k, ctx, who).await?),
         ("GET", ["accounts"]) => ok(mail::accounts(k, ctx).await?),
         ("POST", ["send"]) => created(mail::send(k, ctx, body()?).await?),
         ("POST", ["templates", "preview"]) => ok(mail::preview(k, ctx, body()?).await?),
