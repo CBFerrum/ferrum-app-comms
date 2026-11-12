@@ -1489,6 +1489,8 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
 
     calendar_apps(&t, &users).await;
     calendar_sharing(&t, &admin, &users).await;
+    calendar_delegates(&t, &admin, &users).await;
+    calendar_subscriptions(&t, &users).await;
     hosted_mail(&t, &admin, &users, &imap).await;
 
     // What meetings keep of a person, in Comms' own table: in their copy, and gone with their erasure,
@@ -1657,7 +1659,9 @@ async fn calendar_apps(t: &T, users: &HashMap<String, Ctx>) {
     let query = text(&call(alice, "REPORT", &format!("{a}/calendars/default"), &[("depth", "1")], past).await.unwrap());
     assert!(query.contains("WEEK-1.ics") && !query.contains("ABC-1.ics"), "a repeating event may fall in any range; a single one only in its own: {query}");
     let sync = r#"<d:sync-collection xmlns:d="DAV:"><d:sync-token/><d:prop><d:getetag/></d:prop></d:sync-collection>"#;
-    assert_eq!(call(alice, "REPORT", &format!("{a}/calendars/default"), &[], sync).await.unwrap().status, 403);
+    // Since 0.18 a sync-collection report is answered: an empty token lists all, with the token to send next time.
+    let synced = call(alice, "REPORT", &format!("{a}/calendars/default"), &[], sync).await.unwrap();
+    assert!(synced.status == 207 && text(&synced).contains("<D:sync-token>http://ferrum.invalid/sync/") && text(&synced).contains("WEEK-1.ics"));
 
     // What Ferrum cannot keep is refused, not changed.
     let odd = |rule: &str, start: &str| {
@@ -1899,6 +1903,477 @@ async fn calendar_sharing(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>) {
     // Erin leaves again, so later counts of the team are as they were.
     sqlx::query("update app_user set is_active = false where tenant_id = $1 and email = 'erin@acme.test'").bind(t.tenant).execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
+}
+
+/// Comms 0.18: someone with "make changes" (here through a group) adds to and changes a calendar
+/// that is not theirs, a repeating event's series included; the group's members are read on each
+/// request; and every new route refuses a free-and-busy viewer, a details viewer and a stranger.
+async fn calendar_delegates(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>) {
+    let (alice, bob, carol, mgr) = (&users["alice"], &users["bob"], &users["carol"], &users["mgr"]);
+    let k = &t.k;
+    let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
+    sqlx::query("insert into role (tenant_id, name, description) values ($1, 'Planners', 'Plans the week')").bind(t.tenant).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    k.set_user_roles(admin, carol.user, &["Comms User".to_string(), "Planners".to_string()]).await.unwrap();
+    let carol = &k.load_ctx(t.tenant, carol.user, None, "it".into()).await.unwrap();
+    let groups = t.ok(alice, "GET", "/calendar/groups", &[], Value::Null).await;
+    assert!(groups["groups"].as_array().unwrap().iter().any(|g| g["name"] == json!("Planners") && g["members"] == json!(1)), "{groups}");
+    refused(
+        t.call(Some(alice), "POST", "/calendar/calendars", &[], json!({"name": "X", "shares": [{"role": "Nobody's group", "level": "Edit"}]})).await,
+        "invalid",
+    );
+    let ops = t
+        .ok(
+            alice,
+            "POST",
+            "/calendar/calendars",
+            &[],
+            json!({"name": "Ops", "shares": [{"role": "Planners", "level": "Edit"},
+            {"person": "bob@acme.test", "level": "Free/busy"}, {"role": "Sales User", "level": "Details"}]}),
+        )
+        .await;
+    let ops_id = ops["id"].as_str().unwrap().to_string();
+    let mine = t.ok(alice, "GET", "/calendar/calendars", &[], Value::Null).await;
+    let listed = mine["calendars"].as_array().unwrap().iter().find(|c| c["id"] == json!(ops_id)).unwrap().clone();
+    assert!(listed["shares"].as_array().unwrap().contains(&json!({"role": "Planners", "level": "Edit"})), "{listed}");
+    let level_of = |v: &Value| v["calendars"].as_array().unwrap().iter().find(|c| c["id"] == json!(ops_id)).map(|c| c["level"].as_str().unwrap().to_string());
+    assert_eq!(level_of(&t.ok(carol, "GET", "/calendar/calendars", &[], Value::Null).await).as_deref(), Some("edit"), "through the group");
+    // Bob holds Sales User (details) and is named free/busy: the higher of the two.
+    assert_eq!(level_of(&t.ok(bob, "GET", "/calendar/calendars", &[], Value::Null).await).as_deref(), Some("details"));
+
+    // Carol makes a weekly event in Alice's calendar: Alice is its organizer, Carol its creator.
+    let made = t
+        .ok(
+            carol,
+            "POST",
+            "/calendar/events",
+            &[],
+            json!({"calendar": ops_id, "subject": "Planning", "starts_at": "2027-03-01T09:00:00Z",
+            "ends_at": "2027-03-01T10:00:00Z", "timezone": "Europe/London", "recurrence": "FREQ=WEEKLY;COUNT=4", "attendees": [{"email": "mgr@acme.test"}]}),
+        )
+        .await;
+    let ev = uid(&made);
+    assert_eq!(made["owner"], json!("alice@acme.test"));
+    assert_eq!(made["created_by"], json!(carol.user.to_string()));
+    let detail = t.ok(alice, "GET", &format!("/calendar/events/{ev}"), &[], Value::Null).await;
+    assert_eq!(detail["created_by"], json!("Carol Diaz"));
+    assert_eq!(t.notifications(mgr, "Invitation: Planning").await, 1, "the guest is invited, by the organizer's event");
+    refused(t.call(Some(carol), "POST", "/calendar/events", &[], json!({"calendar": ops_id, "subject": "x", "owner": "carol@acme.test"})).await, "invalid");
+    refused(
+        t.call(
+            Some(carol),
+            "POST",
+            "/calendar/events",
+            &[],
+            json!({"subject": "no calendar", "starts_at": "2027-03-02T09:00:00Z", "ends_at": "2027-03-02T10:00:00Z"}),
+        )
+        .await,
+        "invalid",
+    );
+    // The whole event, for the editor and for series changes.
+    let record = format!("/calendar/events/{ev}/record");
+    let doc = t.ok(carol, "GET", &record, &[], Value::Null).await;
+    assert_eq!((doc["level"].as_str(), doc["recurrence"].as_str()), (Some("edit"), Some("FREQ=WEEKLY;COUNT=4")));
+    // The three series scopes, as the interface makes them: this one (skipped, plus an event of its own), this and following (the series ends), all (deleted).
+    let path = format!("/calendar/events/{ev}");
+    let version = doc["version"].as_i64().unwrap().to_string();
+    let mut req = t.request(
+        Some(carol),
+        "PATCH",
+        &path,
+        &[],
+        json!({"recurrence_exceptions": ["2027-03-08T09:00:00.000Z"]}).to_string().into_bytes(),
+        "application/json",
+    );
+    req.headers.insert("if-match".into(), json!(version));
+    assert_eq!(t.raw(req).await.unwrap().status, 200);
+    let mut stale = t.request(Some(carol), "PATCH", &path, &[], json!({"subject": "late"}).to_string().into_bytes(), "application/json");
+    stale.headers.insert("if-match".into(), json!(version));
+    assert!(t.raw(stale).await.is_err(), "a change made on an old version is refused");
+    let one = t
+        .ok(
+            carol,
+            "POST",
+            "/calendar/events",
+            &[],
+            json!({"calendar": ops_id, "subject": "Planning (moved)", "starts_at": "2027-03-08T11:00:00Z", "ends_at": "2027-03-08T12:00:00Z"}),
+        )
+        .await;
+    t.ok(carol, "PATCH", &path, &[], json!({"recurrence": "FREQ=WEEKLY;UNTIL=20270315T000000Z"})).await;
+    let listed = t.ok(alice, "GET", "/calendar/events", &[("from", "2027-03-01"), ("to", "2027-03-31")], Value::Null).await;
+    let starts: Vec<&str> =
+        listed["occurrences"].as_array().unwrap().iter().filter(|o| o["event"] == json!(ev.to_string())).map(|o| o["start"].as_str().unwrap()).collect();
+    assert_eq!(starts, ["2027-03-01T09:00:00.000Z"], "the 8th skipped, the 15th on ended");
+    // Moving it to Carol's own calendar would make Carol its organizer: refused.
+    let carols = t.ok(carol, "GET", "/calendar/calendars", &[], Value::Null).await;
+    let own = carols["calendars"].as_array().unwrap().iter().find(|c| c["is_default"] == json!(true)).unwrap()["id"].clone();
+    refused(t.call(Some(carol), "PATCH", &path, &[], json!({"calendar": own})).await, "invalid");
+
+    // Every new route, at every other level: free/busy, details, and nothing shared.
+    let frank_id = k.create_user(admin, "frank@acme.test", "Frank Far", Some(PASSWORD), &["Comms User".to_string()], false).await.expect("user");
+    let stranger = &k.load_ctx(t.tenant, frank_id, None, "it".into()).await.unwrap();
+    for (who, kind) in [(stranger, "not found"), (bob, "forbidden")] {
+        refused(
+            t.call(
+                Some(who),
+                "POST",
+                "/calendar/events",
+                &[],
+                json!({"calendar": ops_id, "subject": "x", "starts_at": "2027-03-02T09:00:00Z", "ends_at": "2027-03-02T10:00:00Z"}),
+            )
+            .await,
+            kind,
+        );
+        refused(t.call(Some(who), "GET", &record, &[], Value::Null).await, kind);
+        refused(t.call(Some(who), "PATCH", &path, &[], json!({"subject": "x"})).await, kind);
+        refused(t.call(Some(who), "DELETE", &path, &[], Value::Null).await, kind);
+    }
+    // Bob as free/busy only: the group share removed, so only his own share counts.
+    t.ok(
+        alice,
+        "PATCH",
+        &format!("/calendar/calendars/{ops_id}"),
+        &[],
+        json!({"shares": [{"role": "Planners", "level": "Edit"}, {"person": "bob@acme.test", "level": "Free/busy"}]}),
+    )
+    .await;
+    refused(
+        t.call(
+            Some(bob),
+            "POST",
+            "/calendar/events",
+            &[],
+            json!({"calendar": ops_id, "subject": "x", "starts_at": "2027-03-02T09:00:00Z", "ends_at": "2027-03-02T10:00:00Z"}),
+        )
+        .await,
+        "not found",
+    );
+    for (m, body) in [("GET", Value::Null), ("PATCH", json!({"subject": "x"})), ("DELETE", Value::Null)] {
+        let p = if m == "GET" { record.clone() } else { path.clone() };
+        let r = t.call(Some(bob), m, &p, &[], body).await;
+        assert!(format!("{r:?}").find("Planning").is_none(), "a free/busy viewer never reads the title");
+        refused(r, "not found");
+    }
+    let fb = t.ok(bob, "GET", "/calendar/events", &[("from", "2027-03-01"), ("to", "2027-03-31")], Value::Null).await;
+    assert!(!fb.to_string().contains("Planning"), "{fb}");
+    let groups = t.ok(bob, "GET", "/calendar/groups", &[], Value::Null).await;
+    assert!(!groups.to_string().contains("Ops"), "the groups list names roles, never calendars");
+
+    // CalDAV: each calendar its own collection; shared ones read-write for "make changes", busy-only for free/busy.
+    let dav = |who: &Ctx, method: &str, path: String, body: &str, depth: Option<&str>| {
+        let mut req = t.request(Some(who), method, &path, &[], body.as_bytes().to_vec(), "text/xml");
+        if let Some(d) = depth {
+            req.headers.insert("depth".into(), json!(d));
+        }
+        req
+    };
+    let text = |r: &SiteResponse| String::from_utf8_lossy(&r.body).to_string();
+    let home = r#"<d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/" xmlns:a="http://apple.com/ns/ical/"><d:prop><d:displayname/><d:resourcetype/><d:current-user-privilege-set/><cs:getctag/><d:sync-token/><a:calendar-color/></d:prop></d:propfind>"#;
+    let listing = t.raw(dav(carol, "PROPFIND", format!("/dav/u/{}/calendars/", carol.user), home, Some("1"))).await.unwrap();
+    let body = text(&listing);
+    assert_eq!(listing.status, 207);
+    let ops_href = format!("/api/dav/comms/u/{}/calendars/{ops_id}/", carol.user);
+    let ops_part = body.split("<D:response>").find(|r| r.contains(&ops_href)).unwrap_or_else(|| panic!("Ops listed for Carol: {body}")).to_string();
+    assert!(ops_part.contains("Ops (Alice Rao)") && ops_part.contains("<D:write/>") && ops_part.contains("#16A34AFF"), "{ops_part}");
+    assert!(body.contains(&format!("/api/dav/comms/u/{}/calendars/default/", carol.user)), "the default collection stays where phones have it");
+    // Carol's phone adds an event to Alice's calendar: Alice organizes it.
+    let phone = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Apple Inc.//iOS 18//EN\r\nBEGIN:VEVENT\r\nUID:PHONE-1\r\nDTSTAMP:20270201T000000Z\r\nDTSTART:20270305T150000Z\r\nDTEND:20270305T160000Z\r\nSUMMARY:Phoned in\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    let put = t.raw(dav(carol, "PUT", format!("/dav/u/{}/calendars/{ops_id}/PHONE-1.ics", carol.user), phone, None)).await.unwrap();
+    assert_eq!(put.status, 201, "{}", text(&put));
+    let phoned: (String, String) = {
+        let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
+        let v = sqlx::query_as("select owner, calendar::text from e_calendar_event where tenant_id = $1 and subject = 'Phoned in'")
+            .bind(t.tenant)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        v
+    };
+    assert_eq!(phoned, ("alice@acme.test".to_string(), ops_id.clone()));
+    // Bob (free and busy): the collection is there, read-only, its events "Busy" with times only.
+    let query = r#"<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><d:getetag/><c:calendar-data/></d:prop><c:filter><c:comp-filter name="VCALENDAR"/></c:filter></c:calendar-query>"#;
+    let seen = t.raw(dav(bob, "REPORT", format!("/dav/u/{}/calendars/{ops_id}/", bob.user), query, Some("1"))).await.unwrap();
+    let seen = text(&seen);
+    assert!(
+        seen.contains("SUMMARY:Busy")
+            && !seen.contains("Planning")
+            && !seen.contains("Phoned")
+            && !seen.contains("mgr@acme.test")
+            && !seen.contains("ORGANIZER"),
+        "{seen}"
+    );
+    let refused_put = t.raw(dav(bob, "PUT", format!("/dav/u/{}/calendars/{ops_id}/BOB.ics", bob.user), &phone.replace("PHONE-1", "BOB"), None)).await.unwrap();
+    assert_eq!(refused_put.status, 403);
+    let bob_home = text(&t.raw(dav(bob, "PROPFIND", format!("/dav/u/{}/calendars/", bob.user), home, Some("1"))).await.unwrap());
+    let bob_ops = bob_home.split("<D:response>").find(|r| r.contains(&format!("calendars/{ops_id}/"))).unwrap().to_string();
+    assert!(!bob_ops.contains("<D:write/>"), "read-only: {bob_ops}");
+    // A stranger has no such collection.
+    refused(t.raw(dav(stranger, "PROPFIND", format!("/dav/u/{}/calendars/{ops_id}/", stranger.user), home, Some("0"))).await, "not found");
+    // Sync tokens: none given lists everything with a token; the same token says nothing new; a stale one makes the app list again.
+    let sync = |token: &str| {
+        format!(
+            r#"<d:sync-collection xmlns:d="DAV:"><d:sync-token>{token}</d:sync-token><d:sync-level>1</d:sync-level><d:prop><d:getetag/></d:prop></d:sync-collection>"#
+        )
+    };
+    let first = text(&t.raw(dav(carol, "REPORT", format!("/dav/u/{}/calendars/{ops_id}/", carol.user), &sync(""), None)).await.unwrap());
+    let token = first.split("<D:sync-token>").nth(1).and_then(|r| r.split("</D:sync-token>").next()).unwrap().to_string();
+    assert!(first.contains("PHONE-1.ics"), "{first}");
+    let again = text(&t.raw(dav(carol, "REPORT", format!("/dav/u/{}/calendars/{ops_id}/", carol.user), &sync(&token), None)).await.unwrap());
+    assert!(!again.contains("PHONE-1.ics") && again.contains(&token), "{again}");
+    let stale = t.raw(dav(carol, "REPORT", format!("/dav/u/{}/calendars/{ops_id}/", carol.user), &sync("http://ferrum.invalid/sync/old"), None)).await.unwrap();
+    assert!(stale.status == 403 && text(&stale).contains("valid-sync-token"));
+    // A calendar made from the phone.
+    let mk = r#"<c:mkcalendar xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:a="http://apple.com/ns/ical/"><d:set><d:prop><d:displayname>From the phone</d:displayname><a:calendar-color>#D97706</a:calendar-color></d:prop></d:set></c:mkcalendar>"#;
+    let made_cal = t.raw(dav(carol, "MKCALENDAR", format!("/dav/u/{}/calendars/2F1C-NEW/", carol.user), mk, None)).await.unwrap();
+    assert_eq!(made_cal.status, 201);
+    let mine_now = t.ok(carol, "GET", "/calendar/calendars", &[], Value::Null).await;
+    assert!(mine_now["calendars"].as_array().unwrap().iter().any(|c| c["name"] == json!("From the phone") && c["tone"] == json!("amber")), "{mine_now}");
+    let into = t
+        .raw(dav(
+            carol,
+            "PUT",
+            format!("/dav/u/{}/calendars/2F1C-NEW/N1.ics", carol.user),
+            &phone.replace("PHONE-1", "N1").replace("Phoned in", "On the phone"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(into.status, 201);
+    assert_eq!(t.raw(dav(carol, "MKCALENDAR", format!("/dav/u/{}/calendars/2F1C-NEW/", carol.user), mk, None)).await.unwrap().status, 405);
+
+    // Carol leaves the group: her next request has no access.
+    k.set_user_roles(admin, carol.user, &["Comms User".to_string()]).await.unwrap();
+    assert_eq!(level_of(&t.ok(carol, "GET", "/calendar/calendars", &[], Value::Null).await), None);
+    refused(t.call(Some(carol), "GET", &record, &[], Value::Null).await, "not found");
+    refused(t.call(Some(carol), "DELETE", &format!("/calendar/events/{}", uid(&one)), &[], Value::Null).await, "not found");
+    // Back in the group, she deletes all of the series (the guest is told).
+    k.set_user_roles(admin, carol.user, &["Comms User".to_string(), "Planners".to_string()]).await.unwrap();
+    t.ok(carol, "DELETE", &path, &[], Value::Null).await;
+    t.ok(carol, "DELETE", &format!("/calendar/events/{}", uid(&one)), &[], Value::Null).await;
+    assert_eq!(t.notifications(mgr, "Cancelled: Planning").await, 1);
+    refused(k.get(alice, "CalendarEvent", ev, false).await, "not found");
+    // The owner uses the same route for her own calendar.
+    let own_ev = t
+        .ok(
+            alice,
+            "POST",
+            "/calendar/events",
+            &[],
+            json!({"calendar": ops_id, "subject": "Mine", "starts_at": "2027-03-03T09:00:00Z", "ends_at": "2027-03-03T10:00:00Z"}),
+        )
+        .await;
+    t.ok(alice, "DELETE", &format!("/calendar/events/{}", uid(&own_ev)), &[], Value::Null).await;
+    k.set_user_roles(admin, carol.user, &["Comms User".to_string()]).await.unwrap();
+    t.ok(alice, "DELETE", &format!("/calendar/calendars/{ops_id}"), &[("events", "delete")], Value::Null).await;
+    let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
+    sqlx::query("update app_user set is_active = false where tenant_id = $1 and email = 'frank@acme.test'").bind(t.tenant).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+}
+
+/// What a stand-in feed server answers: status, extra headers and body; and the If-None-Match it was sent last.
+#[derive(Clone, Default)]
+struct Feed {
+    answer: Arc<Mutex<(u16, Vec<(String, String)>, Vec<u8>)>>,
+    asked_with: Arc<Mutex<Option<String>>>,
+}
+
+impl Feed {
+    async fn start() -> (Feed, String) {
+        let feed = Feed::default();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/cal.ics", listener.local_addr().unwrap());
+        let f = feed.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((sock, _)) = listener.accept().await else { return };
+                let f = f.clone();
+                tokio::spawn(async move {
+                    let mut reader = BufReader::new(sock);
+                    let mut line = String::new();
+                    let _ = reader.read_line(&mut line).await;
+                    let mut inm = None;
+                    loop {
+                        let mut h = String::new();
+                        if reader.read_line(&mut h).await.unwrap_or(0) == 0 || h.trim_end().is_empty() {
+                            break;
+                        }
+                        if let Some((n, v)) = h.trim_end().split_once(':')
+                            && n.eq_ignore_ascii_case("if-none-match")
+                        {
+                            inm = Some(v.trim().to_string());
+                        }
+                    }
+                    *f.asked_with.lock().unwrap() = inm.clone();
+                    let (status, headers, body) = f.answer.lock().unwrap().clone();
+                    let etag = headers.iter().find(|(n, _)| n == "etag").map(|(_, v)| v.clone());
+                    let (status, body) = if inm.is_some() && inm == etag { (304, vec![]) } else { (status, body) };
+                    let mut head = format!("HTTP/1.1 {status} X\r\ncontent-length: {}\r\nconnection: close\r\n", body.len());
+                    for (n, v) in &headers {
+                        head.push_str(&format!("{n}: {v}\r\n"));
+                    }
+                    head.push_str("\r\n");
+                    let mut sock = reader.into_inner();
+                    let _ = sock.write_all(head.as_bytes()).await;
+                    let _ = sock.write_all(&body).await;
+                });
+            }
+        });
+        (feed, url)
+    }
+
+    fn set(&self, status: u16, headers: &[(&str, &str)], body: &str) {
+        *self.answer.lock().unwrap() = (status, headers.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect(), body.as_bytes().to_vec());
+    }
+}
+
+/// Comms 0.18: a calendar subscribed to by its address. Fetched through the egress-safe client (a
+/// stand-in on this machine, so private addresses are allowed for it alone), replaced as a set,
+/// read-only, never in free/busy or exports, with back-off; and the refusals.
+async fn calendar_subscriptions(t: &T, users: &HashMap<String, Ctx>) {
+    use ferrum_app_comms::subscribe;
+    let (alice, bob) = (&users["alice"], &users["bob"]);
+    let k = &t.k;
+    let (feed, url) = Feed::start().await;
+    let v1 = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:h1\r\nDTSTART;VALUE=DATE:20270317\r\nDTEND;VALUE=DATE:20270318\r\nSUMMARY:Holiday one\r\nEND:VEVENT\r\n\
+        BEGIN:VEVENT\r\nUID:h2\r\nDTSTART;TZID=Europe/London:20270319T090000\r\nDTEND;TZID=Europe/London:20270319T100000\r\nSUMMARY:Holiday two\r\nATTENDEE:mailto:bob@acme.test\r\n\
+        BEGIN:VALARM\r\nTRIGGER:-PT15M\r\nACTION:DISPLAY\r\nEND:VALARM\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:h3\r\nDTSTART:20270320T090000Z\r\nDTEND:20270320T100000Z\r\nSUMMARY:Holiday three\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    feed.set(200, &[("content-type", "text/calendar"), ("etag", "\"v1\"")], v1);
+    // The address with a secret in it; given as webcal:// it would be read as https://.
+    let secret_url = format!("{url}?token=s3cr3t-0123456789");
+    let made = subscribe::subscribe(k, alice, obj(json!({"url": secret_url, "name": "Holidays", "tone": "red"})), true).await;
+    // The stand-in is plain HTTP on this machine: only the test's allowance lets it through.
+    let made = match made {
+        Ok(v) => v,
+        Err(e) => panic!("subscribe: {e:?}"),
+    };
+    let cal: Uuid = uid(&made);
+    assert_eq!(made["events"], json!(3));
+    let cals = t.ok(alice, "GET", "/calendar/calendars", &[], Value::Null).await;
+    let listed = cals["calendars"].as_array().unwrap().iter().find(|c| c["id"] == json!(cal.to_string())).unwrap().clone();
+    assert_eq!(listed["subscription"]["label"], json!("127.0.0.1"), "only its host is shown again");
+    assert!(!cals.to_string().contains("s3cr3t"), "the address's secret is never shown: {cals}");
+    assert_eq!(t.secret("Calendar", cal, "feed_url").await.as_deref(), Some(secret_url.as_str()), "kept as a secret");
+    let range = [("from", "2027-03-01"), ("to", "2027-03-31")];
+    let titles = |v: &Value| {
+        let mut list: Vec<String> = v["occurrences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|o| o["calendar"] == json!(cal.to_string()))
+            .map(|o| o["subject"].as_str().unwrap().to_string())
+            .collect();
+        list.sort();
+        list
+    };
+    let seen = t.ok(alice, "GET", "/calendar/events", &range, Value::Null).await;
+    assert_eq!(titles(&seen), ["Holiday one", "Holiday three", "Holiday two"]);
+    let two = seen["occurrences"].as_array().unwrap().iter().find(|o| o["subject"] == json!("Holiday two")).unwrap().clone();
+    assert_eq!((two["start"].as_str(), two["fetched"].as_bool()), (Some("2027-03-19T09:00:00.000Z"), Some(true)), "London's 09:00 before its clocks change");
+    // No invitation to the feed's guest, no reminder, not in free/busy or the export.
+    assert_eq!(t.notifications(bob, "Invitation: Holiday%").await, 0);
+    let reminders: i64 = t
+        .scalar(
+            &format!(
+                "select count(*) from {} r join e_calendar_event e on e.id = r.parent_id where e.tenant_id = $1 and e.calendar = $2",
+                "e_calendar_event__reminders"
+            ),
+            Some(cal),
+        )
+        .await;
+    assert_eq!(reminders, 0);
+    let fb = t.ok(bob, "POST", "/calendar/freebusy", &[], json!({"users": ["alice@acme.test"], "from": "2027-03-20", "to": "2027-03-21"})).await;
+    assert_eq!(fb["busy"]["alice@acme.test"], json!([]), "a subscription is not the person's busy time");
+    let export = t.raw(t.request(Some(alice), "GET", "/calendar/export", &[], vec![], "text/plain")).await.unwrap();
+    assert!(!String::from_utf8_lossy(&export.body).contains("Holiday"));
+    // Read-only: no changes, additions or deletions, by the records API or Calendar's routes.
+    let h1: Uuid = two["event"].as_str().unwrap().parse().unwrap();
+    refused(k.update(alice, "CalendarEvent", h1, obj(json!({"subject": "Mine now"})), None).await, "invalid");
+    refused(t.call(Some(alice), "PATCH", &format!("/calendar/events/{h1}"), &[], json!({"subject": "Mine now"})).await, "invalid");
+    refused(k.delete(alice, "CalendarEvent", h1, None).await, "forbidden");
+    refused(
+        t.call(
+            Some(alice),
+            "POST",
+            "/calendar/events",
+            &[],
+            json!({"calendar": cal, "subject": "x", "starts_at": "2027-03-02T09:00:00Z", "ends_at": "2027-03-02T10:00:00Z"}),
+        )
+        .await,
+        "invalid",
+    );
+
+    // Unchanged (the ETag): nothing written. Changed: one event changed, one gone, the rest kept.
+    assert_eq!(subscribe::refresh(k, t.tenant, cal, true).await.unwrap(), Ok("up to date".to_string()));
+    assert_eq!(feed.asked_with.lock().unwrap().as_deref(), Some("\"v1\""));
+    let v2 = v1
+        .replace("SUMMARY:Holiday one", "SUMMARY:Holiday one (moved)")
+        .replace("DTSTART;VALUE=DATE:20270317\r\nDTEND;VALUE=DATE:20270318", "DTSTART;VALUE=DATE:20270318\r\nDTEND;VALUE=DATE:20270319");
+    let v2 = v2[..v2.find("BEGIN:VEVENT\r\nUID:h3").unwrap()].to_string() + "END:VCALENDAR\r\n";
+    feed.set(200, &[("etag", "\"v2\"")], &v2);
+    let said = subscribe::refresh(k, t.tenant, cal, true).await.unwrap().unwrap();
+    assert!(said.contains("2 events") && said.contains("1 removed"), "{said}");
+    assert_eq!(titles(&t.ok(alice, "GET", "/calendar/events", &range, Value::Null).await), ["Holiday one (moved)", "Holiday two"]);
+    let kept: i64 = t.scalar("select count(*) from e_calendar_event where tenant_id = $1 and calendar = $2 and id = (select id from e_calendar_event where tenant_id = $1 and subject = 'Holiday two')", Some(cal)).await;
+    assert_eq!(kept, 1);
+    // Reminders turned on: the feed's own come in on the next fetch.
+    t.ok(alice, "PATCH", &format!("/calendar/calendars/{cal}"), &[], json!({"remind": true})).await;
+    subscribe::refresh(k, t.tenant, cal, true).await.unwrap().unwrap();
+    let reminders: i64 = t
+        .scalar(
+            &format!(
+                "select count(*) from {} r join e_calendar_event e on e.id = r.parent_id where e.tenant_id = $1 and e.calendar = $2",
+                "e_calendar_event__reminders"
+            ),
+            Some(cal),
+        )
+        .await;
+    assert_eq!(reminders, 1);
+
+    // Failures: recorded, said in words without the address, and waited for longer each time.
+    feed.set(500, &[], "boom");
+    let failed = subscribe::refresh(k, t.tenant, cal, true).await.unwrap().unwrap_err();
+    assert_eq!(failed, "its server answered 500");
+    let wait = |n: i64| async move {
+        let mut tx = t.k.db.tenant_tx(t.tenant).await.unwrap();
+        let (failures, next): (i64, chrono::DateTime<chrono::Utc>) =
+            sqlx::query_as("select fetch_failures, next_fetch_at from e_calendar where tenant_id = $1 and id = $2")
+                .bind(t.tenant)
+                .bind(cal)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(failures, n);
+        (next - chrono::Utc::now()).num_minutes()
+    };
+    assert!((55..=60).contains(&wait(1).await));
+    subscribe::refresh(k, t.tenant, cal, true).await.unwrap().unwrap_err();
+    assert!((115..=120).contains(&wait(2).await));
+    let listed = t.ok(alice, "GET", "/calendar/calendars", &[], Value::Null).await;
+    let sub = &listed["calendars"].as_array().unwrap().iter().find(|c| c["id"] == json!(cal.to_string())).unwrap()["subscription"];
+    assert_eq!((sub["result"].as_str(), sub["failures"].as_i64()), (Some("failed: its server answered 500"), Some(2)));
+    assert_eq!(titles(&t.ok(alice, "GET", "/calendar/events", &range, Value::Null).await).len(), 2, "a failure keeps what was fetched");
+    // A redirect, a body over 5 MB, not a calendar: each refused, in words.
+    feed.set(302, &[("location", "https://elsewhere.example/cal.ics")], "");
+    assert!(subscribe::refresh(k, t.tenant, cal, true).await.unwrap().unwrap_err().contains("redirect"));
+    feed.set(200, &[], &"X".repeat(subscribe::MAX_FEED + 1));
+    assert_eq!(subscribe::refresh(k, t.tenant, cal, true).await.unwrap().unwrap_err(), "it is larger than 5 MB");
+    feed.set(200, &[], "<html>not a calendar</html>");
+    assert!(subscribe::refresh(k, t.tenant, cal, true).await.unwrap().unwrap_err().starts_with("it is not a calendar"));
+    // Plain HTTP and private addresses are refused as the server takes them (no allowance).
+    refused(t.call(Some(alice), "POST", "/calendar/subscriptions", &[], json!({"url": url})).await, "invalid");
+    let private = url.replace("http://", "https://");
+    let r = t.call(Some(alice), "POST", "/calendar/subscriptions", &[], json!({"url": private})).await;
+    assert!(format!("{r:?}").contains("private network"), "{r:?}");
+    let r = t.call(Some(alice), "POST", "/calendar/subscriptions", &[], json!({"url": "webcal://10.1.2.3/x.ics?token=abc"})).await;
+    assert!(format!("{r:?}").contains("private network") && !format!("{r:?}").contains("token=abc"), "{r:?}");
+    // Another person cannot refresh or see it.
+    refused(t.call(Some(bob), "POST", &format!("/calendar/subscriptions/{cal}/refresh"), &[], Value::Null).await, "not found");
+    // Removing it removes what was fetched.
+    t.ok(alice, "DELETE", &format!("/calendar/calendars/{cal}"), &[], Value::Null).await;
+    let left: i64 = t.scalar("select count(*) from e_calendar_event where tenant_id = $1 and calendar = $2", Some(cal)).await;
+    assert_eq!(left, 0);
 }
 
 async fn hosted_mail(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>, imap: &FakeImap) {

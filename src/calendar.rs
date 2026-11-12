@@ -361,6 +361,9 @@ impl DocHook for EventHook {
     }
 
     async fn before_delete(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        if b(doc, "fetched") && !hc.ctx.user.is_nil() {
+            return Err(Error::Forbidden("a subscribed calendar's events come from its address; remove the subscription instead".into()));
+        }
         if !is_organizer(hc.ctx, doc) {
             return Err(Error::Forbidden("only the organizer can delete this event".into()));
         }
@@ -399,7 +402,9 @@ impl DocHook for EventHook {
 
 // ───────────────────────────── queries ─────────────────────────────
 
-/// Events of `who` (organizer or attendee who has not declined) that may overlap the range.
+/// Events of `who` (organizer or attendee who has not declined) that may overlap the range. Without
+/// `include_public` (free/busy, the feed and export, invitations) events fetched from a subscription
+/// are left out: they are someone else's calendar, not the person's time.
 async fn events_of(
     tx: &mut Tx,
     tenant: Uuid,
@@ -416,6 +421,7 @@ async fn events_of(
             from {REMINDERS} r where r.tenant_id = e.tenant_id and r.parent_id = e.id)), \
          (select a.response from {ATTENDEES} a where a.tenant_id = e.tenant_id and a.parent_id = e.id and a.email = $2 limit 1) \
          from e_calendar_event e where e.tenant_id = $1 \
+         and ($5 or not coalesce(e.fetched, false)) \
          and (e.owner = $2 or ($5 and e.visibility = 'Public') or e.calendar = any($7) or exists (select 1 from {ATTENDEES} a where a.tenant_id = e.tenant_id \
               and a.parent_id = e.id and a.email = $2 and ($6 or a.response <> 'Declined'))) \
          and e.starts_at < $4 and (e.recurrence is not null or e.ends_at > $3 or (e.ends_at = e.starts_at and e.starts_at >= $3)) \
@@ -509,6 +515,7 @@ async fn my_calendar(k: &Kernel, ctx: &Ctx, req: &SiteRequest) -> Result<Value> 
                 "reference_id": doc.get("reference_id"),
                 "calendar": doc.get("calendar"),
                 "level": level.word(),
+                "fetched": b(&doc, "fetched"),
             }));
             if level == Level::FreeBusy
                 && let Some(Value::Object(o)) = out.last_mut()
@@ -717,10 +724,16 @@ async fn event_detail(k: &Kernel, ctx: &Ctx, event: Uuid) -> Result<Value> {
     };
     let owner = lower(s(&doc, "owner"));
     let owner_name = display_name(&mut tx, ctx.tenant, &owner).await?;
+    // Made by someone with "make changes" on the organizer's calendar: who.
+    let creator: Option<(String, String)> = sqlx::query_as("select lower(email::text), full_name from app_user where tenant_id = $1 and id = $2")
+        .bind(ctx.tenant)
+        .bind(id(&doc, "created_by"))
+        .fetch_optional(&mut *tx)
+        .await?;
+    let created_by = creator.filter(|(e, _)| *e != owner).map(|(e, n)| if n.trim().is_empty() { e } else { n });
     tx.commit().await?;
-    Ok(
-        json!({"id": event, "version": doc.get("version"), "attendees": guests, "owner": owner, "owner_name": owner_name, "level": level.word(), "calendar": doc.get("calendar")}),
-    )
+    Ok(json!({"id": event, "version": doc.get("version"), "attendees": guests, "owner": owner, "owner_name": owner_name, "level": level.word(),
+        "calendar": doc.get("calendar"), "created_by": created_by}))
 }
 
 // ───────────────────────────── answering from the invitation ─────────────────────────────
@@ -1108,26 +1121,134 @@ pub async fn fire_reminders(k: &Kernel, tenant: Uuid) -> Result<usize> {
     Ok(fired)
 }
 
-/// `PATCH /calendar/events/{id}`: a change by someone the event's calendar is shared with at
-/// "make changes" (its organizer changes it through the records API). Times, title, place and notes.
-async fn shared_edit(k: &Kernel, ctx: &Ctx, event: Uuid, body: Map<String, Value>) -> Result<Value> {
-    const FIELDS: &[&str] = &["subject", "starts_at", "ends_at", "all_day", "timezone", "location", "description", "recurrence", "recurrence_exceptions"];
-    let me = ctx.email.to_lowercase();
-    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let doc = k.get_tx(&util::sys(ctx), &mut tx, "CalendarEvent", event, false).await.map_err(|_| Error::NotFound("Event".into()))?;
-    let shared = crate::calendars::shared_with(&mut tx, ctx.tenant, &me).await?;
-    match crate::calendars::level(&me, &doc, &shared) {
-        Level::None | Level::FreeBusy => return Err(Error::NotFound("Event".into())),
-        Level::Details => return Err(Error::Forbidden("you may see this calendar, not change it".into())),
-        Level::Edit | Level::Owner => {}
-    }
-    if let Some(k) = body.keys().find(|k| !FIELDS.contains(&k.as_str())) {
+// ───────────────────────────── in a calendar shared to "make changes" ─────────────────────────────
+
+/// What someone with "make changes" on a calendar may set on an event in it (its organizer, and
+/// what only the organizer's records API sets, stay as they are).
+const DELEGATE_FIELDS: &[&str] = &[
+    "subject",
+    "starts_at",
+    "ends_at",
+    "all_day",
+    "timezone",
+    "location",
+    "description",
+    "meeting_link",
+    "visibility",
+    "status",
+    "recurrence",
+    "recurrence_exceptions",
+    "attendees",
+    "reminders",
+    "calendar",
+    "category",
+    "color",
+];
+
+fn delegate_body(body: Map<String, Value>) -> Result<Doc> {
+    if let Some(k) = body.keys().find(|k| !DELEGATE_FIELDS.contains(&k.as_str())) {
         return Err(Error::field(k, "cannot be changed here"));
     }
-    let version = doc.get("version").and_then(Value::as_i64);
-    let saved = k.update_tx(&util::sys(ctx), &mut tx, "CalendarEvent", event, body, version).await?;
+    Ok(body)
+}
+
+/// A calendar's owner and my level on it (through the same rule as its events).
+async fn calendar_level(tx: &mut Tx, ctx: &Ctx, calendar: Uuid) -> Result<(String, Level)> {
+    let me = ctx.email.to_lowercase();
+    let owner: Option<String> =
+        sqlx::query_scalar("select owner from e_calendar where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(calendar).fetch_optional(&mut **tx).await?;
+    let Some(owner) = owner.map(|o| o.to_lowercase()) else { return Err(Error::NotFound("Calendar".into())) };
+    if owner == me {
+        return Ok((owner, Level::Owner));
+    }
+    let level = crate::calendars::shared_with(tx, ctx.tenant, &me).await?.get(&calendar).copied().unwrap_or(Level::None);
+    Ok((owner, level))
+}
+
+/// An event I may change through Calendar's own routes (organizer, or "make changes" on its calendar).
+async fn changeable(k: &Kernel, tx: &mut Tx, ctx: &Ctx, event: Uuid) -> Result<(Doc, Level)> {
+    let me = ctx.email.to_lowercase();
+    let doc = k.get_tx(&util::sys(ctx), tx, "CalendarEvent", event, true).await.map_err(|_| Error::NotFound("Event".into()))?;
+    let shared = crate::calendars::shared_with(tx, ctx.tenant, &me).await?;
+    match crate::calendars::level(&me, &doc, &shared) {
+        Level::None | Level::FreeBusy => Err(Error::NotFound("Event".into())),
+        Level::Details => Err(Error::Forbidden("you may see this calendar, not change it".into())),
+        l => Ok((doc, l)),
+    }
+}
+
+/// The writer of a change: the organizer as themself; someone with "make changes" with the engine's
+/// privileges, so the organizer stays the organizer, while the record's `created_by`/`updated_by`
+/// and its history name who did it.
+fn writer(ctx: &Ctx, level: Level) -> Ctx {
+    if level == Level::Owner { ctx.clone() } else { util::elevated(ctx) }
+}
+
+/// A move to another calendar stays with the organizer's calendars that I may change.
+async fn check_target(tx: &mut Tx, ctx: &Ctx, doc: &Doc, body: &Doc) -> Result<()> {
+    let Some(to) = body.get("calendar").filter(|c| !c.is_null() && *c != doc.get("calendar").unwrap_or(&Value::Null)) else { return Ok(()) };
+    let to: Uuid = to.as_str().and_then(|c| c.parse().ok()).ok_or_else(|| Error::field("calendar", "a calendar id"))?;
+    let (owner, level) = calendar_level(tx, ctx, to).await?;
+    if owner != lower(s(doc, "owner")) || level < Level::Edit {
+        return Err(Error::field("calendar", "an event moves only between its organizer's calendars that you may change"));
+    }
+    Ok(())
+}
+
+/// `POST /calendar/events`: an event in one of my calendars, or in one shared with me to "make
+/// changes", where its owner is the organizer (invitations and reminders are theirs, as in Google
+/// Calendar) and the event records that I made it (`created_by`).
+async fn create_event(k: &Kernel, ctx: &Ctx, body: Map<String, Value>) -> Result<Value> {
+    let mut doc = delegate_body(body)?;
+    let calendar: Uuid =
+        doc.get("calendar").and_then(Value::as_str).and_then(|c| c.parse().ok()).ok_or_else(|| Error::field("calendar", "say which calendar it goes in"))?;
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let (owner, level) = calendar_level(&mut tx, ctx, calendar).await?;
+    let saved = match level {
+        Level::None | Level::FreeBusy => return Err(Error::NotFound("Calendar".into())),
+        Level::Details => return Err(Error::Forbidden("you may see this calendar, not add to it".into())),
+        Level::Owner => k.insert_tx(ctx, &mut tx, "CalendarEvent", doc).await?,
+        Level::Edit => {
+            ctx.require("CalendarEvent", Action::Create)?;
+            doc.insert("owner".into(), json!(owner));
+            k.insert_tx(&util::elevated(ctx), &mut tx, "CalendarEvent", doc).await?
+        }
+    };
     tx.commit().await?;
     Ok(Value::Object(saved))
+}
+
+/// `GET /calendar/events/{id}/record`: the whole event, for its organizer and for someone with
+/// "make changes" on its calendar (what the editor and the series changes read).
+async fn event_record(k: &Kernel, ctx: &Ctx, event: Uuid) -> Result<Value> {
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let (doc, level) = changeable(k, &mut tx, ctx, event).await?;
+    tx.commit().await?;
+    let mut doc = normalize(doc);
+    doc.insert("level".into(), json!(level.word()));
+    Ok(Value::Object(doc))
+}
+
+/// `PATCH /calendar/events/{id}` (`If-Match: {version}` optional): a change by its organizer or by
+/// someone its calendar is shared with to "make changes".
+async fn shared_edit(k: &Kernel, ctx: &Ctx, event: Uuid, body: Map<String, Value>, version: Option<i64>) -> Result<Value> {
+    let body = delegate_body(body)?;
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let (doc, level) = changeable(k, &mut tx, ctx, event).await?;
+    check_target(&mut tx, ctx, &doc, &body).await?;
+    let version = version.or_else(|| doc.get("version").and_then(Value::as_i64));
+    let saved = k.update_tx(&writer(ctx, level), &mut tx, "CalendarEvent", event, body, version).await?;
+    tx.commit().await?;
+    Ok(Value::Object(saved))
+}
+
+/// `DELETE /calendar/events/{id}`: as the organizer would (its guests are told).
+async fn shared_delete(k: &Kernel, ctx: &Ctx, event: Uuid) -> Result<Value> {
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let (_, level) = changeable(k, &mut tx, ctx, event).await?;
+    k.delete_tx(&writer(ctx, level), &mut tx, "CalendarEvent", event, None).await?;
+    tx.commit().await?;
+    Ok(json!({"deleted": event}))
 }
 
 /// Whether a reminder for the occurrence at `start` already went out for one at another instant of
@@ -1198,7 +1319,16 @@ pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> 
             let body = if m == "PATCH" { util::body_json(req)? } else { Map::new() };
             crate::calendars::change(k, ctx, m, Some(uuid(c)?), body, util::param(req, "events")).await?
         }
-        ("PATCH", ["events", e]) => shared_edit(k, ctx, uuid(e)?, util::body_json(req)?).await?,
+        ("POST", ["events"]) => create_event(k, ctx, util::body_json(req)?).await?,
+        ("GET", ["events", e, "record"]) => event_record(k, ctx, uuid(e)?).await?,
+        ("PATCH", ["events", e]) => {
+            let version = util::header(req, "if-match").and_then(|v| v.trim().trim_matches('"').parse().ok());
+            shared_edit(k, ctx, uuid(e)?, util::body_json(req)?, version).await?
+        }
+        ("DELETE", ["events", e]) => shared_delete(k, ctx, uuid(e)?).await?,
+        ("GET", ["groups"]) => crate::calendars::groups(k, ctx).await?,
+        ("POST", ["subscriptions"]) => crate::subscribe::subscribe(k, ctx, util::body_json(req)?, false).await?,
+        ("POST", ["subscriptions", c, "refresh"]) => crate::calendars::refresh(k, ctx, uuid(c)?).await?,
         ("GET", ["hours"]) => crate::hours::handle(k, ctx, "GET", None).await?,
         ("PUT", ["hours"]) => crate::hours::handle(k, ctx, "PUT", Some(util::body_json(req)?)).await?,
         _ => return Err(Error::NotFound("calendar endpoint".into())),

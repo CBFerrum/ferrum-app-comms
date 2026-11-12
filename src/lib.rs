@@ -24,6 +24,7 @@ mod newsletter;
 pub mod recur;
 mod reports;
 mod site;
+pub mod subscribe;
 mod template;
 mod util;
 mod webmail;
@@ -44,6 +45,8 @@ const POLL_BUDGET: Duration = Duration::from_secs(40);
 const SEND_BUDGET: Duration = Duration::from_secs(30);
 /// New hosted mail (`arrivals.rs`): looked at first, so a notification waits at most about a round.
 const ARRIVALS_BUDGET: Duration = Duration::from_secs(20);
+/// Calendars subscribed to by their address (`subscribe.rs`): each due one fetched while this lasts.
+const SUBSCRIBE_BUDGET: Duration = Duration::from_secs(30);
 
 /// Registers this package's document hooks, its mail sender and its endpoints.
 pub fn register(hooks: &mut HookRegistry) {
@@ -100,6 +103,7 @@ pub async fn maintenance_with(k: &Kernel, mailboxes: &dyn MailboxConnector) -> R
             ("mail polling", inbound::poll_due(k, tenant, mailboxes, POLL_BUDGET).await),
             ("newsletters", newsletter::run(k, tenant, SEND_BUDGET).await),
             ("reminders", calendar::fire_reminders(k, tenant).await),
+            ("calendar subscriptions", subscribe::run(k, tenant, SUBSCRIBE_BUDGET).await),
             ("meeting attendance", meetings::upkeep(k, tenant).await),
             ("hosted mail", hosted::reconcile_due(k, tenant).await.map(|_| 0)),
             ("purge", purge(k, tenant).await),
