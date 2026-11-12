@@ -222,6 +222,12 @@ pub(crate) async fn decide(k: &Kernel, ctx: &Ctx, event: Uuid, proposal: Uuid, b
     } else {
         sqlx::query("delete from comms_event_proposal where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(proposal).execute(&mut *tx).await?;
         let subject = s(&doc, "subject").unwrap_or("(no title)");
+        // The time that stays: the occurrence the proposal was for, else the event's.
+        let mut stays = doc.clone();
+        if let (Some(at), Some(sr)) = (occurrence, calendar::series(&doc)) {
+            stays.insert("starts_at".into(), json!(util::ts(at)));
+            stays.insert("ends_at".into(), json!(util::ts(at + (sr.end - sr.start))));
+        }
         match util::user_id(&mut tx, ctx.tenant, &email).await? {
             Some(user) => {
                 let title = util::cut(&format!("Your proposed time was not taken: {subject}"), 200);
@@ -232,7 +238,7 @@ pub(crate) async fn decide(k: &Kernel, ctx: &Ctx, event: Uuid, proposal: Uuid, b
                     "comms.invitation",
                     "inapp",
                     &title,
-                    Some(&calendar::when(&doc)),
+                    Some(&calendar::when(&stays)),
                     Some("CalendarEvent"),
                     Some(event),
                 )

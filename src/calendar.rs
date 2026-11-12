@@ -55,15 +55,8 @@ pub(crate) fn notes_text(html: &str) -> String {
     let lines = BREAK.replace_all(html, "\n");
     let text = ammonia::Builder::empty().clean(&lines).to_string();
     let text = text.replace("&nbsp;", " ").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&");
-    let mut out = String::new();
-    for l in text.lines().map(str::trim_end) {
-        if l.trim().is_empty() && out.ends_with("\n\n") {
-            continue;
-        }
-        out.push_str(l);
-        out.push('\n');
-    }
-    out.trim().to_string()
+    // One line per paragraph or list item: an editor's empty paragraphs and nested blocks add none.
+    text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect::<Vec<_>>().join("\n")
 }
 const MAX_RANGE_DAYS: i64 = 400;
 const MAX_REMINDER_MINUTES: i64 = 40_320;
@@ -706,7 +699,9 @@ async fn free_busy(k: &Kernel, ctx: &Ctx, body: Map<String, Value>) -> Result<Va
     for u in users {
         let mut intervals = Vec::new();
         for (doc, _) in events_of(&mut tx, ctx.tenant, &u, from, to, false, false, &[]).await? {
-            if s(&doc, "status") == Some("Cancelled") || (exclude.is_some() && id(&doc, "id") == exclude) {
+            // An all-day event (a stock count, an offsite, a holiday) shows as free, as Google Calendar
+            // has it by default: it is a day's label, not time someone cannot meet.
+            if s(&doc, "status") == Some("Cancelled") || b(&doc, "all_day") || (exclude.is_some() && id(&doc, "id") == exclude) {
                 continue;
             }
             if let Some(sr) = series(&doc) {
@@ -1479,6 +1474,8 @@ mod tests {
         assert!(!html.contains("script") && !html.contains("onclick") && !html.contains("<img") && html.contains("<b>Agenda</b>"), "{html}");
         assert_eq!(notes_text(&html), "Agenda & notes\nOne\nTwo");
         assert_eq!(notes_html("<p> </p><img src=x>"), None);
+        // What the editor writes: list items hold paragraphs, and an empty paragraph ends it.
+        assert_eq!(notes_text("<p><strong>Agenda</strong></p><ul><li><p>Stock</p></li><li><p>Trucks</p></li></ul><p></p>"), "Agenda\nStock\nTrucks");
         assert_eq!(merge(vec![(t(9), t(10)), (t(12), t(13)), (t(9), t(11))]), vec![(t(9), t(11)), (t(12), t(13))]);
     }
 }
