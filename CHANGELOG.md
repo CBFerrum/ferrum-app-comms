@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.18.0
+
+Calendar fills in what 0.17 left out. A database change (`comms/008_calendar_proposals.sql`) and new fields are applied at startup; nothing existing moves. Tried on a running server beside a real mail server; built with the Ferrum-Frontend commit named in `ui/dist/.source`.
+
+**Sharing, completed.** Someone a calendar is shared with to make changes can add events to it, from the quick form too, and change or delete them, including a repeating event with its three choices. The calendar's owner stays the organizer, so invitations and reminders are theirs, and the event shows who made it. A calendar can be shared with a group (a role), and someone taken out of the role loses access on their next request.
+
+**Calendar programs see every calendar.** Each of your calendars, and each one shared with you, is its own CalDAV collection with its name and colour. A "make changes" share is writable, "all details" is read-only, and "free and busy" shows only "Busy" with the times: the event is rebuilt from its times alone, so a title, place, guest or note cannot leave that way. `default` keeps working for phones already set up. Programs can create a calendar and keep up to date with sync tokens.
+
+**Subscribe by address.** Paste an `.ics` or `webcal://` address, or use Add holidays. The address must be HTTPS and on the public internet; redirects are not followed and feeds over 5 MB are refused. A feed is fetched at most hourly, only when it has changed, and less often after failures, up to once a day. Its events are read-only, never invite anyone, are not exported and do not make you busy, and remind you only if you turn that on. The side panel says when it last updated or why it could not. The address is kept as a secret and shown afterwards only by its site.
+
+**Propose a new time** from an event, or from an invitation in Mail, where an outside organizer gets a COUNTER by mail. A proposal arriving by mail is recorded only from an invited guest whose mail the server can vouch for, and Mail says so when one is not recorded; it never moves the event by itself. The organizer alone sees proposals, marked on the calendar, and accepts (the event, or that one occurrence, moves and guests are told) or declines (the guest is told).
+
+**Richer events.** Notes are written in Mail's editor, made safe as Mail makes outgoing mail safe, and written into calendar files as both plain text and HTML. Files from Drive are attached by reference; a guest who cannot open one is told whom to ask, and the organizer is offered to share it. The event dialog says how each guest was told: in Ferrum, by email, or a room that answers itself.
+
+**Rooms and resources.** Comms Managers keep rooms and resources, each with a capacity, a place, bookable hours and who may book. Add one to an event like a guest: it answers at once, with the reason when it cannot, and two bookings of the same time get the room only once (held by a test on the database). Rooms show in Find a time, and Suggest lists free rooms that are big enough.
+
+**Fixes to 0.17.** An all-day event no longer makes you busy all day, so the editor no longer warns "You (12:00 AM–12:00 AM) is busy then"; the warning says "You are busy then" and "all day". The event dialog opens with focus on Close, not Delete. The groups list leaves out the platform's own plugin roles.
+
+Seen on the running server: the calendar list, sync tokens, a free-and-busy collection with only "Busy" and MKCALENDAR over CalDAV with curl; a colleague creating and changing events in a calendar shared with her role, and losing it when taken out of the role; GOV.UK's bank holidays subscribed by `webcal://`, with `http://`, a private address and a loopback address refused and the address absent from the log; a proposal accepted and one declined; an outside COUNTER refused as unverified and a colleague's recorded on arrival; a file a guest cannot open; a room booked twice. 72 Rust unit tests, four database scenarios, 223 interface tests. The new words are in Arabic and Hindi.
+
+Not in this release: pictures in notes; attachments written into calendar files; a colour per event; a view of a room's own calendar, and a room declining for too many people; renaming or recolouring a calendar from a calendar program; an old sync token makes the program list the calendar again rather than only the changes; holidays need an address, because the platform does not yet give apps a workspace's working calendar; server-made wording (notification titles, subscription results, room reasons) is English only, because the platform has no server-side translation; the last four server fixes were tested but not yet seen on a rebuilt server; a screen-reader audit.
+
 ## 0.17.0
 
 Several calendars, and sharing them. Tried on a running server with three people; built with the Ferrum-Frontend commit named in `ui/dist/.source`.

@@ -17,8 +17,16 @@
   label: Calendar Share
   kind: child
   fields:
-    - {name: person, type: email, required: true, in_list: true, description: An active colleague's sign-in email}
+    - {name: person, type: email, in_list: true, description: "An active colleague's sign-in email (or a group: role)"}
+    - {name: role, type: data, label: Group, in_list: true, description: "A group of the workspace (a role): everyone holding it now, checked on every request"}
     - {name: level, type: select, options: [Free/busy, Details, Edit], default: Details, required: true, in_list: true, description: "Free/busy: when, as Busy; Details: everything; Edit: everything, and changes"}
+
+- name: CalendarBooker
+  label: Who may book
+  kind: child
+  fields:
+    - {name: person, type: email, in_list: true, description: "A colleague's sign-in email (or a group: role)"}
+    - {name: role, type: data, label: Group, in_list: true}
 
 - name: Calendar
   label: Calendar
@@ -35,7 +43,23 @@
     - {name: hidden, type: check, description: Not drawn on its owner's calendar}
     - {name: is_default, type: check, read_only: true, description: Where new events go}
     - {name: shares, type: table, of: CalendarShare}
-  indexes: [[owner]]
+    - {name: dav_path, type: data, read_only: true, description: "The address a calendar app gave it when it made it (CalDAV MKCALENDAR)"}
+    - {name: is_subscription, type: check, read_only: true, description: "Subscribed to from outside by its address: its events are fetched, read-only"}
+    - {name: feed_url, type: secret, description: "A subscription's address (it may carry the publisher's secret): never shown again"}
+    - {name: feed_label, type: data, read_only: true, description: "A subscription's address without anything secret (its host)"}
+    - {name: remind, type: check, description: "A subscription's events remind (they never do otherwise)"}
+    - {name: fetched_at, type: datetime, read_only: true, description: When the subscription was last fetched successfully}
+    - {name: fetch_result, type: data, read_only: true, description: "What the last fetch did, or why it failed"}
+    - {name: fetch_failures, type: int, read_only: true, description: "Failed fetches in a row (each waits longer, up to a day)"}
+    - {name: next_fetch_at, type: datetime, read_only: true}
+    - {name: fetch_etag, type: data, read_only: true}
+    - {name: fetch_modified, type: data, read_only: true}
+    - {name: kind, type: select, options: [Calendar, Room, Resource], default: Calendar, in_filter: true, description: "A room or a resource is booked by adding its address (its owner) to an event as a guest; kept by Comms Managers"}
+    - {name: capacity, type: int, min: 1, description: How many people a room holds}
+    - {name: place, type: data, description: "Where a room or resource is (building, floor)"}
+    - {name: bookable, type: json, description: "When a room or resource may be booked: {days, from, to, timezone}; any time when empty"}
+    - {name: bookers, type: table, of: CalendarBooker, description: Who may book a room or resource; everyone when empty}
+  indexes: [[owner], [next_fetch_at]]
   list: {columns: [calendar_name, owner], sort: calendar_name asc}
 
 - name: CalendarEvent
@@ -55,6 +79,8 @@
     - {name: location, type: data}
     - {name: meeting_link, type: url}
     - {name: description, type: text}
+    - {name: description_html, type: text, label: Notes (rich text), description: "The notes with their formatting, made safe as Mail makes outgoing mail safe; description keeps their words as plain text"}
+    - {name: attachments, type: json, description: "Files from Drive, by reference: [{id, name, size}] (at most 20); opened in Drive, by those Drive lets open them"}
     - {name: category, type: data, in_filter: true}
     - {name: color, type: color}
     - {name: owner, type: email, label: Organizer, read_only: true, in_list: true, in_filter: true}
@@ -70,6 +96,7 @@
     - {name: ical_uid, type: data, label: iCalendar UID, read_only: true, no_copy: true}
     - {name: sequence, type: int, read_only: true, no_copy: true}
     - {name: organizer, type: email, label: Invited by, read_only: true, no_copy: true, description: "For an event taken from an invitation: who sent it (its ORGANIZER). Only they can cancel it by mail. Events taken before Ferrum 0.14 have none."}
+    - {name: fetched, type: check, read_only: true, no_copy: true, description: "Copied from a calendar subscribed to by its address: changed only by fetching it again; never invites or exports"}
   unique: [[owner, ical_uid]]
   indexes: [[starts_at], [owner], [calendar]]
   form:

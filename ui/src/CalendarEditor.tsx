@@ -4,13 +4,16 @@
 // addresses, who are sent the invitation by email with a link to answer it. Only the organizer edits.
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Plus, X } from "lucide-react";
-import { useMemo, useState, type FormEvent, type MouseEvent } from "react";
+import { ArrowLeft, DoorOpen, Paperclip, Plus, X } from "lucide-react";
+import { lazy, Suspense, useMemo, useRef, useState, type FormEvent, type MouseEvent } from "react";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router";
 import { Badge, Button, Input, Label, Skeleton, Textarea } from "@ferrum/kit/primitives";
-import { Alert, confirmDialog, FormSkeleton, StatePanel, toast, useShellTitle, placed } from "@ferrum/kit";
+import { Alert, confirmDialog, FormSkeleton, StatePanel, toast, useCanIntent, useShellTitle, placed } from "@ferrum/kit";
 import { Failure } from "./States";
-import { api, currentLanguage, docPath, errorMessage, t, isolate } from "@ferrum/client";
+import { api, currentLanguage, docPath, errorMessage, shell, t, isolate } from "@ferrum/client";
+import type { EditorHandle } from "./MailEditor";
+import { fileKind, isRoom, type Attachment } from "./lib/calendar";
+import { RoomPicker, useRooms } from "./CalendarRooms";
 import { useMe, usePeople } from "@ferrum/records";
 import { matchPeople, type Person } from "./lib/chat";
 import {
@@ -45,8 +48,12 @@ import {
 } from "./lib/calendar";
 import { meetLink, meetPath, useMeetAvailable } from "./lib/meet";
 import { useCalendars } from "./CalendarList";
+import { routesFor } from "./lib/calendarChanges";
 
-/** An event as the records API gives it. */
+// The rich-text editor is Mail's: loaded only when an event's editor opens, so Calendar's own chunk does not carry it.
+const NotesEditor = lazy(() => import("./MailEditor"));
+
+/** An event as the records API gives it (or Calendar's route, for a calendar shared with me to make changes: then with `level`). */
 interface EventDoc {
   id: string;
   version: number;
@@ -59,12 +66,26 @@ interface EventDoc {
   location?: string | null;
   meeting_link?: string | null;
   description?: string | null;
+  description_html?: string | null;
+  attachments?: Attachment[] | null;
   owner?: string | null;
   visibility?: string | null;
   status?: string | null;
   recurrence?: string | null;
   attendees?: { email: string; attendee_name?: string | null; response?: string; comment?: string | null }[];
   reminders?: { minutes_before: number }[];
+  level?: string;
+}
+
+/** The event as its organizer reads it, else as someone its calendar is shared with to make changes. */
+async function readEvent(event: string, signal: AbortSignal): Promise<EventDoc> {
+  try {
+    return await api.get<EventDoc>(docPath("CalendarEvent", event), undefined, signal);
+  } catch (e) {
+    const status = (e as { status?: number }).status;
+    if (status !== 404 && status !== 403) throw e;
+    return api.get<EventDoc>(`${CALENDAR}/events/${event}/record`, undefined, signal);
+  }
 }
 
 /** `/calendar/e/{id}`: the editor for the organizer; for a guest, the event opened in Calendar to be answered. `new` starts one. */
@@ -72,7 +93,7 @@ export function EventPage() {
   const { event = "new" } = useParams();
   const me = useMe().data?.user.email.toLowerCase();
   const [params] = useSearchParams();
-  const doc = useQuery({ queryKey: ["calendar", "event", event], queryFn: ({ signal }) => api.get<EventDoc>(docPath("CalendarEvent", event), undefined, signal), enabled: event !== "new", gcTime: 0, retry: false });
+  const doc = useQuery({ queryKey: ["calendar", "event", event], queryFn: ({ signal }) => readEvent(event, signal), enabled: event !== "new", gcTime: 0, retry: false });
   useShellTitle(event === "new" ? t("New event") : t("Edit event"));
   if (event === "new") return me ? <Editor key="new" me={me} params={params} /> : <EditorLoading />;
   if (doc.error) {
@@ -94,7 +115,7 @@ export function EventPage() {
   }
   if (!doc.data || !me) return <EditorLoading />;
   // A guest does not edit: the event opens in Calendar, where they answer.
-  if (doc.data.owner?.toLowerCase() !== me) return <Navigate to={`/calendar?event=${event}${params.get("at") ? `&at=${encodeURIComponent(params.get("at")!)}` : ""}`} replace />;
+  if (doc.data.owner?.toLowerCase() !== me && doc.data.level !== "edit") return <Navigate to={`/calendar?event=${event}${params.get("at") ? `&at=${encodeURIComponent(params.get("at")!)}` : ""}`} replace />;
   return <Editor key={doc.data.id + doc.data.version} me={me} doc={doc.data} params={params} />;
 }
 
@@ -131,14 +152,28 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
   const [end, setEnd] = useState(() => (wholeDays ? new Date(first.ends.getTime() - DAY).toISOString().slice(0, 10) : toInputIn(first.ends, zone)));
   const [location, setLocation] = useState(doc?.location ?? "");
   const [description, setDescription] = useState(doc?.description ?? "");
+  // The notes start from their HTML, else their plain words as paragraphs.
+  const notesHtml = useMemo(() => doc?.description_html ?? (doc?.description ? doc.description.split(/\n/).map((l) => `<p>${l.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</p>`).join("") : ""), [doc]);
+  const notes = useRef<EditorHandle>(null);
+  const [notesTouched, setNotesTouched] = useState(false);
+  const [files, setFiles] = useState<Attachment[]>(doc?.attachments ?? []);
+  const fromDrive = useCanIntent("pick", "file");
+  const canShare = useCanIntent("share", "file");
+  const [justAdded, setJustAdded] = useState<Attachment[]>([]);
   const [repeat, setRepeat] = useState<Repeat>(rule.kind);
   const [until, setUntil] = useState(rule.until);
   const [reminder, setReminder] = useState<number | "none" | "custom">(remind);
   const [visibility, setVisibility] = useState(doc?.visibility ?? "Private");
-  // Which of my calendars it is in (the default one for a new event).
-  const mineCals = (useCalendars().cals ?? []).filter((c) => c.level === "owner");
-  const [calendar, setCalendar] = useState<string | null>(doc?.calendar ?? null);
+  // Which calendar it is in (my default for a new event): mine, or one shared with me to make
+  // changes, whose owner is then the organizer. An existing event stays with its organizer's calendars.
+  const allCals = useCalendars().cals ?? [];
+  const mineCals = allCals.filter((c) => (c.level === "owner" || c.level === "edit") && (!doc?.owner || c.owner.toLowerCase() === doc.owner.toLowerCase()));
+  const [calendar, setCalendar] = useState<string | null>(doc?.calendar ?? params.get("calendar"));
   const shownCalendar = calendar ?? mineCals.find((c) => c.is_default)?.id ?? "";
+  const target = allCals.find((c) => c.id === shownCalendar);
+  // For someone else's calendar, they organize it: their time is what Find a time weighs, and the save goes through Calendar's routes.
+  const organizer = (doc?.owner ?? (target?.level === "edit" ? target.owner : me)).toLowerCase();
+  const routes = routesFor(doc ? doc.level : target?.level);
   const [guests, setGuests] = useState<string[]>(() => (doc ? (doc.attendees ?? []).map((a) => a.email.toLowerCase()) : parseGuests(params.get("guests") ?? "").emails.filter((e) => e !== me)));
   const [typed, setTyped] = useState("");
   const link = doc?.meeting_link ?? null;
@@ -149,8 +184,10 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
 
   const answers = new Map((doc?.attendees ?? []).map((a) => [a.email.toLowerCase(), a]));
   const replies = tally((doc?.attendees ?? []).map((a) => ({ response: a.response ?? "Needs Action" })));
-  const names = Object.fromEntries(people.map((p) => [p.email.toLowerCase(), p.full_name || undefined]));
-  const colleague = (email: string) => !!names[email.toLowerCase()] || people.some((p) => p.email.toLowerCase() === email.toLowerCase());
+  const roomList = useRooms().data?.rooms ?? [];
+  const names = Object.fromEntries([...people.map((p) => [p.email.toLowerCase(), p.full_name || undefined]), ...roomList.map((r) => [r.address.toLowerCase(), r.name])]);
+  // A room is read like a colleague: its busy time shows in Find a time.
+  const colleague = (email: string) => isRoom(email) || !!names[email.toLowerCase()] || people.some((p) => p.email.toLowerCase() === email.toLowerCase());
   const when = useMemo(() => {
     if (allDay) {
       const a = fromInput(start.slice(0, 10));
@@ -165,7 +202,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
 
   // Free and busy: me and the colleagues invited, for the day shown and a week on from it (this
   // event's own time left out, or its organizer would clash with it).
-  const insiders = [...new Set([me, ...guests.filter(colleague)])];
+  const insiders = [...new Set([organizer, ...guests.filter(colleague)])];
   const shownDay = when ? isoDay(when.starts) : isoDay(new Date());
   const day = useMemo(() => fromInput(shownDay) ?? new Date(), [shownDay]);
   const week = useQuery({
@@ -188,7 +225,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
     const got = parseGuests(text);
     if (got.bad.length) setProblem(t("Not an email address: {value}", { value: got.bad.join(", ") }));
     else setProblem(null);
-    if (got.emails.length) setGuests((g) => [...g, ...got.emails.filter((e) => !g.includes(e) && e !== me)]);
+    if (got.emails.length) setGuests((g) => [...g, ...got.emails.filter((e) => !g.includes(e) && e !== organizer)]);
     setTyped(got.bad.join(" "));
   };
 
@@ -203,8 +240,11 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
     const left = typed.trim() ? parseGuests(typed) : { emails: [] as string[], bad: [] as string[] };
     if (left.bad.length) return setProblem(t("Not an email address: {value}. Fix it or take it out.", { value: left.bad.join(", ") }));
     if (mistakes.length || !when) return setProblem(mistakes.join(" "));
-    const list = [...new Set([...guests, ...left.emails.filter((x) => x !== me)])];
+    const list = [...new Set([...guests, ...left.emails.filter((x) => x !== organizer)])];
     const sameDay = (d: Date) => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+    // Rich notes: their HTML (the server makes it safe) and their words; untouched notes are sent as they were.
+    const html = notesTouched ? (notes.current?.html() ?? "") : (doc?.description_html ?? null);
+    const words = notesTouched ? (notes.current?.text() ?? description).trim() : description.trim();
     const body: Record<string, unknown> = {
       subject: subject.trim(),
       starts_at: allDay ? new Date(sameDay(when.starts)).toISOString() : when.starts.toISOString(),
@@ -212,7 +252,10 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
       all_day: allDay,
       timezone: zone,
       location: location.trim() || null,
-      description: description.trim() || null,
+      // With rich notes the server writes their words itself (one line per paragraph).
+      description: notesTouched || doc?.description_html ? null : words || null,
+      ...(notesTouched || doc?.description_html ? { description_html: words ? html : null } : {}),
+      attachments: files.length ? files : null,
       visibility,
       ...(shownCalendar ? { calendar: shownCalendar } : {}),
       attendees: mergeGuests((doc?.attendees ?? []).map((a) => ({ email: a.email, name: a.attendee_name, response: a.response ?? "Needs Action", comment: a.comment })) as Guest[], list, names),
@@ -225,26 +268,40 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
     setProblem(null);
     try {
       let id = doc?.id;
-      if (doc) await api.patch(docPath("CalendarEvent", doc.id), body, { ifMatch: doc.version });
+      let saved: { attendees?: { email: string; response?: string; comment?: string | null; attendee_name?: string | null }[] } | undefined;
+      if (doc) saved = (await routes.patch(doc.id, body, doc.version)) as typeof saved;
       else {
-        const made = await api.post<{ id: string; version?: number }>(docPath("CalendarEvent"), body);
+        const made = await routes.create(body);
+        saved = made as typeof saved;
         id = made.id;
-        if (call) await api.patch(docPath("CalendarEvent", made.id), { meeting_link: meetLink("event", made.id) }, made.version ? { ifMatch: made.version } : undefined);
+        if (call) await routes.patch(made.id, { meeting_link: meetLink("event", made.id) }, made.version);
       }
       void qc.invalidateQueries({ queryKey: ["calendar"] });
       toast(existing ? t("Event saved") : list.length ? t("Event saved. Your guests were told.") : t("Event saved"));
+      // A room answers at once: a "no" is said now, with its reason.
+      for (const a of saved?.attendees ?? []) if (isRoom(a.email) && a.response === "Declined") toast(t("{room} declined: {why}", { room: a.attendee_name || a.email, why: a.comment ?? "" }), "error");
       navigate(`/calendar?event=${id}&at=${encodeURIComponent(when.starts.toISOString())}`);
     } catch (err) {
       setProblem(t("Not saved: {err}", { err: errorMessage(err) }));
       setBusy(false);
     }
   };
+  const pickFiles = async () => {
+    const out = await shell()
+      .intent<{ files: { id: string; name: string; size?: number }[] }>({ action: "pick", type: "file", data: { multiple: true, title: t("Attach files from Drive") } })
+      .catch((e: unknown) => (toast(errorMessage(e), "error"), null));
+    if (out?.status !== "done" || !out.result?.files?.length) return;
+    const picked = out.result.files.filter((f) => f.id && !files.some((x) => x.id === f.id)).map((f) => ({ id: f.id, name: f.name, ...(f.size ? { size: f.size } : {}) }));
+    if (files.length + picked.length > 20) return toast(t("An event can link to 20 files at most."), "error");
+    setFiles((all) => [...all, ...picked]);
+    setJustAdded(picked);
+  };
   const cancelEvent = async () => {
     if (!doc) return;
     const on = doc.status !== "Cancelled";
     if (!(await confirmDialog({ title: on ? t("Cancel this event?") : t("Bring this event back?"), message: on ? t("Your guests are told it is cancelled. It stays on the calendar, struck through.") : t("Your guests are told it is on again."), confirmLabel: on ? t("Cancel the event") : t("Bring it back"), danger: on }))) return;
     try {
-      await api.patch(docPath("CalendarEvent", doc.id), { status: on ? "Cancelled" : "Confirmed" }, { ifMatch: doc.version });
+      await routes.patch(doc.id, { status: on ? "Cancelled" : "Confirmed" }, doc.version);
       void qc.invalidateQueries({ queryKey: ["calendar"] });
       navigate("/calendar");
     } catch (err) {
@@ -255,7 +312,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
     if (!doc) return;
     if (!(await confirmDialog({ title: t("Delete this event?"), message: t("It goes from every calendar, and your guests are told it is cancelled."), confirmLabel: t("Delete"), danger: true }))) return;
     try {
-      await api.del(docPath("CalendarEvent", doc.id));
+      await routes.del(doc.id);
       void qc.invalidateQueries({ queryKey: ["calendar"] });
       toast(t("Event deleted"));
       navigate("/calendar");
@@ -266,6 +323,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
 
   const clash = when && !allDay ? clashes(others, when.starts, when.ends) : [];
   const nameOf = (email: string) => (email === me ? t("You") : names[email] || email);
+  const onBehalf = organizer !== me ? names[organizer] || organizer : null;
   const suggestions = useMemo(() => (allDay || !week.data ? [] : suggestSlots(week.data.busy, { from: new Date(Math.max(Date.now(), day.getTime())), days: 8, minutes, hours: week.data.hours })), [allDay, week.data, minutes, day]);
 
   return (
@@ -284,6 +342,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
             <span>{isolate(problem)}</span>
           </Alert>
         )}
+        {onBehalf && <p className="text-sm text-muted-foreground">{t("In {name}'s calendar: they are the organizer, and the invitations go from them. You are recorded as making it.", { name: onBehalf })}</p>}
         {doc?.status === "Cancelled" && (
           <Alert tone="warning">
             <span>{t("This event is cancelled. Guests were told. Saving changes does not bring it back.")}</span>
@@ -334,7 +393,14 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
         </div>
         {clash.length > 0 && when && (
           <p role="status" className="rounded-md border border-warning bg-warning-soft px-3 py-2 text-sm">
-            {((who: string) => (clash.length === 1 ? t("{who} is busy then. The times that suit everyone are on the right.", { who }) : t("{who} are busy then. The times that suit everyone are on the right.", { who })))(new Intl.ListFormat(currentLanguage(), { type: "conjunction" }).format(clash.map((who) => t("{name} ({times})", { name: nameOf(who), times: (others[who] ?? []).filter((b) => Date.parse(b.start) < when.ends.getTime() && Date.parse(b.end) > when.starts.getTime()).map(stretch).join(", ") }))))}
+            {(() => {
+              const times = (who: string) => (others[who] ?? []).filter((b) => Date.parse(b.start) < when.ends.getTime() && Date.parse(b.end) > when.starts.getTime()).map(stretch).join(", ");
+              // "You" is said as you, last in the list, and a sentence about you alone says "You are".
+              if (clash.length === 1 && clash[0] === me) return t("You are busy then ({times}). The times that suit everyone are on the right.", { times: times(me) });
+              const ordered = [...clash.filter((w) => w !== me), ...clash.filter((w) => w === me)];
+              const list = new Intl.ListFormat(currentLanguage(), { type: "conjunction" }).format(ordered.map((w) => t("{name} ({times})", { name: w === me ? t("you") : nameOf(w), times: times(w) })));
+              return ordered.length === 1 ? t("{who} is busy then. The times that suit everyone are on the right.", { who: list }) : t("{who} are busy then. The times that suit everyone are on the right.", { who: list });
+            })()}
           </p>
         )}
         {!allDay && (
@@ -384,6 +450,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
                   <li key={g}>
                     <Badge variant="secondary" className="h-7 gap-1.5 pl-2.5">
                       <span>{names[g] || g}</span>
+                      {isRoom(g) && <DoorOpen className="size-3.5 text-muted-foreground" aria-label={t("Room")} />}
                       {!colleague(g) && <span className="text-muted-foreground">{t("outside")}</span>}
                       {answers.has(g) && <span className="text-muted-foreground">· {isolate(answerWord(answers.get(g)?.response))}</span>}
                       <button type="button" aria-label={t("Remove {value}", { value: names[g] || g })} className="grid size-5 place-items-center rounded-full hover:bg-background" onClick={() => setGuests((x) => x.filter((y) => y !== g))}>
@@ -395,7 +462,15 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
               </ul>
             </>
           )}
-          <GuestInput people={people} taken={[me, ...guests]} typed={typed} setTyped={setTyped} add={addGuests} />
+          <GuestInput people={people} taken={[organizer, ...guests]} typed={typed} setTyped={setTyped} add={addGuests} />
+          <RoomPicker when={allDay ? null : when} people={1 + guests.filter((g) => !isRoom(g)).length} taken={guests} exclude={doc?.id} onPick={(r) => setGuests((g) => [...g, r.address])} />
+          {(doc?.attendees ?? [])
+            .filter((a) => isRoom(a.email) && a.response === "Declined" && a.comment)
+            .map((a) => (
+              <p key={a.email} role="status" className="text-sm text-destructive">
+                {t("{room} declined: {why}", { room: names[a.email.toLowerCase()] || a.attendee_name || a.email, why: a.comment ?? "" })}
+              </p>
+            ))}
         </fieldset>
         <div className="grid gap-1.5">
           <Label htmlFor="ev-where">{t("Where")}</Label>
@@ -414,8 +489,61 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
           </p>
         )}
         <div className="grid gap-1.5">
-          <Label htmlFor="ev-notes">{t("Notes")}</Label>
-          <Textarea id="ev-notes" rows={4} value={description} onChange={(e) => setDescription(e.target.value)} />
+          <span className="text-sm font-medium" id="ev-notes-label">
+            {t("Notes")}
+          </span>
+          <div className="rounded-md border border-input bg-card">
+            <Suspense fallback={<Textarea id="ev-notes" rows={4} aria-labelledby="ev-notes-label" value={description} onChange={(e) => setDescription(e.target.value)} />}>
+              <NotesEditor
+                ref={notes}
+                initial={notesHtml}
+                label={t("Notes")}
+                placeholder={t("Agenda, links, what to bring")}
+                onChange={() => setNotesTouched(true)}
+                onFiles={() => toast(t("Pictures cannot go in an event's notes. Attach a file from Drive instead."), "error")}
+                onSend={() => void save()}
+              />
+            </Suspense>
+          </div>
+        </div>
+        <div className="grid gap-1.5">
+          <div className="flex items-center gap-2">
+            <span className="flex-1 text-sm font-medium">{t("Files")}</span>
+            {fromDrive && (
+              <Button type="button" variant="outline" size="sm" onClick={() => void pickFiles()}>
+                <Paperclip /> {t("Attach from Drive")}
+              </Button>
+            )}
+          </div>
+          {files.length === 0 ? (
+            <p className="text-xs text-muted-foreground">{fromDrive ? t("No files. Files stay in Drive; the event links to them.") : t("No files. Drive is not installed, so files cannot be attached.")}</p>
+          ) : (
+            <ul className="grid gap-1" aria-label={t("Files")}>
+              {files.map((f) => (
+                <li key={f.id} className="flex items-center gap-2 text-sm">
+                  <Paperclip className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                  <span className="min-w-0 flex-1 truncate" dir="auto">
+                    {f.name}
+                  </span>
+                  <span className="text-xs text-muted-foreground">{isolate(fileKind(f.name))}</span>
+                  <Button type="button" variant="ghost" size="icon-xs" aria-label={t("Remove {value}", { value: f.name })} onClick={() => setFiles((all) => all.filter((x) => x.id !== f.id))}>
+                    <X />
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {justAdded.length > 0 && guests.length > 0 && (
+            <p role="status" className="rounded-md border border-warning bg-warning-soft px-3 py-2 text-sm">
+              {t("Your guests can open a file only if it is shared with them in Drive.")}{" "}
+              {canShare &&
+                justAdded.map((f) => (
+                  <Button key={f.id} type="button" variant="link" size="sm" className="h-auto p-0" onClick={() => void shell().intent({ action: "share", type: "file", data: { id: f.id } })}>
+                    {t("Share {value}", { value: f.name })}
+                  </Button>
+                ))}
+            </p>
+          )}
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="grid gap-1.5">
@@ -449,7 +577,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
               <select id="ev-calendar" className="h-(--control-h) w-full min-w-0 rounded-md border border-input bg-card px-2 text-sm" value={shownCalendar} onChange={(e) => setCalendar(e.target.value)}>
                 {mineCals.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {c.name}
+                    {c.level === "owner" ? c.name : t("{name} ({owner})", { name: c.name, owner: c.owner_name || c.owner })}
                   </option>
                 ))}
               </select>
@@ -472,9 +600,11 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
               <Button type="button" variant="ghost" onClick={() => void remove()}>
                 {t("Delete")}
               </Button>
-              <Button asChild variant="link" size="sm">
-                <a href={`/data/e/CalendarEvent/${doc.id}`}>{t("More options")}</a>
-              </Button>
+              {doc.level !== "edit" && (
+                <Button asChild variant="link" size="sm">
+                  <a href={`/data/e/CalendarEvent/${doc.id}`}>{t("More options")}</a>
+                </Button>
+              )}
             </>
           )}
         </div>
