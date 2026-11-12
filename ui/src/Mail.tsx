@@ -9,7 +9,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@ferrum/kit/primitives";
-import { errorMessage, newKey, shell, t as tr, isolate } from "@ferrum/client";
+import { api, errorMessage, newKey, shell, t as tr, isolate } from "@ferrum/client";
 import { cn, ListSkeleton, ReaderSkeleton, StatePanel, toast } from "@ferrum/kit";
 import { Failure } from "./States";
 import { Composer, ComposeStack, loadDraft, openBefore, useIdentities, type Win } from "./MailCompose";
@@ -30,9 +30,11 @@ import {
   busyWith,
   byRole,
   jmap,
+  MAIL,
   keyAction,
   keptDrafts,
   mailAccount,
+  serverDoes,
   sortMailboxes,
   useMailSession,
   type Draft,
@@ -102,6 +104,18 @@ export function MailPage({ compose = false }: { compose?: boolean }) {
   );
 }
 
+/** Where a new-mail notification goes (`/mail/n/{id}`, from the server's `comms.newmail`): the message it was about, or the Inbox for several. */
+export function MailNoticePage() {
+  const { notice } = useParams();
+  const navigate = useNavigate();
+  const q = useQuery({ queryKey: ["mail", "notice", notice], queryFn: () => api.get<{ account: string; email: string | null; folder: string | null }>(`${MAIL}/notice/${encodeURIComponent(notice ?? "")}`), retry: false });
+  useEffect(() => {
+    if (q.data) navigate(q.data.folder ? `/mail/${q.data.folder}${q.data.email ? `/${q.data.email}` : ""}` : "/mail", { replace: true });
+    else if (q.error) navigate("/mail", { replace: true });
+  }, [q.data, q.error, navigate]);
+  return <StatePanel kind="loading" className="h-[60vh]" />;
+}
+
 /** The person's own mailbox first, then the shared ones by address. */
 const accountsOf = (s: Session) =>
   Object.entries(s.accounts).sort(([, a], [, b]) => Number(b.isPersonal) - Number(a.isPersonal) || a.name.localeCompare(b.name));
@@ -141,7 +155,8 @@ function Mailroom({ session, primary, compose }: { session: Session; primary: st
   const own = [me, ...(identities ?? []).map((i) => i.email)];
   const data = useMailData(account, boxes.data);
   const prefs = prefsOf(data.data?.data);
-  useMailWatch({ account, boxes: boxes.data, own, notify: prefs.notify, open, enabled: !!boxes.data });
+  // The server notifies about the person's own mailbox; a shared one is announced here, while open.
+  useMailWatch({ account, boxes: boxes.data, own, notify: prefs.notify, open, enabled: !!boxes.data, serverNotifies: serverDoes(session, "arrivals") && account === primary });
   useSnoozeWake(account, boxes.data, canEdit);
   // Compact or comfortable, through the kit's density tokens, for this page.
   useEffect(() => {

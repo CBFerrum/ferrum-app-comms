@@ -17,7 +17,7 @@ import { can, useMetaIndex } from "@ferrum/records";
 import { confirmDialog, FormSkeleton, toast, placed } from "@ferrum/kit";
 import { Failure } from "./States";
 import { readBlocked, writeBlocked } from "./lib/blocklist";
-import { jmap, refusal, type Mailbox } from "./lib/mail";
+import { jmap, refusal, useServerDoes, type Mailbox } from "./lib/mail";
 import { fromEditor, htmlToText, UNDO_CHOICES } from "./lib/compose";
 import { afterVacation, vacationOn } from "./lib/mailData";
 import type { Prefs } from "./lib/filters";
@@ -113,6 +113,7 @@ function GeneralSettings({ account, boxes }: { account: string; boxes: Mailbox[]
   const change = useChangeMailData(account, boxes);
   const set = (p: Prefs) => void change((d) => ({ ...d, prefs: { ...d.prefs, ...p } }));
   const [permission, setPermission] = useState(() => (typeof Notification === "undefined" ? "unsupported" : Notification.permission));
+  const serverNotifies = useServerDoes("arrivals");
   const choice = <K extends keyof Prefs>(k: K, label: string, options: [NonNullable<Prefs[K]>, string][]) => (
     <fieldset className="grid gap-1">
       <legend className="text-sm font-semibold">{label}</legend>
@@ -146,7 +147,9 @@ function GeneralSettings({ account, boxes }: { account: string; boxes: Mailbox[]
       <div className="grid gap-1 text-sm">
         <span className="font-semibold">{t("Desktop notifications")}</span>
         {permission === "granted" ? (
-          <p className="text-muted-foreground">{t("On in this browser. New mail shows a notification while Mail is open in a tab, even in the background.")}</p>
+          <p className="text-muted-foreground">
+            {serverNotifies ? t("On in this browser, for shared mailboxes while Mail is open. Your own mail notifies through your notification settings.") : t("On in this browser. New mail shows a notification while Mail is open in a tab, even in the background.")}
+          </p>
         ) : permission === "denied" ? (
           <p className="text-muted-foreground">{t("This browser blocks them for this site. Allow them in the browser's site settings to get them.")}</p>
         ) : permission === "unsupported" ? (
@@ -156,7 +159,11 @@ function GeneralSettings({ account, boxes }: { account: string; boxes: Mailbox[]
             {t("Turn on desktop notifications")}
           </Button>
         )}
-        <p className="text-xs text-muted-foreground">{t("Mail notices new mail while it is open in a tab. When no tab is open, nothing notifies you yet.")}</p>
+        <p className="text-xs text-muted-foreground">
+          {serverNotifies
+            ? t("New mail notifies you within about a minute, whether Mail is open or not: in the bar, and by email, in a daily digest or on your phone if you chose that for “New mail in your inbox” in your notification settings.")
+            : t("Mail notices new mail while it is open in a tab. When no tab is open, nothing notifies you yet.")}
+        </p>
       </div>
     </div>
   );

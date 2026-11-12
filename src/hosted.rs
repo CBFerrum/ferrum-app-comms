@@ -83,7 +83,7 @@ pub(crate) struct Admin {
 }
 
 impl Admin {
-    async fn connect(k: &Kernel) -> Result<Admin> {
+    pub(crate) async fn connect(k: &Kernel) -> Result<Admin> {
         let (url, auth) = configured().ok_or_else(|| {
             Error::Unavailable("hosted mail is not set up on this server (FERRUM_MAIL_URL, FERRUM_MAIL_ADMIN, FERRUM_MAIL_ADMIN_SECRET)".into())
         })?;
@@ -362,6 +362,7 @@ fn usage_rows(list: &[Value], tenant: Uuid) -> Vec<Value> {
                 .and_then(|q| q.iter().find(|(k, _)| k.to_ascii_lowercase().contains("disk")).and_then(|(_, v)| v.as_u64()))
                 .filter(|q| *q > 0);
             Some(json!({
+                "account": a["id"],
                 "email": a["emailAddress"].as_str().unwrap_or_else(|| a["name"].as_str().unwrap_or_default()),
                 "name": a["description"].as_str().unwrap_or_default(),
                 "used": a["usedDiskQuota"].as_u64().unwrap_or(0),
@@ -551,8 +552,8 @@ mod tests {
         ];
         let rows = usage_rows(&list, tenant);
         assert_eq!(rows.len(), 2, "only this workspace's accounts");
-        assert_eq!(rows[0], json!({"email": "sales@x.test", "name": "", "used": 500, "quota": 1000, "shared": true}));
-        assert_eq!(rows[1], json!({"email": "ann@x.test", "name": "Ann", "used": 10, "quota": null, "shared": false}));
+        assert_eq!(rows[0], json!({"account": null, "email": "sales@x.test", "name": "", "used": 500, "quota": 1000, "shared": true}));
+        assert_eq!(rows[1], json!({"account": null, "email": "ann@x.test", "name": "Ann", "used": 10, "quota": null, "shared": false}));
     }
 
     #[test]

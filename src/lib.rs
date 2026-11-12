@@ -4,6 +4,7 @@
 //! mail sender is an outbox event sink and the endpoints a `Site` (see packages/comms/README.md).
 
 mod account;
+mod arrivals;
 mod calendar;
 mod chat;
 mod dav;
@@ -12,7 +13,9 @@ mod groups;
 mod hosted;
 pub mod ics;
 pub mod inbound;
+mod itip;
 mod mail;
+mod mailadmin;
 pub(crate) mod meet;
 pub mod meetings;
 mod newsletter;
@@ -37,6 +40,8 @@ use uuid::Uuid;
 const RETRY_BUDGET: Duration = Duration::from_secs(20);
 const POLL_BUDGET: Duration = Duration::from_secs(40);
 const SEND_BUDGET: Duration = Duration::from_secs(30);
+/// New hosted mail (`arrivals.rs`): looked at first, so a notification waits at most about a round.
+const ARRIVALS_BUDGET: Duration = Duration::from_secs(20);
 
 /// Registers this package's document hooks, its mail sender and its endpoints.
 pub fn register(hooks: &mut HookRegistry) {
@@ -70,7 +75,7 @@ pub async fn maintenance(k: &Kernel) -> Result<()> {
 }
 
 /// [`maintenance`] reading mailboxes through `mailboxes` (tests pass a fake mailbox). Per tenant:
-/// retry due mail, poll due IMAP accounts, send newsletter batches, announce reminders, keep hosted
+/// look at new hosted mail (notify, file, wake snoozed mail, apply calendar answers), retry due mail, poll due IMAP accounts, send newsletter batches, announce reminders, keep hosted
 /// mailboxes in step, purge.
 /// A failing step is logged and does not stop the others; the first error is returned.
 pub async fn maintenance_with(k: &Kernel, mailboxes: &dyn MailboxConnector) -> Result<()> {
@@ -88,6 +93,7 @@ pub async fn maintenance_with(k: &Kernel, mailboxes: &dyn MailboxConnector) -> R
             }
         }
         let steps = [
+            ("new mail", arrivals::run(k, tenant, ARRIVALS_BUDGET).await),
             ("mail retries", mail::retry_due(k, tenant, RETRY_BUDGET).await),
             ("mail polling", inbound::poll_due(k, tenant, mailboxes, POLL_BUDGET).await),
             ("newsletters", newsletter::run(k, tenant, SEND_BUDGET).await),
@@ -106,12 +112,13 @@ pub async fn maintenance_with(k: &Kernel, mailboxes: &dyn MailboxConnector) -> R
     first_error.map_or(Ok(()), Err)
 }
 
-/// Old reminder bookkeeping, and meeting rooms nobody joined for 90 days.
+/// Old reminder bookkeeping, what old new-mail notifications opened, and meeting rooms nobody joined for 90 days.
 async fn purge(k: &Kernel, tenant: Uuid) -> Result<usize> {
     let mut tx = k.db.tenant_tx(tenant).await?;
     let mut n = 0;
     for sql in [
         "delete from comms_reminder_log where tenant_id = $1 and fired_at < now() - interval '60 days'",
+        "delete from comms_mail_notice where tenant_id = $1 and created_at < now() - interval '60 days'",
         "delete from comms_meeting where tenant_id = $1 and coalesce(used_at, created_at) < now() - interval '90 days' and (source_entity is null or coalesce(ends_at, created_at) < now() - interval '90 days')",
     ] {
         n += sqlx::query(sql).bind(tenant).execute(&mut *tx).await?.rows_affected();
