@@ -171,6 +171,10 @@ pub fn vevent(doc: &Doc, organizer_name: Option<String>, cancelled: bool, alarms
 
 /// Queues an invitation (REQUEST) or cancellation (CANCEL) email to one outside guest.
 async fn queue_invitation(hc: &mut HookCtx<'_>, doc: &Doc, to: &str, method: &str, updated: bool) -> Result<()> {
+    // A room or a resource answers in Ferrum; nothing is mailed to its reserved address.
+    if crate::rooms::is_room(to) {
+        return Ok(());
+    }
     let organizer = s(doc, "owner").map(str::to_string);
     let organizer_name = match &organizer {
         Some(o) => display_name(hc.tx, hc.ctx.tenant, o).await?,
@@ -301,6 +305,8 @@ impl DocHook for EventHook {
         crate::calendars::place_event(hc.kernel, hc.tx, hc.ctx, doc).await?;
         // Guests away then who chose so decline at once, with their message.
         crate::hours::decline_away(hc.tx, hc.ctx.tenant, doc).await?;
+        // Rooms and resources answer at once: free, inside their hours, and the organizer may book them.
+        crate::rooms::answer(hc.tx, hc.ctx.tenant, doc).await?;
         let missing: Vec<String> = attendees(doc).into_iter().filter(|a| a.1.is_none()).map(|a| a.0).collect();
         if !missing.is_empty() {
             let names: BTreeMap<String, String> = util::users(hc.tx, hc.ctx.tenant, &missing).await?.into_iter().map(|u| (u.email, u.full_name)).collect();
@@ -1419,6 +1425,7 @@ pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> 
         }
         ("DELETE", ["events", e]) => shared_delete(k, ctx, uuid(e)?).await?,
         ("GET", ["groups"]) => crate::calendars::groups(k, ctx).await?,
+        (_, ["rooms", rest @ ..]) => crate::rooms::handle(k, ctx, req, rest).await?,
         ("POST", ["subscriptions"]) => crate::subscribe::subscribe(k, ctx, util::body_json(req)?, false).await?,
         ("POST", ["subscriptions", c, "refresh"]) => crate::calendars::refresh(k, ctx, uuid(c)?).await?,
         ("GET", ["hours"]) => crate::hours::handle(k, ctx, "GET", None).await?,
