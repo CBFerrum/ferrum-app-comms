@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.19.0
+
+Mail gets a composer you want to write in. No database change. Tried on a running server beside a real mail server; built with the Ferrum-Frontend commit named in `ui/dist/.source`.
+
+**The kit's editor.** The message is written in the kit's rich-text editor: the toolbar on top of the text (the whole toolbar when the window is wide, the compact one in a window or under a conversation), styles, lists and check lists, colour, links, pictures and tables, paste from Word and Google Docs. A link ends where its words end: a space or a full stop typed after it is not part of it. What you write is cleaned by the kit's rules before every draft save and every send; the server cleans again.
+
+**A window with presence.** A header names the message and carries minimise, full screen, pop out to a browser window of its own, and close. To, with Cc and Bcc on demand and From only when there is a choice; the subject is the window's title. Attachments are tiles with their kind, size and progress. One bar: Send with its menu (send and archive, schedule), attach, Drive, picture, templates, plain text, and the save status. A window resizes by its corner and the next one opens at that size; full screen is centred at a readable width; several windows share the screen; on a phone one composer fills it with the toolbar on the keyboard. The answer under a conversation is the same composer, its send bar staying in view. Notices move to the bottom start while you write, never over Send.
+
+**Pictures and quotes.** Pictures upload to the mailbox as you add them and go out as parts of the message; a forwarded or answered message's pictures go by reference. Remote pictures in a quoted message are kept but not loaded while you write. The original under an answer stays folded until you open it into the text.
+
+**Reading and writing alike.** The composer and the reader set the same text the same way: face, size, line spacing, lists and quotes. A message goes out without a typeface of its own, as Gmail's do.
+
+**Everywhere you write.** The vacation reply is written in the same editor and goes out with its HTML and its words. Signatures in Mail settings and Calendar's event notes use it too. Send is named with its key for assistive technology. The selection bar keeps Archive and Delete in view and folds the rest into More. The composer's code loads when you start writing: Mail's own code is 82 KB, 10 KB less.
+
+Seen on the running server: messages written with formatting, a list, a link, a picture and two files, sent to a colleague and read in her Mail; her answer written with the keyboard alone, its MIME fetched back (`multipart/mixed` around `multipart/related` around the text and HTML, the picture by Content-ID, In-Reply-To and References); the vacation reply's HTML in the automatic answer; a new-mail notice in the bar with Mail closed; right to left in Arabic. 231 interface tests. The new words are in Arabic and Hindi.
+
+Not in this release: Chat's message box (Chat keeps Markdown); no pop-up for new mail, the bar lists it under the bell within about a minute; the pop-out window and dragging a window's corner were not driven in a browser; the toolbar measured on a real phone's keyboard; the composer in Arabic on a phone; the selection bar crowds "Clear selection" in a narrow column (the kit's to fix); a screen-reader audit.
+
 ## 0.18.0
 
 Calendar fills in what 0.17 left out. A database change (`comms/008_calendar_proposals.sql`) and new fields are applied at startup; nothing existing moves. Tried on a running server beside a real mail server; built with the Ferrum-Frontend commit named in `ui/dist/.source`.
