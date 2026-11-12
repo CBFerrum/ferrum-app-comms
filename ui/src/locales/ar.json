@@ -1401,5 +1401,17 @@
   "{name} saved": "حُفظ {name}",
   "{room} declined: {why}": "رفضت {room}: {why}",
   "{who} is told the time stays.": "أُبلغ {who} بأن الوقت باقٍ كما هو.",
-  "You cannot open this file in Drive: it is not shared with you.": "لا يمكنك فتح هذا الملف في Drive: لم تتم مشاركته معك."
+  "You cannot open this file in Drive: it is not shared with you.": "لا يمكنك فتح هذا الملف في Drive: لم تتم مشاركته معك.",
+  "Checking your calendar…": "جارٍ التحقق من تقويمك…",
+  "Not recorded: the sender could not be verified.": "لم يُسجَّل: تعذّر التحقق من المرسل.",
+  "Not recorded: the sender is not on this event's guest list.": "لم يُسجَّل: المرسل ليس في قائمة ضيوف هذا الحدث.",
+  "This proposal could not be read.": "تعذّرت قراءة هذا الاقتراح.",
+  "This proposal is on the event in your calendar: accept or decline it there.": "هذا الاقتراح على الحدث في تقويمك: اقبله أو ارفضه هناك.",
+  "You are busy then ({times}). The times that suit everyone are on the right.": "أنت مشغول حينها ({times}). الأوقات التي تناسب الجميع على اليمين.",
+  "Your calendar could not be checked: {e}": "تعذّر التحقق من تقويمك: {e}",
+  "a room: answers itself": "قاعة: تجيب بنفسها",
+  "all day": "طوال اليوم",
+  "invited by email": "دُعي بالبريد الإلكتروني",
+  "new time proposed": "اقتُرح وقت جديد",
+  "told in Ferrum": "أُبلغ في Ferrum"
 }

@@ -1401,5 +1401,17 @@
   "{name} saved": "{name} सहेजा गया",
   "{room} declined: {why}": "{room} ने अस्वीकार किया: {why}",
   "{who} is told the time stays.": "{who} को बताया गया कि समय वही रहेगा।",
-  "You cannot open this file in Drive: it is not shared with you.": "आप यह फ़ाइल Drive में नहीं खोल सकते: यह आपके साथ साझा नहीं है।"
+  "You cannot open this file in Drive: it is not shared with you.": "आप यह फ़ाइल Drive में नहीं खोल सकते: यह आपके साथ साझा नहीं है।",
+  "Checking your calendar…": "आपका कैलेंडर जाँचा जा रहा है…",
+  "Not recorded: the sender could not be verified.": "दर्ज नहीं किया गया: भेजने वाले की पुष्टि नहीं हो सकी।",
+  "Not recorded: the sender is not on this event's guest list.": "दर्ज नहीं किया गया: भेजने वाला इस इवेंट की अतिथि सूची में नहीं है।",
+  "This proposal could not be read.": "यह प्रस्ताव पढ़ा नहीं जा सका।",
+  "This proposal is on the event in your calendar: accept or decline it there.": "यह प्रस्ताव आपके कैलेंडर में इवेंट पर है: उसे वहीं स्वीकार या अस्वीकार करें।",
+  "You are busy then ({times}). The times that suit everyone are on the right.": "आप तब व्यस्त हैं ({times})। सबके लिए उपयुक्त समय दाईं ओर हैं।",
+  "Your calendar could not be checked: {e}": "आपका कैलेंडर जाँचा नहीं जा सका: {e}",
+  "a room: answers itself": "कमरा: खुद जवाब देता है",
+  "all day": "पूरे दिन",
+  "invited by email": "ईमेल से आमंत्रित",
+  "new time proposed": "नया समय प्रस्तावित",
+  "told in Ferrum": "Ferrum में बताया गया"
 }

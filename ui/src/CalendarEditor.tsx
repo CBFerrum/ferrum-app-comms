@@ -168,7 +168,7 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
   // changes, whose owner is then the organizer. An existing event stays with its organizer's calendars.
   const allCals = useCalendars().cals ?? [];
   const mineCals = allCals.filter((c) => (c.level === "owner" || c.level === "edit") && (!doc?.owner || c.owner.toLowerCase() === doc.owner.toLowerCase()));
-  const [calendar, setCalendar] = useState<string | null>(doc?.calendar ?? null);
+  const [calendar, setCalendar] = useState<string | null>(doc?.calendar ?? params.get("calendar"));
   const shownCalendar = calendar ?? mineCals.find((c) => c.is_default)?.id ?? "";
   const target = allCals.find((c) => c.id === shownCalendar);
   // For someone else's calendar, they organize it: their time is what Find a time weighs, and the save goes through Calendar's routes.
@@ -252,7 +252,8 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
       all_day: allDay,
       timezone: zone,
       location: location.trim() || null,
-      description: words || null,
+      // With rich notes the server writes their words itself (one line per paragraph).
+      description: notesTouched || doc?.description_html ? null : words || null,
       ...(notesTouched || doc?.description_html ? { description_html: words ? html : null } : {}),
       attachments: files.length ? files : null,
       visibility,
@@ -392,7 +393,14 @@ function Editor({ me, doc, params }: { me: string; doc?: EventDoc; params: URLSe
         </div>
         {clash.length > 0 && when && (
           <p role="status" className="rounded-md border border-warning bg-warning-soft px-3 py-2 text-sm">
-            {((who: string) => (clash.length === 1 ? t("{who} is busy then. The times that suit everyone are on the right.", { who }) : t("{who} are busy then. The times that suit everyone are on the right.", { who })))(new Intl.ListFormat(currentLanguage(), { type: "conjunction" }).format(clash.map((who) => t("{name} ({times})", { name: nameOf(who), times: (others[who] ?? []).filter((b) => Date.parse(b.start) < when.ends.getTime() && Date.parse(b.end) > when.starts.getTime()).map(stretch).join(", ") }))))}
+            {(() => {
+              const times = (who: string) => (others[who] ?? []).filter((b) => Date.parse(b.start) < when.ends.getTime() && Date.parse(b.end) > when.starts.getTime()).map(stretch).join(", ");
+              // "You" is said as you, last in the list, and a sentence about you alone says "You are".
+              if (clash.length === 1 && clash[0] === me) return t("You are busy then ({times}). The times that suit everyone are on the right.", { times: times(me) });
+              const ordered = [...clash.filter((w) => w !== me), ...clash.filter((w) => w === me)];
+              const list = new Intl.ListFormat(currentLanguage(), { type: "conjunction" }).format(ordered.map((w) => t("{name} ({times})", { name: w === me ? t("you") : nameOf(w), times: times(w) })));
+              return ordered.length === 1 ? t("{who} is busy then. The times that suit everyone are on the right.", { who: list }) : t("{who} are busy then. The times that suit everyone are on the right.", { who: list });
+            })()}
           </p>
         )}
         {!allDay && (

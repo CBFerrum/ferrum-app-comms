@@ -274,3 +274,31 @@ export function ReplyCard({ account, emailId, keywords, ics, me }: { account: st
     </p>
   );
 }
+
+/** A COUNTER (a guest proposing another time) for an event the person organises: what became of it.
+ *  The server keeps it as a proposal on the event when it arrives (or now, the same code), only from
+ *  an invited guest whose mail the server vouches for; the organiser answers it in Calendar. */
+export function CounterCard({ account, emailId }: { account: string; emailId: string }) {
+  const server = useServerDoes("itip");
+  const result = useQuery({
+    queryKey: ["mail", "counter", account, emailId],
+    enabled: server,
+    staleTime: Infinity,
+    retry: false,
+    queryFn: () => api.post<{ result: string }>(`${MAIL}/itip`, { account, email: emailId }).then((r) => r.result),
+  });
+  if (!server) return null;
+  const said: Record<string, string> = {
+    updated: t("This proposal is on the event in your calendar: accept or decline it there."),
+    same: t("This proposal is on the event in your calendar: accept or decline it there."),
+    none: t("This event is not in your calendar."),
+    refused: t("Not recorded: the sender is not on this event's guest list."),
+    unverified: t("Not recorded: the sender could not be verified."),
+    unsupported: t("This proposal could not be read."),
+  };
+  return (
+    <p className="rounded-md border bg-muted px-3 py-2 text-sm" role="status">
+      {result.isLoading ? t("Checking your calendar…") : result.error ? t("Your calendar could not be checked: {e}", { e: errorMessage(result.error) }) : (said[result.data ?? ""] ?? t("This proposal could not be read."))}
+    </p>
+  );
+}
