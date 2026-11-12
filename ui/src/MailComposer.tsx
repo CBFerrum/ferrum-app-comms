@@ -275,10 +275,12 @@ export function Composer({
 
   // The whole toolbar where the writing area is wide (full screen, a page), the compact one in a window or under a conversation.
   const [wide, setWide] = useState(false);
+  // Under 520px (a phone, an answer on a phone) the send bar keeps Send as its icon and puts Discard in its menu.
+  const [narrow, setNarrow] = useState(false);
   useLayoutEffect(() => {
     const el = box.current;
     if (!el || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() => setWide(el.clientWidth >= FULL_TOOLBAR_AT));
+    const ro = new ResizeObserver(() => (setWide(el.clientWidth >= FULL_TOOLBAR_AT), setNarrow(el.clientWidth < 520)));
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
@@ -1026,7 +1028,7 @@ export function Composer({
           <DropdownMenuCheckboxItem checked={w.signature} disabled={!signatureOf(identity)} onCheckedChange={(c) => setW((x) => ({ ...x, signature: c === true }))}>
             {t("Signature")}
           </DropdownMenuCheckboxItem>
-          {phone && (
+          {(phone || narrow) && (
             <DropdownMenuItem variant="destructive" onSelect={() => void discard()}>
               <Trash2 aria-hidden="true" /> {t("Discard the draft")}
             </DropdownMenuItem>
@@ -1043,7 +1045,7 @@ export function Composer({
   const footer = (
     <footer className="mail-compose-bar">
       <span className="flex shrink-0">
-        <SendButton busy={busy} disabled={busy || identities.isLoading} split={mode !== "page"} iconOnly={phone} onSend={() => void send()} />
+        <SendButton busy={busy} disabled={busy || identities.isLoading} split={mode !== "page"} iconOnly={phone || narrow} onSend={() => void send()} />
         {mode !== "page" && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -1075,10 +1077,10 @@ export function Composer({
         )}
       </span>
       <span className="flex min-w-0 items-center">{iconTools}</span>
-      <span role="status" className={cn("ms-auto min-w-0 truncate text-xs", status.state === "failed" ? "text-destructive" : "text-muted-foreground", phone && "sr-only")}>
+      <span role="status" className={cn("ms-auto min-w-0 truncate text-xs", status.state === "failed" ? "text-destructive" : "text-muted-foreground", (phone || narrow) && "sr-only")}>
         {statusText}
       </span>
-      {!phone && (
+      {!phone && !narrow && (
         <Tool label={t("Discard the draft")} onClick={() => void discard()} disabled={busy}>
           <Trash2 />
         </Tool>
