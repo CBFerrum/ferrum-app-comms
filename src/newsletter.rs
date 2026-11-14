@@ -63,7 +63,7 @@ impl DocHook for NewsletterHook {
                 if status != "Draft" {
                     return Err(Error::invalid("only draft newsletters can be scheduled"));
                 }
-                if util::settings(hc.tx, hc.ctx.tenant).await?.public_url.is_none() {
+                if util::public_url(hc.kernel, hc.tx, hc.ctx.tenant, "/unsubscribe", util::For::People).await?.1.is_none() {
                     return Err(Error::invalid("set the Public URL in Communication Settings first: every newsletter carries an unsubscribe link"));
                 }
                 let account = match id(doc, "email_account") {
@@ -218,7 +218,10 @@ async fn send_batch(k: &Kernel, tenant: Uuid, newsletter: Uuid, budget: Duration
         Some(a) => account::load(k, &mut tx, tenant, a).await?,
         None => None,
     };
-    let (_, base) = util::public_url(&mut tx, tenant, "/unsubscribe").await?;
+    // People follow the link in the email. A mailbox's one-click unsubscribe posts to the header's (RFC 8058), and the link
+    // host takes no posts: that one is the address services call, when the server has one.
+    let (_, base) = util::public_url(k, &mut tx, tenant, "/unsubscribe", util::For::People).await?;
+    let (_, posted) = util::public_url(k, &mut tx, tenant, "/unsubscribe", util::For::Services).await?;
     tx.commit().await?;
     let key = util::signing_key(k, tenant).await?;
     let Some(base) = base else {
@@ -263,8 +266,9 @@ async fn send_batch(k: &Kernel, tenant: Uuid, newsletter: Uuid, budget: Duration
         if claimed == 0 {
             continue;
         }
-        let url = format!("{base}?n={newsletter}&e={}&s={}", util::url_encode(&email), util::sign(&key, &unsubscribe_message(newsletter, &email)));
-        let outcome = render_and_send(k, account.as_ref(), &subject_src, &content_src, &email, name.as_deref(), &url).await;
+        let query = format!("?n={newsletter}&e={}&s={}", util::url_encode(&email), util::sign(&key, &unsubscribe_message(newsletter, &email)));
+        let (url, one_click) = (format!("{base}{query}"), format!("{}{query}", posted.as_deref().unwrap_or(&base)));
+        let outcome = render_and_send(k, account.as_ref(), &subject_src, &content_src, &email, name.as_deref(), &url, &one_click).await;
         let mut tx = k.db.tenant_tx(tenant).await?;
         match outcome {
             Ok(()) => {
@@ -317,6 +321,7 @@ async fn render_and_send(
     email: &str,
     name: Option<&str>,
     url: &str,
+    one_click: &str,
 ) -> std::result::Result<(), SendError> {
     let fail = |m: String| SendError { permanent: true, message: m };
     let c = json!({"member": {"email": email, "member_name": name}, "unsubscribe_url": url});
@@ -347,7 +352,7 @@ async fn render_and_send(
                 attachments: vec![],
                 ics: None,
                 headers: vec![
-                    ("List-Unsubscribe".into(), format!("<{url}>")),
+                    ("List-Unsubscribe".into(), format!("<{one_click}>")),
                     ("List-Unsubscribe-Post".into(), "List-Unsubscribe=One-Click".into()),
                     ("Precedence".into(), "bulk".into()),
                 ],

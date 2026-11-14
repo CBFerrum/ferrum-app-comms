@@ -20,6 +20,7 @@ use crate::calendar;
 use crate::calendars::{self, Level};
 use crate::ics::{self, ParsedEvent};
 use crate::util::{self, s};
+use ferrum_kernel::controls::{self, Read};
 use ferrum_kernel::{Access, Action, Ctx, Doc, Error, Filter, Kernel, ListQuery, Op, Result, SiteRequest, SiteResponse, Tx};
 use quick_xml::events::Event;
 use quick_xml::name::ResolveResult;
@@ -463,13 +464,53 @@ struct Item {
     name: String,
     data: String,
     etag: String,
+    /// The record it shows: an event, or a CRM contact (a colleague is no record of a workspace's).
+    id: Option<Uuid>,
 }
 
 impl Item {
     fn new(name: String, data: String) -> Item {
         let etag = format!("\"{}\"", &hex::encode(Sha256::digest(data.as_bytes()))[..24]);
-        Item { name, data, etag }
+        Item { name, data, etag, id: None }
     }
+
+    fn of(self, id: Option<Uuid>) -> Item {
+        Item { id, ..self }
+    }
+}
+
+/// The entities a workspace may have every read of recorded (`record_reads`): calendar events, which apps read here with
+/// this package's own queries, and CRM contacts, whose lists are the platform's own reads (`Kernel::list`).
+const EVENTS: &str = "CalendarEvent";
+const CONTACTS: &str = "Contact";
+
+/// Records what an app is about to be shown, as the platform records its own reads (Ferrum's `controls::record_read`) where
+/// the workspace marks the entity: each event or contact opened by its name (a GET, a PROPFIND of one, a multiget), or a
+/// calendar's events listed (a PROPFIND of the collection, a query, a sync), with the fields a query narrowed by. Written and
+/// committed before the answer is given; when it cannot be, the answer is refused. Nothing that shows none of the records
+/// is recorded (a collection's tag, an unchanged sync token, the check a change makes first).
+async fn shown<'a>(k: &Kernel, ctx: &Ctx, r: &Res, items: impl IntoIterator<Item = &'a Item>, opened: bool, filters: &[Filter]) -> Result<()> {
+    let entity = match r {
+        Res::Calendar(_) | Res::Event(..) => EVENTS,
+        // A contacts list is recorded by the platform's list it is read with.
+        Res::Book(Book::Contacts) | Res::Card(Book::Contacts, _) if opened => CONTACTS,
+        _ => return Ok(()),
+    };
+    if ctx.reads_recorded(entity).is_none() {
+        return Ok(());
+    }
+    let items: Vec<&Item> = items.into_iter().collect();
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    if opened {
+        for id in items.iter().filter_map(|i| i.id) {
+            controls::record_read(&mut tx, ctx, entity, Read::One(id)).await?;
+        }
+    } else {
+        let read = Read::Many { how: "list", filters, search: false, rows: items.len() as i64, to: None };
+        controls::record_read(&mut tx, ctx, entity, read).await?;
+    }
+    tx.commit().await?;
+    Ok(())
 }
 
 /// A collection's tag: changes whenever any of its items is added, changed or removed.
@@ -613,6 +654,7 @@ async fn propfind(k: &Kernel, ctx: &Ctx, req: &SiteRequest, r: &Res) -> Result<S
             let items = items(k, ctx, r, None).await?;
             m.add(&href(ctx, r), props(ctx, r, &wanted, Some(&ctag(&items)), None));
             if children {
+                shown(k, ctx, r, &items, false, &[]).await?;
                 for i in &items {
                     let child = child(r, &i.name);
                     m.add(&href(ctx, &child), props(ctx, &child, &wanted, None, Some(i)));
@@ -622,6 +664,7 @@ async fn propfind(k: &Kernel, ctx: &Ctx, req: &SiteRequest, r: &Res) -> Result<S
         Res::Event(_, n) | Res::Card(_, n) => {
             let collection = parent(r);
             let item = items(k, ctx, &collection, Some(std::slice::from_ref(n))).await?.into_iter().next().ok_or_else(|| Error::NotFound("item".into()))?;
+            shown(k, ctx, r, [&item], true, &[]).await?;
             m.add(&href(ctx, r), props(ctx, r, &wanted, None, Some(&item)));
         }
         Res::CalendarHome | Res::BookHome => {
@@ -700,6 +743,7 @@ async fn report(k: &Kernel, ctx: &Ctx, req: &SiteRequest, r: &Res) -> Result<Sit
             return Ok(refuse(403, "D:valid-sync-token", "the calendar changed; list it again"));
         }
         if given.is_empty() {
+            shown(k, ctx, r, &items, false, &[]).await?;
             for i in &items {
                 let c = child(r, &i.name);
                 m.add(&href(ctx, &c), props(ctx, &c, &wanted, None, Some(i)));
@@ -713,6 +757,7 @@ async fn report(k: &Kernel, ctx: &Ctx, req: &SiteRequest, r: &Res) -> Result<Sit
         let named = names_in(&hrefs, &href(ctx, r));
         let names: Vec<String> = named.iter().filter_map(|(_, n)| n.clone()).collect();
         let found: HashMap<String, Item> = items(k, ctx, r, Some(&names)).await?.into_iter().map(|i| (i.name.clone(), i)).collect();
+        shown(k, ctx, r, found.values(), true, &[]).await?;
         for (h, name) in named {
             match name.as_ref().and_then(|n| found.get(n)) {
                 Some(i) => {
@@ -723,16 +768,20 @@ async fn report(k: &Kernel, ctx: &Ctx, req: &SiteRequest, r: &Res) -> Result<Sit
             }
         }
     } else if (calendar && root.is(C, "calendar-query")) || (book && root.is(CR, "addressbook-query")) {
-        let found = match r {
-            Res::Book(b) => cards(k, ctx, *b, None).await?,
+        let (found, narrowed) = match r {
+            Res::Book(b) => (cards(k, ctx, *b, None).await?, vec![]),
             _ => {
                 let range = els.iter().find(|e| e.is(C, "time-range")).map(|e| (e.attr("start").and_then(ical_time), e.attr("end").and_then(ical_time)));
                 let Res::Calendar(c) = r else { return Ok(refuse(403, "D:supported-report", "not a calendar")) };
                 let list: Vec<(Doc, String)> =
                     events(k, ctx, c, None).await?.into_iter().filter(|(doc, _)| range.is_none_or(|(from, to)| overlaps(doc, from, to))).collect();
-                event_items(k, ctx, c, list).await?
+                // A time range narrows by when events end and start: said as the fields and how, never the times.
+                let by = |field: &str, op| Filter { field: field.into(), op, value: Value::Null };
+                let narrowed = if range.is_some() { vec![by("ends_at", Op::Gt), by("starts_at", Op::Lt)] } else { vec![] };
+                (event_items(k, ctx, c, list).await?, narrowed)
             }
         };
+        shown(k, ctx, r, &found, false, &narrowed).await?;
         for i in found {
             {
                 let c = child(r, &i.name);
@@ -846,7 +895,7 @@ async fn event_items(k: &Kernel, ctx: &Ctx, c: &Coll, list: Vec<(Doc, String)>) 
             if let (Some(ev), Some(t)) = (ev.as_mut(), util::time(&doc, "updated_at")) {
                 ev.stamp = t;
             }
-            out.extend(ev.map(|ev| Item::new(name, ics::calendar(None, None, &[ev]))));
+            out.extend(ev.map(|ev| Item::new(name, ics::calendar(None, None, &[ev])).of(util::id(&doc, "id"))));
             continue;
         }
         let owner = s(&doc, "owner").unwrap_or_default().to_lowercase();
@@ -860,7 +909,7 @@ async fn event_items(k: &Kernel, ctx: &Ctx, c: &Coll, list: Vec<(Doc, String)>) 
         if let Some(t) = util::time(&doc, "updated_at") {
             ev.stamp = t;
         }
-        out.push(Item::new(name, ics::calendar(None, None, &[ev])));
+        out.push(Item::new(name, ics::calendar(None, None, &[ev])).of(util::id(&doc, "id")));
     }
     tx.commit().await?;
     Ok(out)
@@ -875,6 +924,9 @@ async fn get(k: &Kernel, ctx: &Ctx, r: &Res, head: bool) -> Result<SiteResponse>
         _ => return Ok(SiteResponse::text(200, "text/plain; charset=utf-8", "Ferrum's address for calendar and contacts apps.\n")),
     };
     let item = items(k, ctx, &parent(r), Some(std::slice::from_ref(name))).await?.into_iter().next().ok_or_else(|| Error::NotFound("item".into()))?;
+    if !head {
+        shown(k, ctx, r, [&item], true, &[]).await?;
+    }
     let mut resp = SiteResponse::text(200, ctype, if head { String::new() } else { item.data });
     resp.headers.push(("etag".into(), item.etag));
     Ok(resp)
@@ -1345,7 +1397,7 @@ async fn contacts(k: &Kernel, ctx: &Ctx, only: Option<&[Uuid]>) -> Result<Vec<It
                 note: s(d, "notes"),
                 rev: rev(d),
             });
-            Some(Item::new(format!("{id}.vcf"), data))
+            Some(Item::new(format!("{id}.vcf"), data).of(Some(id)))
         })
         .collect())
 }

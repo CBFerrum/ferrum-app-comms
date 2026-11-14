@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.20.1
+
+Comms takes two things the platform gained: its stable names, and its record of reads. No database change, no interface change.
+
+**Recorded reads over CalDAV.** A workspace that records reads of calendar events (`record_reads`) now has what calendar apps read on its audit trail, as the platform's own reads are: each event opened by name (`GET`, a `PROPFIND` of one, `calendar-multiget`) as `open`, and with `all` each listing (a `PROPFIND` of a calendar, a `calendar-query` with the fields its time range narrows by, a `sync-collection` that lists) as `list`, with what it was read with (`dav`). A CRM contact opened by name is recorded too; its listings already were, by the platform's list. A read that cannot be recorded is refused, and nothing of the event goes out. Before, these reads went unrecorded.
+
+**Addresses without one of Comms' own.** With the setting `public_url` empty, links people follow come from the platform: an unsubscribe link goes through the operator's link host (`FERRUM_LINK_HOST`) when there is one, so it keeps working when the workspace's address changes; an invitation's answer page and a meeting's pages, which only the workspace's main host serves, go there through it. The inbound address and calendar feeds, which other services call, start at the hooks host (`FERRUM_HOOKS_HOST`), else the server's public address; so does a newsletter's one-click unsubscribe header, which mailboxes post to and the link host does not take. Without the setting, a newsletter may be scheduled whenever the server has an address. With the setting filled, nothing changes; with no address at all (development), there is none, as before.
+
 ## 0.20.0
 
 Mail becomes something other apps build on: what Helpdesk and CRM asked of it. A database change (`comms/009_inbound_apps.sql`: `comms_mail_route`, `comms_mail_filing`) and new `Communication` fields (`reply_to_address`, `envelope_sender`, `routed_to`, `route_error`, `hidden_from_inbox`) are applied at startup; nothing existing moves. No interface change.

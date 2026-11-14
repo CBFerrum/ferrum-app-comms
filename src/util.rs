@@ -200,11 +200,41 @@ pub async fn site_path(tx: &mut Tx, tenant: Uuid) -> Result<String> {
     Ok(format!("/api/site/{}/comms", slug(tx, tenant).await?))
 }
 
-/// Absolute public URL of `path` under the site root, when the public URL is configured.
-pub async fn public_url(tx: &mut Tx, tenant: Uuid, path: &str) -> Result<(String, Option<String>)> {
+/// Who follows or calls an address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum For {
+    /// People outside the workspace, in their browser, to the package's endpoints (`/api/site/…`, which every host of the
+    /// workspace serves): through `p`, to its portal's host when it has one.
+    People,
+    /// People to a page of the interface (`shell.public`), which only the workspace's main host serves (its portal's host
+    /// leads everything but the portal, sign-in and the API to the portal): through `s`.
+    Pages,
+    /// Other services, which call it (a mail provider posting mail, a mailbox's one-click unsubscribe, a calendar service
+    /// fetching a feed).
+    Services,
+}
+
+/// The absolute address of `path` (from the server's root): under the setting `public_url` when it is set, as always.
+/// Without it, the platform's: a link people follow goes through its link host when there is one, so it outlives the
+/// workspace's address ([`Kernel::person_link`]); an address services call starts at the place they call back
+/// ([`ferrum_kernel::KernelSettings::callback_base`]), which takes posts. `None` without any address (development).
+pub async fn address(k: &Kernel, tx: &mut Tx, tenant: Uuid, path: &str, to: For) -> Result<Option<String>> {
+    use ferrum_kernel::notify::Audience;
+    if let Some(base) = settings(tx, tenant).await?.public_url {
+        return Ok(Some(format!("{base}{path}")));
+    }
+    Ok(match to {
+        For::People => k.person_link(tenant, Audience::Outside, path).await,
+        For::Pages => k.person_link(tenant, Audience::Staff, path).await,
+        For::Services => k.settings.callback_base().map(|base| format!("{base}{path}")),
+    })
+}
+
+/// The public URL of `path` under the site root: relative, and absolute when there is an address ([`address`]).
+pub async fn public_url(k: &Kernel, tx: &mut Tx, tenant: Uuid, path: &str, to: For) -> Result<(String, Option<String>)> {
     let rel = format!("{}{path}", site_path(tx, tenant).await?);
-    let base = settings(tx, tenant).await?.public_url;
-    Ok((rel.clone(), base.map(|b| format!("{b}{rel}"))))
+    let url = address(k, tx, tenant, &rel, to).await?;
+    Ok((rel, url))
 }
 
 #[derive(Debug, Clone)]

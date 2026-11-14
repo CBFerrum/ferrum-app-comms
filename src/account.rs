@@ -205,7 +205,8 @@ impl DocHook for AccountHook {
         patch.insert("inbound_token".into(), json!(secret));
         hc.kernel.update_tx(&util::sys(hc.ctx), hc.tx, "EmailAccount", account, patch, None).await?;
         let token = util::record_token(account, &secret);
-        let (path, url) = util::public_url(hc.tx, hc.ctx.tenant, &format!("/inbound/{token}")).await?;
+        // A mail provider posts to it: the address other services call.
+        let (path, url) = util::public_url(hc.kernel, hc.tx, hc.ctx.tenant, &format!("/inbound/{token}"), util::For::Services).await?;
         Ok(Some(json!({
             "token": token,
             "path": path,

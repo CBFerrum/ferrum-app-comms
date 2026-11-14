@@ -837,14 +837,14 @@ fn answer_token(key: &[u8], event: Uuid, email: &str) -> String {
     format!("r.{}.{}.{}", event.simple(), URL_SAFE_NO_PAD.encode(&email), util::sign(key, &answer_claim(event, &email)))
 }
 
-/// The address of Calendar's page for answering an invitation (`/calendar/rsvp/{workspace}/{token}`),
-/// when the workspace's public address is known.
+/// The address of Calendar's page for answering an invitation (`/calendar/rsvp/{workspace}/{token}`), a page people
+/// outside follow ([`util::address`]), when there is an address to give.
 async fn answer_link(k: &Kernel, tx: &mut Tx, tenant: Uuid, doc: &Doc, email: &str) -> Result<Option<String>> {
     let Some(event) = id(doc, "id") else { return Ok(None) };
-    let base = util::settings(tx, tenant).await?.public_url.or_else(|| k.settings.public_url.clone().map(|u| u.trim_end_matches('/').to_string()));
-    let Some(base) = base else { return Ok(None) };
+    let page = format!("/calendar/rsvp/{}/", util::slug(tx, tenant).await?);
+    let Some(page) = util::address(k, tx, tenant, &page, util::For::Pages).await? else { return Ok(None) };
     let key = util::signing_key(k, tenant).await?;
-    Ok(Some(format!("{base}/calendar/rsvp/{}/{}", util::slug(tx, tenant).await?, answer_token(&key, event, email))))
+    Ok(Some(format!("{page}{}", answer_token(&key, event, email))))
 }
 
 /// The event and the address an answer link is for, when the link is genuine and the person is
@@ -943,7 +943,8 @@ async fn feed_token(k: &Kernel, ctx: &Ctx, method: &str) -> Result<Value> {
                 }
             };
             let token = util::record_token(f, &secret);
-            let (path, url) = util::public_url(&mut tx, ctx.tenant, &format!("/calendar/{token}.ics")).await?;
+            // Calendar services fetch it: the address other services call.
+            let (path, url) = util::public_url(k, &mut tx, ctx.tenant, &format!("/calendar/{token}.ics"), util::For::Services).await?;
             json!({"active": true, "token": token, "path": path, "url": url})
         }
         ("DELETE", f) => {

@@ -202,13 +202,10 @@ pub async fn get(k: &Kernel, tenant: Uuid, id: Uuid) -> Result<Meeting> {
     row.map(meeting).ok_or(MeetingError::NotFound)
 }
 
-/// The public address of the workspace, when it has one.
-async fn base(k: &Kernel, tx: &mut Tx, tenant: Uuid) -> Result<String> {
-    util::settings(tx, tenant)
-        .await?
-        .public_url
-        .or_else(|| k.settings.public_url.clone().map(|u| u.trim_end_matches('/').to_string()))
-        .ok_or(MeetingError::NoPublicAddress)
+/// The address of a meeting's page (`path`), when there is one to give ([`util::address`]): members' and guests' pages
+/// are pages of the interface, which the workspace's main host serves.
+async fn page(k: &Kernel, tx: &mut Tx, tenant: Uuid, path: &str) -> Result<String> {
+    util::address(k, tx, tenant, path, util::For::Pages).await?.ok_or(MeetingError::NoPublicAddress)
 }
 
 /// The link a signed-in member opens to join (they sign in first, as for any room).
@@ -216,9 +213,9 @@ pub async fn member_link(k: &Kernel, tenant: Uuid, id: Uuid) -> Result<String> {
     available(k, tenant).await?;
     let m = open(k, tenant, id).await?;
     let mut tx = k.db.tenant_tx(tenant).await?;
-    let base = base(k, &mut tx, tenant).await?;
+    let link = page(k, &mut tx, tenant, &format!("/meet/room/{}", m.id)).await?;
     tx.commit().await?;
-    Ok(format!("{base}/meet/room/{}", m.id))
+    Ok(link)
 }
 
 /// What a guest's link signs: the meeting, their address and the name it was made for.
@@ -239,10 +236,6 @@ pub async fn guest_link(k: &Kernel, tenant: Uuid, id: Uuid, name: &str, email: &
     let name = util::clean_line(name, 60);
     let name = if name.is_empty() { email.split('@').next().unwrap_or("Guest").to_string() } else { name };
     let key = util::signing_key(k, tenant).await?;
-    let mut tx = k.db.tenant_tx(tenant).await?;
-    let base = base(k, &mut tx, tenant).await?;
-    let slug = util::slug(&mut tx, tenant).await?;
-    tx.commit().await?;
     let token = format!(
         "m.{}.{}.{}.{}",
         m.id.simple(),
@@ -250,7 +243,11 @@ pub async fn guest_link(k: &Kernel, tenant: Uuid, id: Uuid, name: &str, email: &
         URL_SAFE_NO_PAD.encode(&name),
         util::sign(&key, &guest_claim(m.id, &email, &name))
     );
-    Ok(GuestLink { url: format!("{base}/meet/guest/{slug}/{token}"), expires_at: m.ends_at + Duration::hours(GRACE) })
+    let mut tx = k.db.tenant_tx(tenant).await?;
+    let slug = util::slug(&mut tx, tenant).await?;
+    let url = page(k, &mut tx, tenant, &format!("/meet/guest/{slug}/{token}")).await?;
+    tx.commit().await?;
+    Ok(GuestLink { url, expires_at: m.ends_at + Duration::hours(GRACE) })
 }
 
 /// The meeting's title when a guest may join it now (not ended, not long over).
