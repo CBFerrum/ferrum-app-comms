@@ -24,7 +24,14 @@ the generic API on `ChatChannel`/`ChatMessage` is for chat administrators only.
 ## Setup
 
 1. **Communication Settings** (`CommsSettings`): `public_url` (e.g. `https://erp.example.com`) —
-   needed for unsubscribe links, the inbound webhook URL and calendar feed URLs;
+   where unsubscribe links, invitations' answer pages, meeting links, the inbound webhook URL and
+   calendar feed URLs point. Left empty, the server's addresses are used: links people follow go
+   through the operator's link host when there is one (`FERRUM_LINK_HOST`, so they keep working
+   when the workspace's address changes), else the workspace's own address; the inbound address
+   and feeds, which other services call, start at the hooks host (`FERRUM_HOOKS_HOST`), else the
+   server's public address. A page of the interface (an answer page, a meeting) is reached on the
+   workspace's main host, which serves it; an unsubscribe link may land on its portal's host. A
+   one-click unsubscribe (`List-Unsubscribe`) is posted by mailboxes, and goes to the hooks host.
    `newsletter_hourly_limit` (default 500); `max_send_attempts` (default 5).
 2. **Email Account**: SMTP (`smtp_security`: `STARTTLS` | `TLS` | `None`) and/or IMAP
    (`imap_security`: `TLS` | `STARTTLS` | `None`, `imap_folder`, `poll_interval_minutes`).
@@ -268,10 +275,18 @@ Only people with a Comms role sync.
 | `/u/{user}/addressbooks/contacts/` | **Contacts**: the CRM contacts they may read (where CRM is installed), with all emails and phones, company and title | read |
 
 Methods: `OPTIONS`, `PROPFIND` (depth 0 or 1), `REPORT` (`calendar-multiget`, `calendar-query`
-with a time range, `addressbook-multiget`, `addressbook-query`), `GET`, `HEAD`, `PUT` and `DELETE`
-on events (with `If-Match` / `If-None-Match`). `PROPPATCH` is refused per property; other reports
-(`sync-collection`) answer 403. Collections carry `getctag` and items `getetag`, hashes of what GET
-returns.
+with a time range, `addressbook-multiget`, `addressbook-query`, `sync-collection`), `GET`, `HEAD`,
+`PUT` and `DELETE` on events (with `If-Match` / `If-None-Match`). `PROPPATCH` is refused per
+property; other reports answer 403. Collections carry `getctag` and items `getetag`, hashes of what
+GET returns.
+
+A workspace that records reads (`record_reads`) gets what apps read here on its audit trail, as the
+platform's own reads are: of `CalendarEvent`, each event opened by name (`GET`, a `PROPFIND` of
+one, `calendar-multiget`) as `open`, and with `all` each listing (a `PROPFIND` of a calendar, a
+`calendar-query` with the fields a time range narrows by, a `sync-collection` that lists) as
+`list`; of `Contact`, each contact opened by name (CRM's list it is read with records the
+listings). A collection's tag, an unchanged sync token and the check a change makes first show
+no record and are not recorded. A read that cannot be recorded is refused.
 
 What apps send:
 * **An organizer's event** becomes the event, with its guests (each keeping the answer they gave),
