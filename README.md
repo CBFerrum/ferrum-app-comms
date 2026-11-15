@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.20.1-2563eb?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.21.0-2563eb?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 [![CI](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml/badge.svg)](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml)
@@ -41,7 +41,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 | | |
 |---|---|
-| 📦 **Version** | 0.20.1 |
+| 📦 **Version** | 0.21.0 |
 | 🖥️ **Kind** | Its own interface: four shell apps at `/mail/`, `/chat/`, `/calendar/` and `/meet/` |
 | ➕ **What it adds** | 21 entities in one package, 3 roles, 3 reports, 4 launcher apps, 3 intents, a side panel, bar search, 10 kinds of notification, 2 public pages |
 | 🧱 **Depends on** | The platform's `core` and `contacts` packages. Nothing else is required |
@@ -332,7 +332,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 - **Video meetings on your server.** Meetings run on a [LiveKit](https://livekit.io) server you operate. Comms decides who may join and signs the access tokens; sound and pictures never pass through Ferrum.
 - **Three kinds of meeting.** A channel's call (whoever may read the channel), an event's call (its organiser and guests, or anyone for a public event) and a room anyone in the workspace can start and share.
-- **Guests join by link.** People outside the workspace join as "Name (guest)" with no account. A room has a guest link you can turn on, renew or turn off; an event's outside guest gets their own signed link in the invitation.
+- **Guests join by link.** People outside the workspace join as "Name (guest)" with no account. A room has a guest link you can turn on, renew or turn off, its key kept sealed in the platform's vault; an event's outside guest gets their own signed link in the invitation.
 - **In the call.** Device check before joining, camera, microphone, screen sharing and the meeting's own chat. On a phone a call opens over the page and keeps the screen awake, and a browser with no camera or microphone can join to listen.
 - **Pop out.** Put the call in a small always-on-top window (Document Picture-in-Picture; a floating speaker video in Safari) while you work in other apps. Calls from Chat and Calendar open in a companion window that outlives the page.
 - **Captions and transcripts.** Each person can caption their own voice with their browser's speech recognition (the button says the browser may send the voice to its maker). Captions show to everyone and are kept as the meeting's transcript, per speaker, and are part of that person's personal-data copy and erasure. Guests' captions show but are not kept.
@@ -615,6 +615,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 
 ### ✅ Recently shipped
 
+- [x] **0.21.0**: A room's guest link is kept sealed in the platform's vault; mail and meeting addresses are settings.
 - [x] **0.20.1**: Calendar apps' reads recorded where a workspace records reads, and links through the operator's link host without an address of Comms' own.
 - [x] **0.20.0**: Mail for other apps. Received mail keeps its headers, apps send with Reply-To and threading and get the Message-ID, apps register inbound addresses, and mailboxes can be filed without a person.
 - [x] **0.19.0**: A composer on the kit's rich-text editor, in a window with presence, with pictures as parts, rich vacation replies and signatures.
@@ -766,7 +767,7 @@ CHANGELOG.md          what changed in each version
 
 ## 📜 Changelog
 
-Every release is described in [CHANGELOG.md](CHANGELOG.md). The latest is **0.20.1**, which records calendar apps' reads and takes the platform's stable addresses.
+Every release is described in [CHANGELOG.md](CHANGELOG.md). The latest is **0.21.0**, which keeps a room's guest link sealed in the platform's vault and reads the mail and meeting addresses as settings.
 
 ## 🤝 Contributing
 
