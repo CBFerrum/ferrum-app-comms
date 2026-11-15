@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.21.0
+
+Needs a platform with the vault (Ferrum `8e6b1f0` or later). No database change, no interface change.
+
+**A room's guest link is kept sealed.** The key in a room's guest link was kept as it is in `comms_meeting.guest_key`:
+whoever could read the meetings, or a dump of them, could join any room as a guest. A new link's key is now kept sealed
+under Comms' own key in the workspace's vault (the vault's form, `fv1.{version}.…`), for that room only: copied to
+another room or another workspace it opens nothing. People in the room are still shown the link to share (it is opened
+for them), and the link itself is unchanged (`r.{room}.{key}`). A sealed value always holds a dot and a key never does,
+so the build before this one, should it run on the same database (during an upgrade or after a rollback), reads it as a
+key nobody can present: it shows that room's link broken and admits no guest by it, and admits nobody it should not.
+
+**Links already sent keep working.** A key kept as it was by an earlier release is honoured as before, except in a
+sandbox (a copy's links are its own). Nothing rewrites those keys in this release, because the build before still reads
+them as they are; the release after this one seals what is left in place.
+
+**When the vault is closed** (an installation with nothing to open its root with), making a guest link and joining by a
+sealed one are refused with "Comms cannot make or open guest links right now: its keys are unavailable"; people in the
+room join all the same, without the link to share. Links from before this release keep working (their keys were never
+sealed).
+
+**A workspace moved to another installation**: the platform's move copies the workspace's tables, not its keys in the
+vault, so a room's sealed link stops working after the move; make a new one there. Keys from before this release travel
+as they are and keep working.
+
+**Settings.** The mail and meeting addresses, `FERRUM_MAIL_URL`, `FERRUM_MAIL_ADMIN`, `FERRUM_MAIL_HOST`,
+`FERRUM_MEET_URL`, `FERRUM_MEET_API_URL` and `FERRUM_MEET_RECORDINGS`, are read through the platform's settings: the
+environment wins as before, and the settings table's value applies once the platform's registry no longer marks them as
+read by Comms from the environment. The secrets, `FERRUM_MAIL_ADMIN_SECRET`, `FERRUM_MEET_KEY` and `FERRUM_MEET_SECRET`,
+stay in the environment as they are: the platform's own secrets move into the vault in a later slice.
+
+**For other apps' tests**: Comms takes its vault handle as it registers, so register it as the server does,
+`hooks.app("comms", &[], ferrum_app_comms::register)`; called outside that, the kernel refuses to boot. Its three suites
+do so.
+
+Tests: the end-to-end suite opens the vault as a server does. A room keeps its link's key sealed and not presentable;
+copied to another room it opens nothing there and is not shown; a replica whose vault is closed refuses a new link and a
+guest with a sealed one, plainly, and lets people join without the link; a key kept as it was by an earlier release
+still admits its guest and is shown, and admits nobody in a sandbox, nor does a sealed one.
+
+Not in this release: sealing the keys earlier releases kept (the release after this one); the meeting and calendar links
+signed with Communication Settings' key, which the platform keeps sealed and moves into the vault with its own secrets.
+
 ## 0.20.1
 
 Comms takes two things the platform gained: its stable names, and its record of reads. No database change, no interface change.

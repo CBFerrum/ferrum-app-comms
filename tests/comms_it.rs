@@ -298,22 +298,38 @@ impl Mailbox for FakeBox {
 
 // ───────────────────────────── harness ─────────────────────────────
 
-async fn fresh_kernel(mailer: TestMailer) -> Arc<Kernel> {
-    let url = std::env::var("FERRUM_COMMS_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_comms_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 12, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
-    // Only this package and what it depends on: other packages' work in progress cannot break it.
+fn db_url() -> String {
+    std::env::var("FERRUM_COMMS_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_comms_test".into())
+}
+
+/// Only this package and what it depends on: other packages' work in progress cannot break it.
+fn catalog() -> Catalog {
     let mut packages = ferrum_domain::packages().expect("platform packages");
     packages.extend(ferrum_app_erp::packages().expect("ERP's packages"));
     packages.extend(ferrum_app_comms::packages().expect("app packages"));
-    let catalog = Catalog::from_packages(packages).expect("catalog");
+    Catalog::from_packages(packages).expect("catalog")
+}
+
+async fn fresh_kernel(mailer: TestMailer) -> Arc<Kernel> {
+    let url = db_url();
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 12, ..Default::default() }).await.expect("connect");
+    sqlx::raw_sql("drop schema if exists vault cascade; drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    // The vault, opened as a server opens it (its credential slot, from the address's password), once migrated.
+    let opener = ferrum_kernel::vault::Opener {
+        database_url: url,
+        file: "/nonexistent/root.key".into(),
+        kdf: ferrum_kernel::vault::Kdf { m_kib: 64, t: 1, p: 1 },
+        ..Default::default()
+    };
+    ferrum_kernel::vault::open(&db, opener, false).await.expect("the vault");
     let mut hooks = HookRegistry::default();
-    ferrum_app_comms::register(&mut hooks);
+    // As the server registers it: as itself, so that it takes its own vault handle.
+    hooks.app("comms", &[], ferrum_app_comms::register);
     for source in ferrum_app_comms::reports() {
         ferrum_domain::reports::add_source(source);
     }
     let settings = KernelSettings { secret_key: Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), ..Default::default() };
-    let k = Kernel::boot(db, catalog, hooks, settings, Some(Arc::new(mailer))).await.expect("boot");
+    let k = Kernel::boot(db, catalog(), hooks, settings, Some(Arc::new(mailer))).await.expect("boot");
     k.set_file_store(Arc::new(MemStore::default()));
     k
 }
@@ -1434,6 +1450,85 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     let renewed = t.ok(alice, "POST", &format!("/meet/room/{shared}/guest-link"), &[], Value::Null).await["guest_path"].as_str().unwrap().to_string();
     assert_ne!(renewed, path);
     refused(guest(json!({"token": room_link, "name": "Sam"})).await, "not found");
+    // The room keeps the link's key sealed (src/keys.rs): reading the meetings does not give it, and what is kept is not
+    // a key anyone can present, to this build or to the one before.
+    let renewed_link = renewed.rsplit('/').next().unwrap().to_string();
+    let renewed_key = renewed_link.rsplit('.').next().unwrap().to_string();
+    let kept: String = t.scalar("select guest_key from comms_meeting where tenant_id = $1 and id = $2", Some(shared)).await;
+    assert!(kept.starts_with("fv1.") && !kept.contains(&renewed_key), "{kept}");
+    refused(guest(json!({"token": format!("r.{}.{kept}", shared.simple()), "name": "Sam"})).await, "not found");
+    // Copied to another room, it opens nothing there.
+    let elsewhere = uid(&t.ok(alice, "POST", "/meet/rooms", &[], json!({"title": "Elsewhere"})).await);
+    t.exec(&format!("update comms_meeting set guest_key = '{kept}' where tenant_id = $1 and id = $2"), Some(elsewhere)).await;
+    refused(guest(json!({"token": format!("r.{}.{renewed_key}", elsewhere.simple()), "name": "Sam"})).await, "not found");
+    assert_eq!(join(carol, "room", elsewhere).await.unwrap()["guest_path"], Value::Null, "nor is it shown there");
+    // A replica whose vault is closed refuses a new link and a guest with a sealed one, plainly; people in the room join
+    // all the same, without the link to share. Nothing is kept another way.
+    {
+        let db = Db::connect(DbConfig { url: db_url(), max_connections: 4, ..Default::default() }).await.expect("connect");
+        let closed = Kernel::boot(db, catalog(), HookRegistry::default(), KernelSettings::default(), None).await.expect("it starts with the vault closed");
+        let site = k.hooks.site("comms").expect("comms site").clone();
+        let on = |ctx: Option<&Ctx>, path: String, body: Value| {
+            t.request(ctx, "POST", &path, &[], if body.is_null() { vec![] } else { body.to_string().into_bytes() }, "application/json")
+        };
+        for (req, what) in [
+            (on(Some(alice), format!("/meet/room/{shared}/guest-link"), Value::Null), "a new link"),
+            (on(None, "/meet/guest".into(), json!({"token": renewed_link, "name": "Sam"})), "a guest"),
+        ] {
+            let e = site.handle(&closed, req).await.expect_err(what);
+            assert_eq!(e.to_string(), "Comms cannot make or open guest links right now: its keys are unavailable", "{what}");
+        }
+        let joined = site.handle(&closed, on(Some(carol), format!("/meet/room/{shared}/token"), Value::Null)).await.expect("people join");
+        assert_eq!(serde_json::from_slice::<Value>(&joined.body).unwrap()["guest_path"], Value::Null);
+        assert_eq!(t.scalar::<String>("select guest_key from comms_meeting where tenant_id = $1 and id = $2", Some(shared)).await, kept, "unchanged");
+    }
+    // A link the build before made, its key kept as it is: honoured until the release after this one seals it.
+    t.exec("update comms_meeting set guest_key = 'kept-as-it-was-by-the-build-before' where tenant_id = $1 and id = $2", Some(shared)).await;
+    let before = format!("r.{}.kept-as-it-was-by-the-build-before", shared.simple());
+    guest(json!({"token": before, "name": "Sam"})).await.expect("a link from before the upgrade still works");
+    assert_eq!(join(carol, "room", shared).await.unwrap()["guest_path"], json!(format!("/meet/guest/acme/{before}")));
+    // ... but never in a sandbox of the workspace (a copy under another id, marked as the platform marks one).
+    let copy = k
+        .create_tenant(NewTenant {
+            slug: "acme-try".into(),
+            name: "Acme (sandbox)".into(),
+            admin_email: "admin@acme.test".into(),
+            admin_password: PASSWORD.into(),
+            admin_name: None,
+            packages: vec!["core".into(), "comms".into()],
+            settings: None,
+        })
+        .await
+        .expect("a workspace for the copy");
+    {
+        let mut tx = k.db.system_tx().await.unwrap();
+        for q in [
+            "alter table tenant disable trigger tenant_sandbox_kept",
+            "update tenant set sandbox_of = $1, sandbox_from = 'here', sandbox_until = current_date + 30 where id = $2",
+            "alter table tenant enable trigger tenant_sandbox_kept",
+            "insert into comms_meeting (tenant_id, id, title, guest_key) select $2, id, title, guest_key from comms_meeting where tenant_id = $1",
+        ] {
+            sqlx::query(q).bind(t.tenant).bind(copy).execute(&mut *tx).await.unwrap();
+        }
+        tx.commit().await.unwrap();
+    }
+    let in_copy = SiteRequest {
+        tenant: copy,
+        ..t.request(None, "POST", "/meet/guest", &[], json!({"token": before, "name": "Sam"}).to_string().into_bytes(), "application/json")
+    };
+    refused(k.hooks.site("comms").unwrap().handle(&k, in_copy).await, "not found");
+    let sealed_in_copy = SiteRequest {
+        tenant: copy,
+        ..t.request(
+            None,
+            "POST",
+            "/meet/guest",
+            &[],
+            json!({"token": format!("r.{}.{renewed_key}", elsewhere.simple()), "name": "Sam"}).to_string().into_bytes(),
+            "application/json",
+        )
+    };
+    refused(k.hooks.site("comms").unwrap().handle(&k, sealed_in_copy).await, "not found");
     assert_eq!(t.ok(alice, "DELETE", &format!("/meet/room/{shared}/guest-link"), &[], Value::Null).await["guest_path"], Value::Null);
     refused(guest(json!({"token": renewed.rsplit('/').next().unwrap(), "name": "Sam"})).await, "not found");
     refused(guest(json!({"token": "x.y"})).await, "not found");

@@ -16,6 +16,7 @@ mod hours;
 pub mod ics;
 pub mod inbound;
 mod itip;
+mod keys;
 mod mail;
 mod mailadmin;
 pub(crate) mod meet;
@@ -52,8 +53,10 @@ const ARRIVALS_BUDGET: Duration = Duration::from_secs(20);
 /// Calendars subscribed to by their address (`subscribe.rs`): each due one fetched while this lasts.
 const SUBSCRIBE_BUDGET: Duration = Duration::from_secs(30);
 
-/// Registers this package's document hooks, its mail sender and its endpoints.
+/// Registers this package's document hooks, its mail sender and its endpoints. Call it inside the platform's
+/// registration of the app, `hooks.app("comms", …)`: Comms takes its own vault handle there (`keys.rs`).
 pub fn register(hooks: &mut HookRegistry) {
+    keys::remember(hooks.vault());
     hooks
         .register("EmailAccount", Arc::new(account::AccountHook))
         .register("Communication", Arc::new(mail::CommunicationHook))

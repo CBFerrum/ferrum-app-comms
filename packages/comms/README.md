@@ -57,7 +57,8 @@ invitations).
 With a [Stalwart](https://stalw.art) mail server the operator runs, the workspace's people get
 real mailboxes. The operator sets `FERRUM_MAIL_URL` (Stalwart's HTTP address as Ferrum reaches it,
 e.g. `http://mail:8080`), `FERRUM_MAIL_ADMIN` and `FERRUM_MAIL_ADMIN_SECRET` (one of its
-administrators); a Comms Manager sets `mail_domain` in Communication Settings (e.g. `acme.com`).
+administrators; the address and the name are read as the platform's settings, the password from the
+environment only); a Comms Manager sets `mail_domain` in Communication Settings (e.g. `acme.com`).
 Then every active person whose email is in that domain has a mailbox, kept in step every ten
 minutes or at once with the action `POST /api/v1/CommsSettings/{id}/actions/sync_mail`
 (`{domain, created, updated, locked, failed: [{email, step, error}]}`):
@@ -224,7 +225,9 @@ organizer and colleagues who have not declined.
 
 Video meetings run on a [LiveKit](https://livekit.io) server the operator sets up beside Ferrum
 (`FERRUM_MEET_URL`: LiveKit as browsers reach it, `wss://…`; `FERRUM_MEET_KEY` and
-`FERRUM_MEET_SECRET`: an API key and its secret that LiveKit was given). Comms decides who may join
+`FERRUM_MEET_SECRET`: an API key and its secret that LiveKit was given). The addresses are read as
+the platform's settings (the environment, else the settings table); the key and the secret from the
+environment only. Comms decides who may join
 and signs LiveKit access tokens; sound and pictures never pass through Ferrum. A meeting is
 `{kind}/{id}`:
 
@@ -244,7 +247,7 @@ and signs LiveKit access tokens; sound and pictures never pass through Ferrum. A
 
 | Method & path | Body → response |
 |---|---|
-| `POST /meet/room/{id}/guest-link` | → `{guest_path}`: a new guest link for the room (`/app/meet/guest/{tenant}/r.{room}.{secret}`); the previous one stops working. The room's token answer carries `guest_path` while it has one |
+| `POST /meet/room/{id}/guest-link` | → `{guest_path}`: a new guest link for the room (`/app/meet/guest/{tenant}/r.{room}.{secret}`); the previous one stops working. The room keeps the secret sealed under Comms' key in the platform's vault (`comms_meeting.guest_key`, for that room only); while the vault is closed, `503`. The room's token answer carries `guest_path` while it has one |
 | `DELETE /meet/room/{id}/guest-link` | → `{guest_path: null}`: the room has no guest link |
 | `POST /api/site/{tenant}/comms/meet/guest` (public) | `{token, name?}` → `{url, token, title, name}`. A room's link needs the `name` the guest types (at most 60 characters); an event's link carries its guest |
 

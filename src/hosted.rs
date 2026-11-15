@@ -30,18 +30,24 @@ use uuid::Uuid;
 const EVERY: Duration = Duration::from_secs(600);
 const PAGE: usize = 100;
 
-fn var(name: &str) -> Option<String> {
+/// A setting (`ferrum_kernel::env`: the environment, else the settings table).
+fn setting(name: &str) -> Option<String> {
+    ferrum_kernel::env::var(name).map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+/// A secret: in the environment until the platform's own secrets move into the vault.
+fn secret(name: &str) -> Option<String> {
     std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
 /// The mail server's address, when the operator set one.
 pub(crate) fn server_url() -> Option<String> {
-    var("FERRUM_MAIL_URL").map(|u| u.trim_end_matches('/').to_string())
+    setting("FERRUM_MAIL_URL").map(|u| u.trim_end_matches('/').to_string())
 }
 
 /// The mail server's address and an administrator's Basic credentials, when the operator set them.
 fn configured() -> Option<(String, String)> {
-    Some((server_url()?, basic(&var("FERRUM_MAIL_ADMIN")?, &var("FERRUM_MAIL_ADMIN_SECRET")?)))
+    Some((server_url()?, basic(&setting("FERRUM_MAIL_ADMIN")?, &secret("FERRUM_MAIL_ADMIN_SECRET")?)))
 }
 
 pub(crate) fn basic(user: &str, password: &str) -> String {

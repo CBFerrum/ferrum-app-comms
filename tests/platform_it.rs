@@ -40,7 +40,8 @@ async fn kernel(settings: KernelSettings, mails: Mails) -> Arc<Kernel> {
     packages.extend(ferrum_app_erp::packages().expect("ERP's packages"));
     packages.extend(ferrum_app_comms::packages().expect("app packages"));
     let mut hooks = HookRegistry::default();
-    ferrum_app_comms::register(&mut hooks);
+    // As the server registers it: as itself, so that it takes its own vault handle.
+    hooks.app("comms", &[], ferrum_app_comms::register);
     let settings = KernelSettings { secret_key: Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), ..settings };
     Kernel::boot(db, Catalog::from_packages(packages).expect("catalog"), hooks, settings, Some(Arc::new(mails))).await.expect("boot")
 }
