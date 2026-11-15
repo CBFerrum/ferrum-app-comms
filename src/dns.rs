@@ -608,7 +608,7 @@ pub(crate) async fn health(k: &Kernel, ctx: &Ctx) -> Result<Value> {
     };
     let mut wanted = wanted;
     if source == "defaults"
-        && let Some(host) = std::env::var("FERRUM_MAIL_HOST").ok().map(|h| h.trim().to_string()).filter(|h| !h.is_empty())
+        && let Some(host) = ferrum_kernel::env::var("FERRUM_MAIL_HOST").map(|h| h.trim().to_string()).filter(|h| !h.is_empty())
     {
         wanted = defaults(&domain, Some(&host));
     }

@@ -221,7 +221,7 @@ async fn session(k: &Kernel, ctx: &Ctx) -> Result<Value> {
         o.remove(key);
     }
     o.insert("ferrum".into(), json!({"features": FEATURES}));
-    if let Some(host) = std::env::var("FERRUM_MAIL_HOST").ok().map(|h| h.trim().to_string()).filter(|h| !h.is_empty()) {
+    if let Some(host) = ferrum_kernel::env::var("FERRUM_MAIL_HOST").map(|h| h.trim().to_string()).filter(|h| !h.is_empty()) {
         o.insert("servers".into(), json!({"imap": format!("{host}:993"), "smtp": format!("{host}:465")}));
     }
     Ok(s)

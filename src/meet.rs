@@ -22,7 +22,7 @@
 //! recording went.
 
 use crate::util::{self, created, ok, s};
-use crate::{calendar, chat, recur};
+use crate::{calendar, chat, keys, recur};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ferrum_kernel::{Ctx, Error, Kernel, Result, SiteRequest, SiteResponse, Tx};
@@ -43,25 +43,27 @@ pub(crate) struct Server {
     pub(crate) secret: String,
 }
 
-/// LiveKit, when the operator set it up.
+/// LiveKit, when the operator set it up. Its addresses are settings (`ferrum_kernel::env`: the environment, else the
+/// settings table); its key and secret stay in the environment until the platform's own secrets move into the vault.
 pub(crate) fn server() -> Option<Server> {
-    let var = |name: &str| std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
-    let url = var("FERRUM_MEET_URL")?.trim_end_matches('/').to_string();
+    let setting = |name: &str| ferrum_kernel::env::var(name).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let secret = |name: &str| std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let url = setting("FERRUM_MEET_URL")?.trim_end_matches('/').to_string();
     if !url.starts_with("wss://") && !url.starts_with("ws://") {
         tracing::warn!("FERRUM_MEET_URL must start with wss:// (ws:// only for a test): meetings are off");
         return None;
     }
-    Some(Server { url, key: var("FERRUM_MEET_KEY")?, secret: var("FERRUM_MEET_SECRET")? })
+    Some(Server { url, key: secret("FERRUM_MEET_KEY")?, secret: secret("FERRUM_MEET_SECRET")? })
 }
 
-/// Whether the operator runs LiveKit Egress beside LiveKit, for recordings.
+/// Whether the operator runs LiveKit Egress beside LiveKit, for recordings (a setting).
 fn recordings_on() -> bool {
-    std::env::var("FERRUM_MEET_RECORDINGS").is_ok_and(|v| v.trim() == "true")
+    ferrum_kernel::env::var("FERRUM_MEET_RECORDINGS").is_some_and(|v| v.trim() == "true")
 }
 
-/// LiveKit's server API: `FERRUM_MEET_API_URL`, or the browsers' address over http(s).
+/// LiveKit's server API: `FERRUM_MEET_API_URL` (a setting), or the browsers' address over http(s).
 pub(crate) fn api_url(server: &Server) -> String {
-    match std::env::var("FERRUM_MEET_API_URL").ok().map(|v| v.trim().trim_end_matches('/').to_string()).filter(|v| !v.is_empty()) {
+    match ferrum_kernel::env::var("FERRUM_MEET_API_URL").map(|v| v.trim().trim_end_matches('/').to_string()).filter(|v| !v.is_empty()) {
         Some(url) => url,
         None => server.url.replacen("wss://", "https://", 1).replacen("ws://", "http://", 1),
     }
@@ -127,7 +129,7 @@ pub(crate) fn room_name(tenant: Uuid, kind: &str, id: Uuid) -> String {
 /// A meeting's title when this person may join it, and a room's guest link.
 async fn admit(k: &Kernel, ctx: &Ctx, kind: &str, id: Uuid) -> Result<(String, Option<String>)> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-    let mut guest_path = None;
+    let mut kept_key = None;
     let title = match kind {
         "channel" => chat::call_title(&mut tx, ctx, id).await?,
         "event" => event_title(k, ctx, &mut tx, id).await?,
@@ -140,13 +142,25 @@ async fn admit(k: &Kernel, ctx: &Ctx, kind: &str, id: Uuid) -> Result<(String, O
                     .await?
                     .ok_or_else(|| Error::NotFound("Meeting".into()))?;
             if let Some(key) = key {
-                guest_path = Some(room_guest_path(&util::slug(&mut tx, ctx.tenant).await?, id, &key));
+                kept_key = Some((util::slug(&mut tx, ctx.tenant).await?, key));
             }
             title
         }
         _ => return Err(Error::NotFound("Meeting".into())),
     };
     tx.commit().await?;
+    // The link people in the room may share, its key opened after the transaction. With the vault closed they join all
+    // the same, without it.
+    let guest_path = match kept_key {
+        Some((slug, kept)) => match keys::guest_key(k, ctx.tenant, id, &kept).await {
+            Ok(key) => key.map(|key| room_guest_path(&slug, id, &key)),
+            Err(e) => {
+                tracing::warn!(room = %id, "a room's guest link was left out: {e}");
+                None
+            }
+        },
+        None => None,
+    };
     Ok((title, guest_path))
 }
 
@@ -442,11 +456,16 @@ fn room_guest_path(slug: &str, room: Uuid, key: &str) -> String {
 /// `DELETE`: no guest link.
 async fn guest_link(k: &Kernel, ctx: &Ctx, room: Uuid, on: bool) -> Result<Value> {
     let key = on.then(|| URL_SAFE_NO_PAD.encode(rand::random::<[u8; 24]>()));
+    // The room keeps it sealed (keys.rs), sealed before the transaction: the vault answers on a connection of its own.
+    let kept = match &key {
+        Some(key) => Some(keys::seal_guest_key(k, ctx.tenant, room, key).await?),
+        None => None,
+    };
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let n = sqlx::query("update comms_meeting set guest_key = $3 where tenant_id = $1 and id = $2")
         .bind(ctx.tenant)
         .bind(room)
-        .bind(&key)
+        .bind(&kept)
         .execute(&mut *tx)
         .await?
         .rows_affected();
@@ -527,7 +546,8 @@ pub async fn guest(k: &Kernel, req: &SiteRequest) -> Result<SiteResponse> {
                 .fetch_optional(&mut *tx)
                 .await?;
             tx.commit().await?;
-            let Some((title, Some(stored))) = row else { return Err(gone()) };
+            let Some((title, Some(kept))) = row else { return Err(gone()) };
+            let Some(stored) = keys::guest_key(k, tenant, room, &kept).await? else { return Err(gone()) };
             let same = stored.len() == key.len() && stored.bytes().zip(key.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0;
             if !same {
                 return Err(gone());
