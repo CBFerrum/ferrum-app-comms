@@ -8,3 +8,9 @@ create table if not exists comms_calendar_hours (
   updated_at timestamptz not null default now(),
   primary key (tenant_id, person)
 );
+
+alter table comms_calendar_hours enable row level security;
+alter table comms_calendar_hours force row level security;
+create policy tenant_isolation on comms_calendar_hours
+  using (tenant_id = (select ferrum_tenant()) or (select ferrum_is_system()))
+  with check (tenant_id = (select ferrum_tenant()) or (select ferrum_is_system()));

@@ -6,6 +6,7 @@
 //!   hooks host. With an address of its own, nothing changes; with none at all, there is none.
 //! * Its calendar reads over CalDAV, in a workspace that records reads of calendar events: each event opened, and each
 //!   listing, is on the audit trail as the platform's own reads are, and a read that cannot be recorded is refused.
+//! * Its tables, each of which enforces row-level security as the platform's doctor checks.
 
 use async_trait::async_trait;
 use ferrum_kernel::tenant::NewTenant;
@@ -136,6 +137,10 @@ async fn scenario() {
     let alice_id = k.create_user(&admin, "alice@acme.test", "Alice Rao", Some(PASSWORD), &["Comms User".into()], false).await.unwrap();
     let mgr = k.load_ctx(tenant, mgr_id, None, "it".into()).await.unwrap();
     let alice = k.load_ctx(tenant, alice_id, None, "it".into()).await.unwrap();
+
+    // ───── Every table Comms keeps workspaces' rows in enforces row-level security, as the platform's doctor asks ─────
+    let isolation = k.doctor(8).await.unwrap().into_iter().find(|f| f.check == "isolation.row_security").expect("the doctor's check");
+    assert!(!isolation.detail.contains("comms_"), "{}", isolation.detail);
 
     // ───── Comms has no address of its own: the platform's ─────
     // Services call the inbound address and a calendar feed: the hooks host, which takes their posts.

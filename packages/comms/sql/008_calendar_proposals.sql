@@ -17,3 +17,9 @@ create table if not exists comms_event_proposal (
   primary key (tenant_id, id)
 );
 create index if not exists comms_event_proposal_event on comms_event_proposal (tenant_id, event_id);
+
+alter table comms_event_proposal enable row level security;
+alter table comms_event_proposal force row level security;
+create policy tenant_isolation on comms_event_proposal
+  using (tenant_id = (select ferrum_tenant()) or (select ferrum_is_system()))
+  with check (tenant_id = (select ferrum_tenant()) or (select ferrum_is_system()));
