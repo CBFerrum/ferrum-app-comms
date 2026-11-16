@@ -926,7 +926,7 @@ async fn feed_token(k: &Kernel, ctx: &Ctx, method: &str) -> Result<Value> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let feed = feed_record(&mut tx, ctx).await?;
     let out = match (method, feed) {
-        ("GET", Some(f)) => json!({"active": k.secret(&mut tx, ctx.tenant, "CalendarFeed", f, "token").await?.is_some()}),
+        ("GET", Some(f)) => json!({"active": crate::keys::field(k, &mut tx, ctx.tenant, "CalendarFeed", f, "token").await?.is_some()}),
         ("GET", None) => json!({"active": false}),
         ("POST", _) => {
             let secret = util::new_token();

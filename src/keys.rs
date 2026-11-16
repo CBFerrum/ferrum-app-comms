@@ -5,8 +5,8 @@
 //! whose links are its own), and the release after this one seals what is left in place. A sealed value always holds a
 //! dot and a key never does, so the build before this one reads a sealed value as a key nobody can present.
 
-use ferrum_kernel::vault::{Scope, Vault};
-use ferrum_kernel::{Error, Kernel, Result};
+use ferrum_kernel::vault::{Scope, Vault, Zeroizing};
+use ferrum_kernel::{Error, Kernel, Result, Tx};
 use std::sync::RwLock;
 use uuid::Uuid;
 
@@ -22,6 +22,13 @@ pub(crate) fn remember(v: Vault) {
 
 fn handle() -> Result<Vault> {
     VAULT.read().unwrap_or_else(|e| e.into_inner()).clone().ok_or_else(|| Error::Unavailable("Comms was registered without its vault handle".into()))
+}
+
+/// The value of one of Comms' own secret fields (an account's passwords and inbound token, a mailbox's password, a
+/// calendar's or a feed's address, its signing key), read in `tx` with its handle: none when it is not set. Another
+/// app's field is refused, set or not; a closed vault refuses, and says why.
+pub(crate) async fn field(k: &Kernel, tx: &mut Tx, tenant: Uuid, entity: &str, record: Uuid, field: &str) -> Result<Option<Zeroizing<String>>> {
+    handle()?.field(k, tx, tenant, entity, record, field).await
 }
 
 /// What a person or a caller is told when the vault cannot be used; why goes to the log.

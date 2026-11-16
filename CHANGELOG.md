@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.21.1
+
+Comms reads its secret fields (an account's SMTP and IMAP passwords and inbound token, a hosted mailbox's password, a subscribed calendar's address, a calendar feed's token, its signing key) with its own handle on the vault, in the same transaction as before, instead of the platform's reader that any app could use, which is deprecated. Its one general reader (a token naming its record) is used for two of its own fields only, `CalendarFeed.token` and `EmailAccount.inbound_token`; the handle refuses any other app's. Another app's test that registers Comms says it owns its packages too (`hooks.own("comms", …)`), as the server does, or its fields are the platform's and Comms is refused them. Needs a platform with the vault's field reader (0.3.8 on the platform's main from cdec881). People see nothing new; while the vault is closed these reads refuse plainly. No database or interface change.
+
 ## 0.21.0
 
 Needs a platform with the vault (Ferrum `8e6b1f0` or later). No database change, no interface change.

@@ -544,7 +544,7 @@ pub async fn run(k: &Kernel, tenant: Uuid, budget: Duration) -> Result<usize> {
         }
         let (Ok(user), Some(account)) = (user.parse::<Uuid>(), account) else { continue };
         let mut tx = k.db.tenant_tx(tenant).await?;
-        let secret = k.secret(&mut tx, tenant, "HostedMailbox", mailbox, "secret").await?;
+        let secret = crate::keys::field(k, &mut tx, tenant, "HostedMailbox", mailbox, "secret").await?;
         tx.commit().await?;
         let Some(secret) = secret else { continue };
         let owner = Owner { k, url: url.clone(), auth: hosted::basic(&email, &secret) };

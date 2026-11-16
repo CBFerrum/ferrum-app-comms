@@ -241,7 +241,7 @@ pub async fn refresh(k: &Kernel, tenant: Uuid, calendar: Uuid, allow_private: bo
             .fetch_optional(&mut *tx)
             .await?;
     let Some((owner, remind, etag, modified, failures)) = row else { return Err(Error::NotFound("Calendar".into())) };
-    let url = k.secret(&mut tx, tenant, "Calendar", calendar, "feed_url").await?.unwrap_or_default();
+    let url = crate::keys::field(k, &mut tx, tenant, "Calendar", calendar, "feed_url").await?.map(|u| u.to_string()).unwrap_or_default();
     tx.commit().await?;
     let got = fetch(k, &url, allow_private, etag.as_deref(), modified.as_deref()).await;
     let mut tx = k.db.tenant_tx(tenant).await?;

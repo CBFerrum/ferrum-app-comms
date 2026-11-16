@@ -310,7 +310,7 @@ fn catalog() -> Catalog {
     Catalog::from_packages(packages).expect("catalog")
 }
 
-async fn fresh_kernel(mailer: TestMailer) -> Arc<Kernel> {
+async fn fresh_kernel(mailer: TestMailer) -> (Arc<Kernel>, ferrum_kernel::vault::Vault) {
     let url = db_url();
     let db = Db::connect(DbConfig { url: url.clone(), max_connections: 12, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists vault cascade; drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
@@ -323,15 +323,21 @@ async fn fresh_kernel(mailer: TestMailer) -> Arc<Kernel> {
     };
     ferrum_kernel::vault::open(&db, opener, false).await.expect("the vault");
     let mut hooks = HookRegistry::default();
-    // As the server registers it: as itself, so that it takes its own vault handle.
-    hooks.app("comms", &[], ferrum_app_comms::register);
+    // As the server registers it: as itself, so that it takes its own vault handle, and owning its packages, so that the
+    // secret fields they declare are its own. The test keeps the handle too, to read what Comms keeps.
+    let mut comms = None;
+    hooks.app("comms", &[], |h| {
+        ferrum_app_comms::register(h);
+        comms = Some(h.vault());
+    });
+    hooks.own("comms", &ferrum_app_comms::packages().unwrap().iter().map(|p| p.name().to_string()).collect::<Vec<_>>());
     for source in ferrum_app_comms::reports() {
         ferrum_domain::reports::add_source(source);
     }
     let settings = KernelSettings { secret_key: Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), ..Default::default() };
     let k = Kernel::boot(db, catalog(), hooks, settings, Some(Arc::new(mailer))).await.expect("boot");
     k.set_file_store(Arc::new(MemStore::default()));
-    k
+    (k, comms.expect("Comms' handle"))
 }
 
 /// The platform's object storage, in memory.
@@ -356,6 +362,8 @@ impl ferrum_kernel::files::FileStore for MemStore {
 struct T {
     k: Arc<Kernel>,
     tenant: Uuid,
+    /// Comms' own handle on the vault: what reads its secret fields.
+    comms: ferrum_kernel::vault::Vault,
 }
 
 impl T {
@@ -426,7 +434,7 @@ impl T {
 
     async fn secret(&self, entity: &str, id: Uuid, field: &str) -> Option<String> {
         let mut tx = self.k.db.tenant_tx(self.tenant).await.unwrap();
-        let v = self.k.secret(&mut tx, self.tenant, entity, id, field).await.unwrap();
+        let v = self.comms.field(&self.k, &mut tx, self.tenant, entity, id, field).await.unwrap().map(|v| v.to_string());
         tx.commit().await.unwrap();
         v
     }
@@ -473,7 +481,7 @@ fn comms_end_to_end() {
 
 async fn scenario() {
     let fallback = TestMailer::default();
-    let k = fresh_kernel(fallback.clone()).await;
+    let (k, comms) = fresh_kernel(fallback.clone()).await;
     let tenant = k
         .create_tenant(NewTenant {
             slug: "acme".into(),
@@ -502,7 +510,7 @@ async fn scenario() {
         users.insert(email.split('@').next().unwrap().to_string(), k.load_ctx(tenant, id, None, "it".into()).await.unwrap());
     }
     let (mgr, alice, bob, carol, dave) = (&users["mgr"], &users["alice"], &users["bob"], &users["carol"], &users["dave"]);
-    let t = T { k: k.clone(), tenant };
+    let t = T { k: k.clone(), tenant, comms };
     let smtp = Smtp::default();
     let port = smtp.start().await;
     let imap = FakeImap::default();
@@ -1610,6 +1618,12 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     let names: Vec<&str> = heard.as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
     assert_eq!(names, ["Alice Rao"], "the meeting keeps the others' words");
     app_inbound(&t, &admin, &users, &smtp).await;
+    // Every secret field Comms read (accounts' passwords, mailboxes', feeds' and calendars' addresses, its signing key)
+    // it read with its own handle: none past the vault, which the platform notes (`ferrum task legacy_key`).
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let past: Vec<_> =
+        k.legacy_key(vec![]).await.unwrap().uses.into_iter().filter(|u| u.0.starts_with("reader:") && u.1.starts_with("src/")).map(|u| u.1).collect();
+    assert!(past.is_empty(), "read past the vault: {past:?}");
 }
 
 /// A calendar and contacts app's session (CalDAV and CardDAV under `/dav`): discovery, an event

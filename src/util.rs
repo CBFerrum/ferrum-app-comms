@@ -107,13 +107,15 @@ pub fn record_token(record: Uuid, secret: &str) -> String {
     format!("{}.{secret}", record.simple())
 }
 
-/// Checks a [`record_token`] against the record's secret field; the record on success.
+/// Checks a [`record_token`] against the record's secret field; the record on success. Only Comms' own fields: its handle
+/// reads no other app's (its callers: a calendar feed's `CalendarFeed.token`, an inbound address's
+/// `EmailAccount.inbound_token`, both declared by its package `comms`).
 pub async fn check_token(k: &Kernel, tenant: Uuid, entity: &str, field: &str, token: &str) -> Result<Option<Uuid>> {
     let Some((record, presented)) = token.split_once('.').and_then(|(r, t)| Some((Uuid::try_parse(r).ok()?, t))).filter(|(_, t)| t.len() >= 20) else {
         return Ok(None);
     };
     let mut tx = k.db.tenant_tx(tenant).await?;
-    let stored = k.secret(&mut tx, tenant, entity, record, field).await?;
+    let stored = crate::keys::field(k, &mut tx, tenant, entity, record, field).await?;
     tx.commit().await?;
     // Comparing digests keeps the comparison's timing independent of the secret.
     Ok(stored.filter(|s| Sha256::digest(s.as_bytes()) == Sha256::digest(presented.as_bytes())).map(|_| record))
@@ -128,10 +130,10 @@ pub async fn signing_key(k: &Kernel, tenant: Uuid) -> Result<Vec<u8>> {
         let settings: Option<Uuid> =
             sqlx::query_scalar("select id from e_comms_settings where tenant_id = $1 limit 1 for update").bind(tenant).fetch_optional(&mut *tx).await?;
         if let Some(id) = settings
-            && let Some(key) = k.secret(&mut tx, tenant, "CommsSettings", id, "signing_key").await?
+            && let Some(key) = crate::keys::field(k, &mut tx, tenant, "CommsSettings", id, "signing_key").await?
         {
             tx.commit().await?;
-            return hex::decode(key).map_err(Error::internal);
+            return hex::decode(key.as_str()).map_err(Error::internal);
         }
         let fresh = hex::encode(rand::random::<[u8; 32]>());
         let mut values = Doc::new();

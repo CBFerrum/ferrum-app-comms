@@ -71,8 +71,8 @@ pub async fn load(k: &Kernel, tx: &mut Tx, tenant: Uuid, account: Uuid) -> Resul
         .fetch_optional(&mut **tx)
         .await?;
     let Some(d) = row.map(util::obj) else { return Ok(None) };
-    let smtp_password = k.secret(tx, tenant, "EmailAccount", account, "smtp_password").await?;
-    let imap_password = k.secret(tx, tenant, "EmailAccount", account, "imap_password").await?;
+    let smtp_password = crate::keys::field(k, tx, tenant, "EmailAccount", account, "smtp_password").await?.map(|p| p.to_string());
+    let imap_password = crate::keys::field(k, tx, tenant, "EmailAccount", account, "imap_password").await?.map(|p| p.to_string());
     let server = |host: &str, port: &str, sec: &str, user: &str, password: Option<String>, default_port: i64, default_sec: Security| {
         s(&d, host).map(|h| Server {
             host: h.to_string(),

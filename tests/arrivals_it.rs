@@ -111,6 +111,16 @@ async fn serve(j: Arc<Jmap>) -> String {
     url
 }
 
+/// What opens the test's vault: the database password of `url`, with Argon2id kept cheap for tests.
+fn opener(url: &str) -> ferrum_kernel::vault::Opener {
+    ferrum_kernel::vault::Opener {
+        database_url: url.to_string(),
+        file: "/nonexistent/root.key".into(),
+        kdf: ferrum_kernel::vault::Kdf { m_kib: 64, t: 1, p: 1 },
+        ..Default::default()
+    }
+}
+
 #[test]
 fn new_mail_notifies_once_across_concurrent_rounds() {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
@@ -124,14 +134,17 @@ async fn scenario() {
     unsafe { std::env::set_var("FERRUM_MAIL_URL", &mail_url) };
 
     let url = std::env::var("FERRUM_COMMS_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_comms_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 12, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 12, ..Default::default() }).await.expect("connect");
+    sqlx::raw_sql("drop schema if exists vault cascade; drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    ferrum_kernel::vault::open(&db, opener(&url), false).await.expect("the vault");
     let mut packages = ferrum_domain::packages().expect("platform packages");
     packages.extend(ferrum_app_erp::packages().expect("ERP's packages"));
     packages.extend(ferrum_app_comms::packages().expect("app packages"));
     let mut hooks = HookRegistry::default();
     // As the server registers it: as itself, so that it takes its own vault handle.
     hooks.app("comms", &[], ferrum_app_comms::register);
+    let comms_packages: Vec<String> = ferrum_app_comms::packages().unwrap().iter().map(|p| p.name().to_string()).collect();
+    hooks.own("comms", &comms_packages);
     let settings = KernelSettings { secret_key: Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), ..Default::default() };
     let k = Kernel::boot(db, Catalog::from_packages(packages).expect("catalog"), hooks, settings, None).await.expect("boot");
     let tenant = k
