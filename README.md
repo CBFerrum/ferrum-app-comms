@@ -41,7 +41,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 | | |
 |---|---|
-| 📦 **Version** | 0.25.0 |
+| 📦 **Version** | 0.25.1 |
 | 🖥️ **Kind** | Its own interface: four shell apps at `/mail/`, `/chat/`, `/calendar/` and `/meet/` |
 | ➕ **What it adds** | 19 entities in one package, 3 roles, 2 reports, 4 launcher apps, 3 intents, a side panel, bar search, 10 kinds of notification, 2 public pages |
 | 🧱 **Depends on** | The platform's `core` and `contacts` packages. Nothing else is required |
@@ -613,6 +613,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 
 ### ✅ Recently shipped
 
+- [x] **0.25.1**: Rebuilt on Ferrum-Frontend 06bd1a2: its start through `mountApp`; the web app's `/app/meet/event/` links are no longer opened.
 - [x] **0.21.0**: A room's guest link is kept sealed in the platform's vault; mail and meeting addresses are settings.
 - [x] **0.20.1**: Calendar apps' reads recorded where a workspace records reads, and links through the operator's link host without an address of Comms' own.
 - [x] **0.20.0**: Mail for other apps. Received mail keeps its headers, apps send with Reply-To and threading and get the Message-ID, apps register inbound addresses, and mailboxes can be filed without a person.
