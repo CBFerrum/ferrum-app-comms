@@ -687,7 +687,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 
 ## 🚀 Install
 
-Ferrum Comms is a native app. It is compiled into the official Ferrum server image; a workspace administrator installs it from **Apps** (`/store/`). Self-hosters who build their own image enable the `comms` feature of the server. It needs Ferrum platform `>=0.3.2, <0.4`.
+Ferrum Comms is a native app. It is compiled into the official Ferrum server image; a workspace administrator installs it from **Apps** (`/store/`). Self-hosters who build their own image enable the `comms` feature of the server. It needs Ferrum platform `>=0.3.8, <0.4`.
 
 **First steps**
 
@@ -696,7 +696,7 @@ Ferrum Comms is a native app. It is compiled into the official Ferrum server ima
 3. For mail about records, add an **Email Account** (SMTP and IMAP or the inbound webhook) and mark a default outgoing account per company.
 4. For meetings, run a LiveKit server and set `FERRUM_MEET_URL`, `FERRUM_MEET_KEY` and `FERRUM_MEET_SECRET`. For recordings also run LiveKit Egress and set `FERRUM_MEET_RECORDINGS=true`.
 5. Give people the **Comms User** role, and the people who manage accounts, rooms and mailboxes **Comms Manager**. Give moderators **Chat Admin**.
-6. Passwords and tokens are sealed secrets, so the server needs `FERRUM_SECRET_KEY`.
+6. Passwords and tokens are sealed secrets, kept as Comms' in the platform's vault and read only by Comms, so the server needs its vault open.
 
 Everything Comms adds is also available to AI agents over Ferrum's MCP server, within each person's permissions.
 
