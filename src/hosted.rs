@@ -45,21 +45,63 @@ pub(crate) fn server_url() -> Option<String> {
     setting("FERRUM_MAIL_URL").map(|u| u.trim_end_matches('/').to_string())
 }
 
-/// The mail server's address, for people's own mailbox passwords: while the administrator's password is the vault's, only
-/// when its rule names the address's host (the environment's address goes with the environment's password; with no
-/// administrator's password anywhere, the address as it is, as before).
-pub(crate) async fn mailbox_url(k: &Kernel) -> Result<Option<String>> {
-    let Some(url) = server_url() else { return Ok(None) };
+/// What a person is told when the mail server's address moved off the host their mailbox's password was set for.
+pub(crate) const ADDRESS_CHANGED: &str = "The mail server's address has changed, so your mailbox's password is being set again. Try again in a few minutes.";
+
+/// Whether the kept password of `mailbox` may go to `url`, the mail server's address in force: only to the host it was
+/// set for (any port). A mailbox from before 0.22 has no host recorded: it takes the host in force only where a changed
+/// settings row could not have given it (the administrator's password is the environment's, whose address the table
+/// cannot replace, or the vault's names this host). Otherwise the kept password is forgotten, never sent, the next sync
+/// sets a new one through the administrator, and the person is told [`ADDRESS_CHANGED`].
+pub(crate) async fn password_goes_to(k: &Kernel, tenant: Uuid, mailbox: Uuid, url: &str) -> Result<()> {
+    let host = keys::host(url).unwrap_or_default();
+    let mut tx = k.db.tenant_tx(tenant).await?;
+    let kept: Option<String> = sqlx::query_scalar("select host from comms_mailbox_host where tenant_id = $1 and mailbox_id = $2")
+        .bind(tenant)
+        .bind(mailbox)
+        .fetch_optional(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    let safe = match kept {
+        Some(kept) => kept == host,
+        None if trusted(k, &host).await? => {
+            let mut tx = k.db.tenant_tx(tenant).await?;
+            record_host(&mut tx, tenant, mailbox, &host).await?;
+            tx.commit().await?;
+            true
+        }
+        None => false,
+    };
+    if safe {
+        return Ok(());
+    }
+    tracing::warn!(%tenant, %mailbox, host, "a mailbox's password was kept for another host than the mail server's address: it is set again");
+    let ctx = Ctx::system(tenant, k.registry.schema(tenant).await?);
+    k.update(&ctx, "HostedMailbox", mailbox, obj(json!({"secret": null})), None).await?;
+    soon(tenant);
+    Err(Error::Unavailable(ADDRESS_CHANGED.into()))
+}
+
+/// Whether the address in force on `host` is one a changed settings row could not have given.
+async fn trusted(k: &Kernel, host: &str) -> Result<bool> {
     if keys::MAIL_ADMIN.in_environment().is_some() {
-        return Ok(Some(url));
+        return Ok(true);
     }
-    let host = keys::host(&url).unwrap_or_default();
-    match keys::MAIL_ADMIN.hosts(k).await? {
-        Some(hosts) if keys::names(&hosts, &host) => Ok(Some(url)),
-        Some(_) => Err(moved(&host)),
-        // ponytail: nothing to tie it to without the administrator's secret in the vault; as before.
-        None => Ok(Some(url)),
-    }
+    Ok(keys::MAIL_ADMIN.hosts(k).await?.is_some_and(|hosts| keys::names(&hosts, host)))
+}
+
+/// Records `host` as the one `mailbox`'s password was set for.
+async fn record_host(tx: &mut ferrum_kernel::Tx, tenant: Uuid, mailbox: Uuid, host: &str) -> Result<()> {
+    sqlx::query(
+        "insert into comms_mailbox_host (tenant_id, mailbox_id, host) values ($1, $2, $3) \
+         on conflict (tenant_id, mailbox_id) do update set host = excluded.host, recorded_at = now()",
+    )
+    .bind(tenant)
+    .bind(mailbox)
+    .bind(host)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 fn moved(host: &str) -> Error {
@@ -582,6 +624,18 @@ impl DocHook for MailboxHook {
     }
     async fn before_delete(&self, hc: &mut HookCtx<'_>, _doc: &Doc) -> Result<()> {
         if hc.ctx.is_system { Ok(()) } else { Err(Error::Forbidden(KEPT_BY_FERRUM.into())) }
+    }
+    /// A password newly kept (none before) was set for the mail server at its address in force, which the sync reached
+    /// with the administrator's password, bound to its host: that host is recorded with it, in the same transaction.
+    async fn after_save(&self, hc: &mut HookCtx<'_>, doc: &Doc, old: Option<&Doc>) -> Result<()> {
+        let set = |d: Option<&Doc>| d.and_then(|d| d.get("secret")).is_some_and(|v| *v == Value::Bool(true));
+        if !set(Some(doc)) || set(old) {
+            return Ok(());
+        }
+        let (Some(id), Some(host)) = (doc.get("id").and_then(Value::as_str).and_then(|i| i.parse().ok()), server_url().and_then(|u| keys::host(&u))) else {
+            return Ok(());
+        };
+        record_host(hc.tx, hc.ctx.tenant, id, &host).await
     }
 }
 
