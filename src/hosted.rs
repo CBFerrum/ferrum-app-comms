@@ -6,7 +6,7 @@
 //! (`HostedMailbox.secret`) to reach the mailbox for its owner.
 //!
 //! The operator turns it on with the settings `comms.mail_url` (`FERRUM_MAIL_URL`: Stalwart's HTTP address as this
-//! server reaches it) and `comms.mail_admin` (`FERRUM_MAIL_ADMIN`: one of its administrators, `admin` unless set), and
+//! server reaches it) and `comms.mail_admin` (`FERRUM_MAIL_ADMIN`: one of its administrators), and
 //! that administrator's password as Comms' secret `mail.admin_secret` in the installation's vault (or
 //! `FERRUM_MAIL_ADMIN_SECRET`, which wins while set; keys.rs). The service `mail` ([`Service`]) writes that password into
 //! the file Stalwart takes its fallback administrator's from as it starts, made by the vault at the first render. The
@@ -45,12 +45,6 @@ fn setting(name: &str) -> Option<String> {
 /// The mail server's address, when the operator set one.
 pub(crate) fn server_url() -> Option<String> {
     setting("FERRUM_MAIL_URL").map(|u| u.trim_end_matches('/').to_string())
-}
-
-/// The administrator Comms signs in to the mail server as: `comms.mail_admin`, else `admin`, the fallback administrator
-/// whose password the service `mail` renders.
-fn admin_user() -> String {
-    setting("FERRUM_MAIL_ADMIN").unwrap_or_else(|| "admin".into())
 }
 
 /// What a person is told when the mail server's address moved off the host their mailbox's password was set for.
@@ -119,9 +113,9 @@ fn moved(host: &str) -> Error {
     ))
 }
 
-/// Whether hosted mail is set up: an address, and the administrator's password somewhere.
+/// Whether hosted mail is set up: an address, an administrator, and that administrator's password somewhere.
 async fn configured(k: &Kernel) -> Result<bool> {
-    if server_url().is_none() {
+    if server_url().is_none() || setting("FERRUM_MAIL_ADMIN").is_none() {
         return Ok(false);
     }
     Ok(keys::MAIL_ADMIN.in_environment().is_some() || keys::MAIL_ADMIN.hosts(k).await?.is_some())
@@ -169,11 +163,11 @@ impl Admin {
     pub(crate) async fn connect(k: &Kernel) -> Result<Admin> {
         let not_set_up = || {
             Error::Unavailable(
-                "hosted mail is not set up on this server (comms.mail_url, and the secret mail.admin_secret, which the service mail makes, or FERRUM_MAIL_ADMIN_SECRET)"
+                "hosted mail is not set up on this server (comms.mail_url, comms.mail_admin, and the secret mail.admin_secret, which the service mail makes, or FERRUM_MAIL_ADMIN_SECRET)"
                     .into(),
             )
         };
-        let (url, user) = (server_url().ok_or_else(not_set_up)?, admin_user());
+        let (url, user) = server_url().zip(setting("FERRUM_MAIL_ADMIN")).ok_or_else(not_set_up)?;
         let host = keys::host(&url).unwrap_or_default();
         let auth = match keys::MAIL_ADMIN.environment(k, std::slice::from_ref(&host)).await {
             Some(password) => basic(&user, &password),
@@ -657,7 +651,7 @@ pub(crate) async fn admin_account(k: &Kernel) -> Result<String> {
 /// The mail server's fallback administrator's password, written as Stalwart starts (`ferrum task render service:mail
 /// to:<dir>`): the file `admin-secret`, the password alone, which Stalwart's configuration names
 /// (`authentication.fallback-admin.user = "admin"`, `authentication.fallback-admin.secret =
-/// "%{file:/run/mail-files/admin-secret}%"`). `mail.admin_secret` is made by the vault at the first render where it holds
+/// "%{file:/run/mail-files/admin-secret}%"`; `comms.mail_admin` is then `admin`). `mail.admin_secret` is made by the vault at the first render where it holds
 /// none, bound to the host of `comms.mail_url`, or, where it holds one that is no service's yet (Comms 0.22 copied it from
 /// `FERRUM_MAIL_ADMIN_SECRET`, or a person set it: the password the mail server already takes), kept as it is with the
 /// hosts it had (keys.rs, `made_or_kept`). One value: after a rotation the mail server takes the new one at its next

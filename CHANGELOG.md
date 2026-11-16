@@ -12,8 +12,8 @@ rotation's overlap of a day lasts); `mail` writes `admin-secret`, the mail serve
 alone. `ferrum task render service:meet to:<dir>` makes the secret at the first render where the vault holds none (once,
 however many render at once); where Comms 0.22 copied it from the environment it is kept as it is. From then on it is the
 service's: `ferrum task vault_rotate level:service service:meet` (or `mail`) rotates it. Comms signs LiveKit's tokens
-with the version LiveKit knows (the one before while the overlap lasts) and signs in to the mail server as
-`comms.mail_admin`, now `admin` unless set. The variables still win while they are set.
+with the version LiveKit knows (the one before while the overlap lasts); for the mail server, set `comms.mail_admin` to
+`admin`, the fallback administrator. The variables still win while they are set.
 
 **Two settings for LiveKit's file**: `comms.meet_node_ip` (`FERRUM_MEET_NODE_IP`) and `comms.meet_external_ip`
 (`FERRUM_MEET_EXTERNAL_IP`, default `true`).

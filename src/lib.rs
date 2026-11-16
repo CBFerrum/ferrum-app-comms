@@ -215,7 +215,7 @@ mod tests {
             ]
         );
         let defaults: Vec<_> = m.operator_settings.iter().filter(|s| !s.default.is_empty()).map(|s| (s.key.as_str(), s.default.as_str())).collect();
-        assert_eq!(defaults, [("meet_recordings", "false"), ("meet_external_ip", "true"), ("mail_admin", "admin")]);
+        assert_eq!(defaults, [("meet_recordings", "false"), ("meet_external_ip", "true")]);
         assert_eq!(super::keys::host("wss://Meet.Example.com:7880/rtc").as_deref(), Some("meet.example.com"));
         assert_eq!(super::keys::host("http://admin@[::1]:8080").as_deref(), Some("::1"));
     }

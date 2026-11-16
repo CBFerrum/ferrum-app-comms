@@ -290,9 +290,10 @@ async fn scenario(logs: Logs) {
     let mail_dir = scratch("mail");
     companion::write(&mail_dir, &a).expect("write");
     assert_eq!(mode(&mail_dir.join("admin-secret")), 0o600);
-    // The mail server started on it: Comms signs in as its fallback administrator, `admin` unless set.
+    // The mail server started on it: Comms signs in as its fallback administrator.
     mail.start_on(&mail_dir.join("admin-secret"));
-    resolved(&[("FERRUM_MAIL_URL", Some(mail_url.clone()))]);
+    let admin_name = ("FERRUM_MAIL_ADMIN", Some("admin".to_string()));
+    resolved(&[("FERRUM_MAIL_URL", Some(mail_url.clone())), admin_name.clone()]);
     assert_eq!(ferrum_app_comms::mail_admin_account(&k).await.expect("signed in"), "admin-account");
     // Rotated: one value, taken at the mail server's next start.
     k.rotate_companion("mail", &at).await.expect("rotate");
@@ -305,7 +306,7 @@ async fn scenario(logs: Logs) {
     mail.start_on(&mail_dir.join("admin-secret"));
     assert_eq!(ferrum_app_comms::mail_admin_account(&k).await.expect("signed in"), "admin-account", "restarted at once");
     // Its host is the one it was made for: an address elsewhere does not take it there.
-    resolved(&[("FERRUM_MAIL_URL", Some(format!("http://localhost:{}", mail.port)))]);
+    resolved(&[("FERRUM_MAIL_URL", Some(format!("http://localhost:{}", mail.port))), admin_name.clone()]);
     let e = ferrum_app_comms::mail_admin_account(&k).await.unwrap_err().to_string();
     assert!(e.contains("may not be sent to localhost"), "{e}");
     errors.push(e);
@@ -315,9 +316,9 @@ async fn scenario(logs: Logs) {
     let typed = "the-administrators-password-typed-for-both-0123";
     secrets.push(typed.into());
     mail.accept(typed);
-    resolved(&[("FERRUM_MAIL_URL", Some(mail_url.clone())), ("FERRUM_MAIL_ADMIN_SECRET", Some(typed.into()))]);
+    resolved(&[("FERRUM_MAIL_URL", Some(mail_url.clone())), admin_name.clone(), ("FERRUM_MAIL_ADMIN_SECRET", Some(typed.into()))]);
     assert_eq!(ferrum_app_comms::mail_admin_account(&k).await.expect("signed in with the environment's"), "admin-account");
-    resolved(&[("FERRUM_MAIL_URL", Some(mail_url.clone()))]);
+    resolved(&[("FERRUM_MAIL_URL", Some(mail_url.clone())), admin_name.clone()]);
     let kept = k.render("mail", &none).await.expect("kept: nothing is made, so the address is not needed");
     assert!(file(&kept, "admin-secret") == typed.as_bytes(), "the password the mail server already takes");
     assert_eq!(events(&k, "manage", "mail.admin_secret").await.len(), 1);

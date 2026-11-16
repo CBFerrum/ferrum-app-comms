@@ -49,10 +49,9 @@ operator_settings:
     doc: Stalwart's HTTP address as the server reaches it, for hosted mailboxes.
   - key: mail_admin
     env: FERRUM_MAIL_ADMIN
-    default: admin
     applies: live
     sends: FERRUM_MAIL_ADMIN_SECRET
-    doc: A Stalwart administrator, admin (the fallback administrator the service mail gives its password) unless set. Its password is Comms' secret mail.admin_secret.
+    doc: A Stalwart administrator (admin, the fallback administrator, where the service mail renders its password). Its password is Comms' secret mail.admin_secret.
   - key: mail_host
     env: FERRUM_MAIL_HOST
     applies: live
