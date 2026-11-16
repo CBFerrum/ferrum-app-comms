@@ -3059,11 +3059,11 @@ async fn app_inbound(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>, smtp: &Sm
         ("cc", "boss@cust.test"),
         ("delivered-to", "support@acme.test"),
         ("return-path", "cu@cust.test"),
-        ("x-ferrum-helpdesk", "TKT-1"),
         ("x-ferrum-auth", "verified"),
     ] {
         assert!(got.headers.get(name).is_some_and(|v| v.contains(wanted)), "{name}: {:?}", got.headers);
     }
+    assert!(!got.headers.contains_key("x-ferrum-helpdesk"), "an app's marker the sender wrote is not Mail's word: {:?}", got.headers);
     assert!(got.headers["authentication-results"].contains("dkim=pass"), "kept on one line: {:?}", got.headers["authentication-results"]);
     assert!(got.headers.values().all(|v| !v.contains(['\r', '\n', '\t'])), "no line breaks in any value");
     let stored = t.comm(comm).await;
@@ -3086,6 +3086,11 @@ async fn app_inbound(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>, smtp: &Sm
     let forged = "From: x@cust.test\r\nTo: support@acme.test\r\nMessage-ID: <forged@cust.test>\r\nAuthentication-Results: mx.acme.test; dkim=fail header.d=cust.test\r\n\
         Authentication-Results: evil.test; dkim=pass header.d=cust.test\r\nSubject: hi\r\n\r\nhi\r\n";
     assert_eq!(t.comm(uid(&post(forged).await)).await["headers"]["x-ferrum-auth"], json!("unverified"));
+    // Mail's own headers are Mail's to write: a sender who writes Mail's verdict, or an app's marker, has it not kept.
+    let claimed = "Authentication-Results: mx.acme.test; dmarc=fail header.from=cust.test\r\nFrom: x@cust.test\r\nTo: support@acme.test\r\n\
+        Message-ID: <claimed@cust.test>\r\nSubject: hi\r\nX-Ferrum-Auth: verified\r\nX-Ferrum-Helpdesk: TKT-9\r\n\r\nhi\r\n";
+    let kept = t.comm(uid(&post(claimed).await)).await["headers"].clone();
+    assert_eq!((kept["x-ferrum-auth"].clone(), kept.get("x-ferrum-helpdesk")), (json!("unverified"), None), "{kept}");
 
     // ───────────── a reply with In-Reply-To is delivered with the same thread ─────────────
     let reply = "From: cu@cust.test\r\nTo: support+k3j9x2@acme.test\r\nSubject: Re: Printer on fire\r\nMessage-ID: <m2@cust.test>\r\nIn-Reply-To: <m1@cust.test>\r\n\

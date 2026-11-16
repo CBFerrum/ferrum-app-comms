@@ -342,10 +342,11 @@ mailbox) has `Communication.headers`: an object of lower-case names to one-line,
 characters each and 12,000 together, with only the ones apps use: `message-id`, `in-reply-to`, `references`, `reply-to`,
 `to`, `cc`, `delivered-to` (and `x-original-to`, `envelope-to`), `auto-submitted`, `precedence`, `list-id`,
 `list-unsubscribe`, `return-path`, `x-autoreply`, `x-autorespond`, `x-auto-response-suppress`, `x-failed-recipients`,
-`content-type`, any `x-ferrum-*` marker an app put on mail it sent, `authentication-results` (the receiving
-server's own, the topmost) and `x-ferrum-auth`: `verified` when that header says DMARC passed for the From domain or an
-aligned DKIM signature did (the check the calendar uses for invitations), else `unverified`, also when there is no such
-header. A header the message lacked has no entry. Mail stored before 0.20 has no `headers`, and reads as before. Erasing
+`content-type`, `authentication-results` (the receiving server's own, the topmost) and Mail's verdict `x-ferrum-auth`:
+`verified` when that header says DMARC passed for the From domain or an aligned DKIM signature did (the check the
+calendar uses for invitations), else `unverified`, also when there is no such header. The verdict is always there,
+whatever the message said; no `x-ferrum-` name is ever taken from a message, so an app may read those as Mail's word.
+A header the message lacked has no entry. Erasing
 a person by their address as sender empties `headers` with the rest of their message. The detail endpoint returns
 `headers`; the list does not.
 
