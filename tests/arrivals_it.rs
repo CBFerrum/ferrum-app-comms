@@ -178,6 +178,16 @@ async fn scenario() {
         .await
         .expect("mailbox");
     let mailbox: Uuid = mailbox["id"].as_str().unwrap().parse().unwrap();
+    // The mail server's administrator's password, as the operator (or the service mail) keeps it: bound to its host.
+    let admin_secret = |hosts: &[&str]| {
+        let (k, vault, hosts) = (k.clone(), comms.clone(), hosts.iter().map(|h| h.to_string()).collect::<Vec<_>>());
+        async move {
+            let rule = ferrum_kernel::vault::Rule { hosts, ..Default::default() };
+            let value = ferrum_kernel::vault::New::Value(ferrum_kernel::vault::Zeroizing::new(b"admin-secret".to_vec()));
+            vault.set(&k, ferrum_kernel::vault::Scope::Installation, "mail.admin_secret", value, rule).await.unwrap();
+        }
+    };
+    admin_secret(&["127.0.0.1"]).await;
 
     // Read as the system (the tables have row-level security).
     let count = |sql: &'static str| {
@@ -305,44 +315,9 @@ async fn scenario() {
     // The owner turns it off again: nothing more.
     site(me.clone(), "PUT", "mail/filing", json!({"apps_may_file": false})).await.unwrap();
 
-    // ───────────── a mailbox's password goes only to the host it was set for ─────────────
-    let host_of = || {
-        let k = k.clone();
-        async move {
-            let mut tx = k.db.system_tx().await.unwrap();
-            sqlx::query_scalar::<_, String>("select host from comms_mailbox_host where mailbox_id = $1").bind(mailbox).fetch_optional(&mut *tx).await.unwrap()
-        }
-    };
-    let kept = || {
-        let k = k.clone();
-        async move {
-            let mut tx = k.db.system_tx().await.unwrap();
-            sqlx::query_scalar::<_, bool>("select exists (select 1 from record_secret where record_id = $1 and field = 'secret')")
-                .bind(mailbox)
-                .fetch_one(&mut *tx)
-                .await
-                .unwrap()
-        }
-    };
-    let forget_host = || {
-        let k = k.clone();
-        async move {
-            let mut tx = k.db.system_tx().await.unwrap();
-            sqlx::query("delete from comms_mailbox_host").execute(&mut *tx).await.unwrap();
-            tx.commit().await.unwrap();
-        }
-    };
-    let set_password = || {
-        let (k, sys) = (k.clone(), sys.clone());
-        async move { k.update(&sys, "HostedMailbox", mailbox, ferrum_app_comms_test_obj(json!({"secret": "pw"})), None).await.unwrap() }
-    };
-    // What the server resolved: the mail server's address (from the settings table) and the administrator's password in
-    // the environment, if any.
-    let resolved = |url: &str, admin: Option<&str>| {
-        ferrum_kernel::env::set(
-            [("FERRUM_MAIL_URL".to_string(), Some(url.to_string())), ("FERRUM_MAIL_ADMIN_SECRET".to_string(), admin.map(str::to_string))].into(),
-        )
-    };
+    // ───────────── people's passwords go only to the mail server the vault knows ─────────────
+    // What the server resolved: the mail server's address (from the settings table).
+    let resolved = |url: &str| ferrum_kernel::env::set([("FERRUM_MAIL_URL".to_string(), Some(url.to_string()))].into());
     // Whether a round of upkeep sent the mailbox's password to the mail server.
     let sent = || {
         let (k, jmap) = (k.clone(), jmap.clone());
@@ -352,55 +327,22 @@ async fn scenario() {
             jmap.requests.load(Ordering::SeqCst) > before
         }
     };
-    assert_eq!(host_of().await.as_deref(), Some("127.0.0.1"), "recorded as the password was set");
-    // The same host on another port: still its host.
+    // The same host on another port: the same server.
     let other_port = serve(jmap.clone()).await;
-    resolved(&other_port, None);
+    resolved(&other_port);
     assert!(sent().await, "the same host, another port");
-    // A stored address changed to another host: no mailbox's password goes there; the person is told.
+    // A stored address changed to another host: no password goes there, and the person is told why.
     let elsewhere = other_port.replace("127.0.0.1", "localhost");
-    resolved(&elsewhere, None);
+    resolved(&elsewhere);
     assert!(!sent().await, "nothing sent to another host");
-    assert!(!kept().await, "the password kept for the other host is forgotten, to be set again");
     let told = format!("{:?}", site(me.clone(), "GET", "mail", Value::Null).await.map(|r| r.status));
-    assert!(told.contains("address has changed"), "{told}");
-    // Setting the password again (as the sync does, through the administrator) records the address in force: it works.
-    set_password().await;
-    assert_eq!(host_of().await.as_deref(), Some("localhost"));
-    assert!(sent().await, "the password set again goes to its own host");
-
-    // A mailbox from before this release has no host recorded.
-    resolved(&other_port, None);
-    set_password().await;
-    // Nothing a changed row could not have given: not taken over, not sent.
-    forget_host().await;
-    assert!(!sent().await, "an old row, no administrator's password anywhere");
-    assert_eq!((host_of().await, kept().await), (None, false));
-    // The administrator's password in the environment: the address is the environment's, taken over.
-    set_password().await;
-    forget_host().await;
-    resolved(&other_port, Some("admin-secret"));
-    assert!(sent().await, "taken over with the environment's administrator");
-    assert_eq!(host_of().await.as_deref(), Some("127.0.0.1"));
-    // The administrator's password in the vault: taken over only where its rule names the host.
-    forget_host().await;
-    resolved(&other_port, None);
-    let admin = |hosts: &[&str]| {
-        let (k, vault, hosts) = (k.clone(), comms.clone(), hosts.iter().map(|h| h.to_string()).collect::<Vec<_>>());
-        async move {
-            let rule = ferrum_kernel::vault::Rule { hosts, ..Default::default() };
-            let value = ferrum_kernel::vault::New::Value(ferrum_kernel::vault::Zeroizing::new(b"admin-secret".to_vec()));
-            vault.set(&k, ferrum_kernel::vault::Scope::Installation, "mail.admin_secret", value, rule).await.unwrap();
-        }
-    };
-    admin(&["mail.example.test"]).await;
-    assert!(!sent().await, "the vault's administrator names another host");
-    assert!(!kept().await);
-    set_password().await;
-    forget_host().await;
-    admin(&["127.0.0.1"]).await;
-    assert!(sent().await, "the vault's administrator names this host");
-    assert_eq!(host_of().await.as_deref(), Some("127.0.0.1"));
+    assert!(told.contains("may not be sent to localhost"), "{told}");
+    // The operator names that host in the rule (the mail server moved there): passwords go there.
+    admin_secret(&["127.0.0.1", "localhost"]).await;
+    assert!(sent().await, "the vault's rule names this host");
+    // No administrator's password in the vault: no mail server it knows, none goes anywhere.
+    comms.remove(&k, ferrum_kernel::vault::Scope::Installation, "mail.admin_secret").await.unwrap();
+    assert!(!sent().await, "nothing sent without the vault's mail server");
     ferrum_kernel::env::set(Default::default());
 }
 

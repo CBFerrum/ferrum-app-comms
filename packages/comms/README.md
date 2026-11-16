@@ -53,10 +53,12 @@ invitations).
 ## Hosted mail
 
 With a [Stalwart](https://stalw.art) mail server the operator runs, the workspace's people get
-real mailboxes. The operator sets `FERRUM_MAIL_URL` (Stalwart's HTTP address as Ferrum reaches it,
-e.g. `http://mail:8080`), `FERRUM_MAIL_ADMIN` and `FERRUM_MAIL_ADMIN_SECRET` (one of its
-administrators; the address and the name are read as the platform's settings, the password from the
-environment only); a Comms Manager sets `mail_domain` in Communication Settings (e.g. `acme.com`).
+real mailboxes. The operator sets `comms.mail_url` (`FERRUM_MAIL_URL`: Stalwart's HTTP address as
+Ferrum reaches it, e.g. `http://mail:8080`) and `comms.mail_admin` (`FERRUM_MAIL_ADMIN`: one of its
+administrators), read as the platform's settings, and that administrator's password as Comms' secret
+`mail.admin_secret` in the vault (made by the service `mail`, or set by the operator), which goes, as
+people's mailbox passwords do, only to the hosts its rule names; a Comms Manager sets `mail_domain`
+in Communication Settings (e.g. `acme.com`).
 Then every active person whose email is in that domain has a mailbox, kept in step every ten
 minutes or at once with the action `POST /api/v1/CommsSettings/{id}/actions/sync_mail`
 (`{domain, created, updated, locked, failed: [{email, step, error}]}`):
@@ -222,10 +224,10 @@ organizer and colleagues who have not declined.
 ### Meetings — `/api/app/comms/meet/...`
 
 Video meetings run on a [LiveKit](https://livekit.io) server the operator sets up beside Ferrum
-(`FERRUM_MEET_URL`: LiveKit as browsers reach it, `wss://…`; `FERRUM_MEET_KEY` and
-`FERRUM_MEET_SECRET`: an API key and its secret that LiveKit was given). The addresses are read as
-the platform's settings (the environment, else the settings table); the key and the secret from the
-environment only. Comms decides who may join
+(`comms.meet_url`, `FERRUM_MEET_URL`: LiveKit as browsers reach it, `wss://…`, read as the platform's
+setting) with an API key and its secret in Comms' vault: `meet.secret` made by the service `meet`,
+which writes it into LiveKit's file, or `meet.key` and `meet.secret` as the operator set them for
+LiveKit's hosts. Comms decides who may join
 and signs LiveKit access tokens; sound and pictures never pass through Ferrum. A meeting is
 `{kind}/{id}`:
 

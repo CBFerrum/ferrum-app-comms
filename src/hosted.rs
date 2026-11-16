@@ -7,8 +7,8 @@
 //!
 //! The operator turns it on with the settings `comms.mail_url` (`FERRUM_MAIL_URL`: Stalwart's HTTP address as this
 //! server reaches it) and `comms.mail_admin` (`FERRUM_MAIL_ADMIN`: one of its administrators), and
-//! that administrator's password as Comms' secret `mail.admin_secret` in the installation's vault (or
-//! `FERRUM_MAIL_ADMIN_SECRET`, which wins while set; keys.rs). The service `mail` ([`Service`]) writes that password into
+//! that administrator's password as Comms' secret `mail.admin_secret` in the installation's vault (keys.rs). The service
+//! `mail` ([`Service`]) writes that password into
 //! the file Stalwart takes its fallback administrator's from as it starts, made by the vault at the first render. The
 //! vault puts the password only on requests to the hosts its rule names, and people's own
 //! mailbox passwords go to the mail server's address only while it is one of those hosts, so a changed address takes
@@ -47,63 +47,12 @@ pub(crate) fn server_url() -> Option<String> {
     setting("FERRUM_MAIL_URL").map(|u| u.trim_end_matches('/').to_string())
 }
 
-/// What a person is told when the mail server's address moved off the host their mailbox's password was set for.
-pub(crate) const ADDRESS_CHANGED: &str = "The mail server's address has changed, so your mailbox's password is being set again. Try again in a few minutes.";
-
-/// Whether the kept password of `mailbox` may go to `url`, the mail server's address in force: only to the host it was
-/// set for (any port). A mailbox from before 0.22 has no host recorded: it takes the host in force only where a changed
-/// settings row could not have given it (the administrator's password is the environment's, whose address the table
-/// cannot replace, or the vault's names this host). Otherwise the kept password is forgotten, never sent, the next sync
-/// sets a new one through the administrator, and the person is told [`ADDRESS_CHANGED`].
-pub(crate) async fn password_goes_to(k: &Kernel, tenant: Uuid, mailbox: Uuid, url: &str) -> Result<()> {
+/// Whether people's kept passwords may go to `url`, the mail server's address in force: only while the rule of the
+/// administrator's password in the vault names its host (any port), the mail server the vault knows, so that a changed
+/// settings row takes no password elsewhere.
+pub(crate) async fn password_goes_to(k: &Kernel, url: &str) -> Result<()> {
     let host = keys::host(url).unwrap_or_default();
-    let mut tx = k.db.tenant_tx(tenant).await?;
-    let kept: Option<String> = sqlx::query_scalar("select host from comms_mailbox_host where tenant_id = $1 and mailbox_id = $2")
-        .bind(tenant)
-        .bind(mailbox)
-        .fetch_optional(&mut *tx)
-        .await?;
-    tx.commit().await?;
-    let safe = match kept {
-        Some(kept) => kept == host,
-        None if trusted(k, &host).await? => {
-            let mut tx = k.db.tenant_tx(tenant).await?;
-            record_host(&mut tx, tenant, mailbox, &host).await?;
-            tx.commit().await?;
-            true
-        }
-        None => false,
-    };
-    if safe {
-        return Ok(());
-    }
-    tracing::warn!(%tenant, %mailbox, host, "a mailbox's password was kept for another host than the mail server's address: it is set again");
-    let ctx = Ctx::system(tenant, k.registry.schema(tenant).await?);
-    k.update(&ctx, "HostedMailbox", mailbox, obj(json!({"secret": null})), None).await?;
-    soon(tenant);
-    Err(Error::Unavailable(ADDRESS_CHANGED.into()))
-}
-
-/// Whether the address in force on `host` is one a changed settings row could not have given.
-async fn trusted(k: &Kernel, host: &str) -> Result<bool> {
-    if keys::MAIL_ADMIN.in_environment().is_some() {
-        return Ok(true);
-    }
-    Ok(keys::MAIL_ADMIN.hosts(k).await?.is_some_and(|hosts| keys::names(&hosts, host)))
-}
-
-/// Records `host` as the one `mailbox`'s password was set for.
-async fn record_host(tx: &mut ferrum_kernel::Tx, tenant: Uuid, mailbox: Uuid, host: &str) -> Result<()> {
-    sqlx::query(
-        "insert into comms_mailbox_host (tenant_id, mailbox_id, host) values ($1, $2, $3) \
-         on conflict (tenant_id, mailbox_id) do update set host = excluded.host, recorded_at = now()",
-    )
-    .bind(tenant)
-    .bind(mailbox)
-    .bind(host)
-    .execute(&mut **tx)
-    .await?;
-    Ok(())
+    if keys::MAIL_ADMIN.hosts(k).await?.is_some_and(|hosts| keys::names(&hosts, &host)) { Ok(()) } else { Err(moved(&host)) }
 }
 
 fn moved(host: &str) -> Error {
@@ -118,7 +67,7 @@ async fn configured(k: &Kernel) -> Result<bool> {
     if server_url().is_none() || setting("FERRUM_MAIL_ADMIN").is_none() {
         return Ok(false);
     }
-    Ok(keys::MAIL_ADMIN.in_environment().is_some() || keys::MAIL_ADMIN.hosts(k).await?.is_some())
+    Ok(keys::MAIL_ADMIN.hosts(k).await?.is_some())
 }
 
 pub(crate) fn basic(user: &str, password: &str) -> String {
@@ -163,25 +112,19 @@ impl Admin {
     pub(crate) async fn connect(k: &Kernel) -> Result<Admin> {
         let not_set_up = || {
             Error::Unavailable(
-                "hosted mail is not set up on this server (comms.mail_url, comms.mail_admin, and the secret mail.admin_secret, which the service mail makes, or FERRUM_MAIL_ADMIN_SECRET)"
+                "hosted mail is not set up on this server (comms.mail_url, comms.mail_admin, and the secret mail.admin_secret, which the service mail makes)"
                     .into(),
             )
         };
         let (url, user) = server_url().zip(setting("FERRUM_MAIL_ADMIN")).ok_or_else(not_set_up)?;
         let host = keys::host(&url).unwrap_or_default();
-        let auth = match keys::MAIL_ADMIN.environment(k, std::slice::from_ref(&host)).await {
-            Some(password) => basic(&user, &password),
-            None => {
-                // The vault puts the password on a request to this host, or refuses: one for the whole session.
-                let (_, parsed) = k.vetted_client(&url, true, Duration::from_secs(30), "Ferrum Comms").await?;
-                let carried = keys::vault(k)?.carry(k, Scope::Installation, keys::MAIL_ADMIN.name, &parsed, &Carry::Basic(user)).await;
-                match carried {
-                    Ok((_, header)) => header.to_string(),
-                    Err(Error::NotFound(_)) => return Err(not_set_up()),
-                    Err(Error::Forbidden(_)) => return Err(moved(&host)),
-                    Err(e) => return Err(keys::operator_unavailable(e)),
-                }
-            }
+        // The vault puts the password on a request to this host, or refuses: one for the whole session.
+        let (_, parsed) = k.vetted_client(&url, true, Duration::from_secs(30), "Ferrum Comms").await?;
+        let auth = match keys::vault(k)?.carry(k, Scope::Installation, keys::MAIL_ADMIN.name, &parsed, &Carry::Basic(user)).await {
+            Ok((_, header)) => header.to_string(),
+            Err(Error::NotFound(_)) => return Err(not_set_up()),
+            Err(Error::Forbidden(_)) => return Err(moved(&host)),
+            Err(e) => return Err(keys::operator_unavailable(e)),
         };
         let mut admin = Admin { url, auth, account: String::new() };
         let session = admin.request(k, "/jmap/session", None).await?;
@@ -627,18 +570,6 @@ impl DocHook for MailboxHook {
     async fn before_delete(&self, hc: &mut HookCtx<'_>, _doc: &Doc) -> Result<()> {
         if hc.ctx.is_system { Ok(()) } else { Err(Error::Forbidden(KEPT_BY_FERRUM.into())) }
     }
-    /// A password newly kept (none before) was set for the mail server at its address in force, which the sync reached
-    /// with the administrator's password, bound to its host: that host is recorded with it, in the same transaction.
-    async fn after_save(&self, hc: &mut HookCtx<'_>, doc: &Doc, old: Option<&Doc>) -> Result<()> {
-        let set = |d: Option<&Doc>| d.and_then(|d| d.get("secret")).is_some_and(|v| *v == Value::Bool(true));
-        if !set(Some(doc)) || set(old) {
-            return Ok(());
-        }
-        let (Some(id), Some(host)) = (doc.get("id").and_then(Value::as_str).and_then(|i| i.parse().ok()), server_url().and_then(|u| keys::host(&u))) else {
-            return Ok(());
-        };
-        record_host(hc.tx, hc.ctx.tenant, id, &host).await
-    }
 }
 
 /// Signs in to the mail server's administration as hosted mail does: the administration's account there.
@@ -652,9 +583,8 @@ pub(crate) async fn admin_account(k: &Kernel) -> Result<String> {
 /// to:<dir>`): the file `admin-secret`, the password alone, which Stalwart's configuration names
 /// (`authentication.fallback-admin.user = "admin"`, `authentication.fallback-admin.secret =
 /// "%{file:/run/mail-files/admin-secret}%"`; `comms.mail_admin` is then `admin`). `mail.admin_secret` is made by the vault at the first render where it holds
-/// none, bound to the host of `comms.mail_url`, or, where it holds one that is no service's yet (Comms 0.22 copied it from
-/// `FERRUM_MAIL_ADMIN_SECRET`, or a person set it: the password the mail server already takes), kept as it is with the
-/// hosts it had (keys.rs, `made_or_kept`). One value: after a rotation the mail server takes the new one at its next
+/// none, bound to the host of `comms.mail_url`, or, where the operator set one before it (the password the mail server
+/// already takes), kept as it is with the hosts it had (keys.rs, `made_or_kept`). One value: after a rotation the mail server takes the new one at its next
 /// start, so it is restarted at once.
 pub(crate) struct Service;
 

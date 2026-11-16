@@ -191,23 +191,23 @@ mod tests {
         assert!(super::UI.iter().any(|(p, _)| *p == "index.html") && !super::UI.iter().any(|(p, _)| p.starts_with('.')), "{}", ui.digest);
     }
 
-    /// Comms declares the settings the platform's registry moves to it (`app: comms`), each read at each use, and an
-    /// address given a secret says which; the secrets themselves are no settings.
+    /// Comms declares the settings the platform's registry moves to it (`app: comms`), each read at each use; the secrets
+    /// themselves are no settings.
     #[test]
     fn its_settings_are_declared() {
         let m = ferrum_apps::AppManifest::parse(super::MANIFEST).expect("app.yaml");
         let s: Vec<_> = m.operator_settings.iter().map(|s| (s.env.as_str(), s.applies.as_str(), s.sends.as_deref())).collect();
-        let (meet, mail) = (Some("FERRUM_MEET_SECRET"), Some("FERRUM_MAIL_ADMIN_SECRET"));
+        // No address is given a secret from the environment: Comms' secrets are its vault's alone, each bound to its hosts.
         assert_eq!(
             s,
             [
-                ("FERRUM_MEET_URL", "live", meet),
-                ("FERRUM_MEET_API_URL", "live", meet),
+                ("FERRUM_MEET_URL", "live", None),
+                ("FERRUM_MEET_API_URL", "live", None),
                 ("FERRUM_MEET_RECORDINGS", "live", None),
                 ("FERRUM_MEET_NODE_IP", "live", None),
                 ("FERRUM_MEET_EXTERNAL_IP", "live", None),
-                ("FERRUM_MAIL_URL", "live", mail),
-                ("FERRUM_MAIL_ADMIN", "live", mail),
+                ("FERRUM_MAIL_URL", "live", None),
+                ("FERRUM_MAIL_ADMIN", "live", None),
                 ("FERRUM_MAIL_HOST", "live", None),
             ]
         );

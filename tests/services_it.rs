@@ -4,12 +4,12 @@
 //!
 //! * `meet` on a new installation: `meet.secret` made by the first render, once though two replicas render at once;
 //!   LiveKit started on the file written takes the tokens Comms signs for a person joining.
-//! * `meet` where Comms 0.22 copied LiveKit's key and secret from the environment: the render keeps them, so that LiveKit
-//!   still running on its environment, LiveKit started on the file, and Comms 0.22's tokens are all let in; a rotation's
-//!   overlap lets in the version before and the new one, and its end leaves the version before out.
+//! * `meet` where the operator set LiveKit's secret before the first render (`PUT /api/operator/secrets/comms/meet.secret`):
+//!   the render keeps it; a rotation's overlap lets in the version before and the new one, and its end leaves the version
+//!   before out.
 //! * `mail`: `mail.admin_secret` made once and bound to the mail server's host, written alone into `admin-secret`, and
 //!   what Comms signs in to the mail server with (a stand-in reads the file as Stalwart would: Stalwart is not here); one
-//!   kept from the environment; a rotation taken at the mail server's next start.
+//!   the operator set before the first render, kept; a rotation taken at the mail server's next start.
 //! * Nothing set up: plain refusals, nothing made. A closed vault: nothing written. No secret in a log, an error, the
 //!   vault's record or a table.
 
@@ -259,19 +259,15 @@ async fn scenario(logs: Logs) {
         println!("livekit-server is not installed (FERRUM_TEST_LIVEKIT): LiveKit was not started");
     }
 
-    // ── meet, where Comms 0.22 copied LiveKit's secret from the environment: kept as it is ──
+    // ── meet, where the operator set LiveKit's secret before the first render: kept as it is ──
     comms.remove(&k, Scope::Installation, "meet.secret").await.unwrap();
-    let env_secret = "the-secret-livekit-was-given-in-its-environment-0123";
-    secrets.push(env_secret.into());
-    resolved(&[
-        ("FERRUM_MEET_URL", Some(format!("ws://127.0.0.1:{port}"))),
-        ("FERRUM_MEET_KEY", Some("APIacme".into())),
-        ("FERRUM_MEET_SECRET", Some(env_secret.into())),
-    ]);
-    assert_eq!(call(&k, &admin, "GET", "/meet").await.unwrap(), json!({"available": true, "recordings": false}), "copied into the vault once");
+    let typed = "the-secret-livekit-was-given-by-its-operator-0123";
+    secrets.push(typed.into());
+    let value = vault::New::Value(Zeroizing::new(typed.as_bytes().to_vec()));
+    comms.set(&k, Scope::Installation, "meet.secret", value, vault::Rule::default()).await.unwrap();
     let kept = k.render("meet", &lk).await.unwrap();
     let one = keys_of(file(&kept, "livekit.yaml"));
-    assert!(one.len() == 1 && one[0].0 == "ferrum.1" && one[0].1 == env_secret, "the secret LiveKit runs with");
+    assert!(one.len() == 1 && one[0].0 == "ferrum.1" && one[0].1 == typed, "the secret LiveKit runs with");
     assert_eq!(events(&k, "manage", "meet.secret").await.len(), 1, "kept once");
 
     // ── mail, new: made once, bound to the mail server's host, the file the secret alone ──
@@ -311,14 +307,16 @@ async fn scenario(logs: Logs) {
     assert!(e.contains("may not be sent to localhost"), "{e}");
     errors.push(e);
 
-    // ── mail, where Comms 0.22 copied the administrator's password from the environment: kept as the mail server takes it ──
+    // ── mail, where the operator set the administrator's password before the first render: kept as the mail server takes it ──
     comms.remove(&k, Scope::Installation, "mail.admin_secret").await.unwrap();
     let typed = "the-administrators-password-typed-for-both-0123";
     secrets.push(typed.into());
     mail.accept(typed);
-    resolved(&[("FERRUM_MAIL_URL", Some(mail_url.clone())), admin_name.clone(), ("FERRUM_MAIL_ADMIN_SECRET", Some(typed.into()))]);
-    assert_eq!(ferrum_app_comms::mail_admin_account(&k).await.expect("signed in with the environment's"), "admin-account");
+    let value = vault::New::Value(Zeroizing::new(typed.as_bytes().to_vec()));
+    let rule = vault::Rule { hosts: vec!["127.0.0.1".into()], ..Default::default() };
+    comms.set(&k, Scope::Installation, "mail.admin_secret", value, rule).await.unwrap();
     resolved(&[("FERRUM_MAIL_URL", Some(mail_url.clone())), admin_name.clone()]);
+    assert_eq!(ferrum_app_comms::mail_admin_account(&k).await.expect("signed in with the operator's"), "admin-account");
     let kept = k.render("mail", &none).await.expect("kept: nothing is made, so the address is not needed");
     assert!(file(&kept, "admin-secret") == typed.as_bytes(), "the password the mail server already takes");
     assert_eq!(events(&k, "manage", "mail.admin_secret").await.len(), 1);

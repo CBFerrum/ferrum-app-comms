@@ -170,11 +170,8 @@ async fn scenario() {
     assert!(invitation.contains("https://go.acme.test/go/acme/s/calendar/rsvp/acme/r."), "{invitation}");
     // A meeting's pages are pages of the interface too.
     // SAFETY: the one test in this process.
-    unsafe {
-        std::env::set_var("FERRUM_MEET_URL", "wss://meet.acme.test/");
-        std::env::set_var("FERRUM_MEET_KEY", "APIacme");
-        std::env::set_var("FERRUM_MEET_SECRET", "a-secret-only-livekit-and-ferrum-know");
-    }
+    unsafe { std::env::set_var("FERRUM_MEET_URL", "wss://meet.acme.test/") };
+    k.render("meet", &|_: &str| None).await.expect("LiveKit's file, its secret made by the vault");
     use ferrum_app_comms::meetings::{self as m, MeetingError, NewMeeting};
     let start = chrono::Utc::now() + chrono::Duration::minutes(5);
     let new = NewMeeting {
