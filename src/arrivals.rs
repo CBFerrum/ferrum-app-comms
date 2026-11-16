@@ -514,7 +514,8 @@ pub(crate) fn backoff(failures: i32) -> chrono::Duration {
 /// Returns how many mailboxes were looked at.
 pub async fn run(k: &Kernel, tenant: Uuid, budget: Duration) -> Result<usize> {
     let Some(url) = hosted::server_url() else { return Ok(0) };
-    if hosted::mail_domain(k, tenant).await?.is_none() {
+    // People's passwords go only to the mail server the vault knows.
+    if hosted::mail_domain(k, tenant).await?.is_none() || hosted::password_goes_to(k, &url).await.is_err() {
         return Ok(0);
     }
     let started = Instant::now();
@@ -543,10 +544,6 @@ pub async fn run(k: &Kernel, tenant: Uuid, budget: Duration) -> Result<usize> {
             break;
         }
         let (Ok(user), Some(account)) = (user.parse::<Uuid>(), account) else { continue };
-        // Its password goes only to the host it was set for; one kept for another is set again, and not sent.
-        if hosted::password_goes_to(k, tenant, mailbox, &url).await.is_err() {
-            continue;
-        }
         let mut tx = k.db.tenant_tx(tenant).await?;
         let secret = crate::keys::field(k, &mut tx, tenant, "HostedMailbox", mailbox, "secret").await?;
         tx.commit().await?;

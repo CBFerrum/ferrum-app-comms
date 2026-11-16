@@ -312,12 +312,10 @@ impl DocHook for SharedMailboxHook {
         }
     }
     async fn after_save(&self, hc: &mut HookCtx<'_>, _doc: &Doc, _old: Option<&Doc>) -> Result<()> {
-        hosted::soon(hc.ctx.tenant);
-        Ok(())
+        hosted::soon(hc.tx, hc.ctx.tenant).await
     }
     async fn before_delete(&self, hc: &mut HookCtx<'_>, _doc: &Doc) -> Result<()> {
-        hosted::soon(hc.ctx.tenant);
-        Ok(())
+        hosted::soon(hc.tx, hc.ctx.tenant).await
     }
 }
 
@@ -334,12 +332,10 @@ impl DocHook for EmailGroupHook {
         Ok(())
     }
     async fn after_save(&self, hc: &mut HookCtx<'_>, _doc: &Doc, _old: Option<&Doc>) -> Result<()> {
-        hosted::soon(hc.ctx.tenant);
-        Ok(())
+        hosted::soon(hc.tx, hc.ctx.tenant).await
     }
     async fn before_delete(&self, hc: &mut HookCtx<'_>, _doc: &Doc) -> Result<()> {
-        hosted::soon(hc.ctx.tenant);
-        Ok(())
+        hosted::soon(hc.tx, hc.ctx.tenant).await
     }
 }
 
@@ -349,12 +345,10 @@ pub struct GroupMemberHook;
 #[async_trait]
 impl DocHook for GroupMemberHook {
     async fn after_save(&self, hc: &mut HookCtx<'_>, _doc: &Doc, _old: Option<&Doc>) -> Result<()> {
-        hosted::soon(hc.ctx.tenant);
-        Ok(())
+        hosted::soon(hc.tx, hc.ctx.tenant).await
     }
     async fn before_delete(&self, hc: &mut HookCtx<'_>, _doc: &Doc) -> Result<()> {
-        hosted::soon(hc.ctx.tenant);
-        Ok(())
+        hosted::soon(hc.tx, hc.ctx.tenant).await
     }
 }
 

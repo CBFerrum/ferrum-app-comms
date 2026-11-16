@@ -1,6 +1,6 @@
 id: comms
 name: Mail, Chat and Calendar
-version: 0.24.0
+version: 0.25.0
 publisher: cbferrum
 summary: Email accounts (SMTP/IMAP), threaded communications on any record, templates, team chat, calendars with ICS and calendar-app sync, contacts sync and video meetings
 description: README.md
@@ -19,12 +19,10 @@ operator_settings:
   - key: meet_url
     env: FERRUM_MEET_URL
     applies: live
-    sends: FERRUM_MEET_SECRET
     doc: LiveKit as browsers reach it, wss://meet.example.com. Its key and secret are Comms' secrets meet.key and meet.secret.
   - key: meet_api_url
     env: FERRUM_MEET_API_URL
     applies: live
-    sends: FERRUM_MEET_SECRET
     doc: LiveKit's server API as Ferrum reaches it, when that is not the address above over http(s).
   - key: meet_recordings
     env: FERRUM_MEET_RECORDINGS
@@ -45,12 +43,10 @@ operator_settings:
   - key: mail_url
     env: FERRUM_MAIL_URL
     applies: live
-    sends: FERRUM_MAIL_ADMIN_SECRET
     doc: Stalwart's HTTP address as the server reaches it, for hosted mailboxes.
   - key: mail_admin
     env: FERRUM_MAIL_ADMIN
     applies: live
-    sends: FERRUM_MAIL_ADMIN_SECRET
     doc: A Stalwart administrator (admin, the fallback administrator, where the service mail renders its password). Its password is Comms' secret mail.admin_secret.
   - key: mail_host
     env: FERRUM_MAIL_HOST

@@ -384,13 +384,12 @@ impl Exception {
             .map_err(|_| format!("'{s}' is not a date (YYYY-MM-DD) or date-time (RFC 3339)"))
     }
 
-    /// Whether this exception removes the occurrence starting at `start`. An instant matches the
-    /// occurrence within three hours of it: occurrences are at least 21 hours apart (no rule here
-    /// repeats more often than daily), and an instant stored before occurrences followed the zone's
-    /// clock changes is up to the zone's daylight-saving shift (at most two hours) away from it.
+    /// Whether this exception removes the occurrence starting at `start`: an instant names the
+    /// occurrence that starts then (to the second, as iCalendar names instants), a date the one on
+    /// that day in the event's zone.
     fn skips(&self, start: DateTime<Utc>, zone: Option<Tz>) -> bool {
         match self {
-            Exception::At(t) => (*t - start).abs() < Duration::hours(3),
+            Exception::At(t) => (*t - start).abs() < Duration::seconds(1),
             Exception::Day(d) => wall(start, zone).date() == *d,
         }
     }
@@ -511,7 +510,7 @@ mod tests {
 
     #[test]
     fn without_a_zone_times_repeat_in_utc() {
-        // No zone (as before 0.16, and all-day events): the occurrences stay at 09:00 UTC.
+        // No zone (an event saved without one, and all-day events): the occurrences stay at 09:00 UTC.
         let s = series("2026-10-19T09:00:00Z", 60, "FREQ=WEEKLY;COUNT=3");
         assert_eq!(starts(&s, "2026-10-01T00:00:00Z", "2026-12-01T00:00:00Z"), ["2026-10-19 09:00", "2026-10-26 09:00", "2026-11-02 09:00"]);
     }
@@ -617,21 +616,20 @@ mod tests {
     }
 
     #[test]
-    fn exceptions_still_match_across_a_change_of_clocks() {
-        // A weekly 09:00 London meeting created in October 2026, before 0.16. Its stored
-        // exceptions were written at the old (UTC-repeating) instants: 08:00 UTC for 2 Nov,
-        // though 2 Nov 09:00 is now 09:00 UTC. They still remove their occurrences, as do exact
-        // instants (from calendar apps, which already used the zone), dates, and a RECURRENCE-ID.
+    fn exceptions_remove_the_occurrence_they_name() {
+        // A weekly 09:00 London meeting across the change of clocks (2 Nov 09:00 is 09:00 UTC). An
+        // exact instant removes its occurrence, as a date does; an instant an hour off (08:00 UTC,
+        // where the meeting would be without its zone) names none.
         let mut s = zoned("Europe/London", "2026-10-19 09:00", 60, "FREQ=WEEKLY;COUNT=6");
         s.exceptions = vec![
             Exception::parse("2026-11-02T08:00:00.000Z").unwrap(),
             Exception::parse("2026-11-09T09:00:00Z").unwrap(),
             Exception::parse("2026-11-16").unwrap(),
         ];
-        assert_eq!(utc_starts(&s, 10), ["2026-10-19 08:00", "2026-10-26 09:00", "2026-11-23 09:00"]);
+        assert_eq!(utc_starts(&s, 10), ["2026-10-19 08:00", "2026-10-26 09:00", "2026-11-02 09:00", "2026-11-23 09:00"]);
         // Each names the occurrence it removes (written as EXDATE).
         let removed: Vec<_> = s.exceptions.iter().map(|x| s.excluded(x).map(|t| t.format("%Y-%m-%d %H:%M").to_string())).collect();
-        assert_eq!(removed, [Some("2026-11-02 09:00".into()), Some("2026-11-09 09:00".into()), Some("2026-11-16 09:00".into())]);
+        assert_eq!(removed, [None, Some("2026-11-09 09:00".into()), Some("2026-11-16 09:00".into())]);
         assert_eq!(s.excluded(&Exception::parse("2026-11-03").unwrap()), None, "a day without an occurrence");
         // A date is a day in the event's zone: Sydney's 08:00 on 3 Nov is 2 Nov in UTC.
         let mut syd = zoned("Australia/Sydney", "2026-11-02 08:00", 60, "FREQ=DAILY;COUNT=3");
@@ -640,10 +638,9 @@ mod tests {
     }
 
     #[test]
-    fn an_event_made_before_the_change_is_now_right() {
-        // Stored like every event the editor made: a UTC start and the person's zone. Before 0.16
-        // this weekly 09:00 (New York) series came out at 13:00 UTC all year, so 08:00 EST from
-        // November; now it is 09:00 local on both sides of 1 Nov.
+    fn a_zoned_series_keeps_its_local_time_across_a_change_of_clocks() {
+        // Stored like every event the editor makes: a UTC start and the person's zone. This weekly
+        // 09:00 (New York) series is 09:00 local on both sides of 1 Nov.
         let tz: Tz = "America/New_York".parse().unwrap();
         let start = t("2026-10-20T13:00:00Z");
         let s = Series { start, end: start + Duration::minutes(30), rule: Some(parse("FREQ=WEEKLY;BYDAY=TU").unwrap()), exceptions: vec![], zone: Some(tz) };

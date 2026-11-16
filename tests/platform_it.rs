@@ -6,6 +6,7 @@
 //!   hooks host. With an address of its own, nothing changes; with none at all, there is none.
 //! * Its calendar reads over CalDAV, in a workspace that records reads of calendar events: each event opened, and each
 //!   listing, is on the audit trail as the platform's own reads are, and a read that cannot be recorded is refused.
+//! * Its tables, each of which enforces row-level security as the platform's doctor checks.
 
 use async_trait::async_trait;
 use ferrum_kernel::tenant::NewTenant;
@@ -45,7 +46,6 @@ async fn kernel(settings: KernelSettings, mails: Mails) -> Arc<Kernel> {
     hooks.app("comms", &[], ferrum_app_comms::register);
     let comms_packages: Vec<String> = ferrum_app_comms::packages().unwrap().iter().map(|p| p.name().to_string()).collect();
     hooks.own("comms", &comms_packages);
-    let settings = KernelSettings { secret_key: Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), ..settings };
     Kernel::boot(db, Catalog::from_packages(packages).expect("catalog"), hooks, settings, Some(Arc::new(mails))).await.expect("boot")
 }
 
@@ -137,6 +137,10 @@ async fn scenario() {
     let mgr = k.load_ctx(tenant, mgr_id, None, "it".into()).await.unwrap();
     let alice = k.load_ctx(tenant, alice_id, None, "it".into()).await.unwrap();
 
+    // ───── Every table Comms keeps workspaces' rows in enforces row-level security, as the platform's doctor asks ─────
+    let isolation = k.doctor(8).await.unwrap().into_iter().find(|f| f.check == "isolation.row_security").expect("the doctor's check");
+    assert!(!isolation.detail.contains("comms_"), "{}", isolation.detail);
+
     // ───── Comms has no address of its own: the platform's ─────
     // Services call the inbound address and a calendar feed: the hooks host, which takes their posts.
     let account =
@@ -170,11 +174,8 @@ async fn scenario() {
     assert!(invitation.contains("https://go.acme.test/go/acme/s/calendar/rsvp/acme/r."), "{invitation}");
     // A meeting's pages are pages of the interface too.
     // SAFETY: the one test in this process.
-    unsafe {
-        std::env::set_var("FERRUM_MEET_URL", "wss://meet.acme.test/");
-        std::env::set_var("FERRUM_MEET_KEY", "APIacme");
-        std::env::set_var("FERRUM_MEET_SECRET", "a-secret-only-livekit-and-ferrum-know");
-    }
+    unsafe { std::env::set_var("FERRUM_MEET_URL", "wss://meet.acme.test/") };
+    k.render("meet", &|_: &str| None).await.expect("LiveKit's file, its secret made by the vault");
     use ferrum_app_comms::meetings::{self as m, MeetingError, NewMeeting};
     let start = chrono::Utc::now() + chrono::Duration::minutes(5);
     let new = NewMeeting {

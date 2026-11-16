@@ -335,8 +335,7 @@ async fn fresh_kernel(mailer: TestMailer) -> (Arc<Kernel>, ferrum_kernel::vault:
     for source in ferrum_app_comms::reports() {
         ferrum_domain::reports::add_source(source);
     }
-    let settings = KernelSettings { secret_key: Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), ..Default::default() };
-    let k = Kernel::boot(db, catalog(), hooks, settings, Some(Arc::new(mailer))).await.expect("boot");
+    let k = Kernel::boot(db, catalog(), hooks, KernelSettings::default(), Some(Arc::new(mailer))).await.expect("boot");
     k.set_file_store(Arc::new(MemStore::default()));
     (k, comms.expect("Comms' handle"))
 }
@@ -1218,24 +1217,18 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     assert_eq!(t.ok(carol, "GET", "/meet", &[], Value::Null).await, json!({"available": false, "recordings": false}));
     refused(join(alice, "channel", deals_id).await, "invalid");
     // SAFETY: this test is the only one in its process.
-    unsafe {
-        std::env::set_var("FERRUM_MEET_URL", "wss://meet.acme.test/");
-        std::env::set_var("FERRUM_MEET_KEY", "APIacme");
-        std::env::set_var("FERRUM_MEET_SECRET", "a-secret-only-livekit-and-ferrum-know");
-    }
-    // Replicas asking at once keep the environment's key and secret in Comms' vault once, bound to the meeting server's
-    // host; the secret is never revealed.
-    let (a, b, c, d) = tokio::join!(
-        t.ok(carol, "GET", "/meet", &[], Value::Null),
-        t.ok(bob, "GET", "/meet", &[], Value::Null),
-        t.ok(alice, "GET", "/meet", &[], Value::Null),
-        t.ok(carol, "GET", "/meet", &[], Value::Null)
-    );
-    assert!([a, b, c].iter().all(|x| *x == d) && d == json!({"available": true, "recordings": false}));
-    for name in ["meet.key", "meet.secret"] {
-        let kept = comms.describe(&k, Scope::Installation, name).await.unwrap().expect("adopted");
-        assert_eq!((kept.version, kept.rule.hosts.clone()), (1, vec!["meet.acme.test".to_string()]), "{name}: once, for the meeting server's host");
-    }
+    unsafe { std::env::set_var("FERRUM_MEET_URL", "wss://meet.acme.test/") };
+    // LiveKit's key and secret as the operator gives them (`PUT /api/operator/secrets/comms/<name>`): bound to the meeting
+    // server's host; the secret is never revealed.
+    let operator = |name: &'static str, value: &'static str, hosts: &[&str]| {
+        let (k, comms) = (k.clone(), comms.clone());
+        let rule = Rule { reveal: name == "meet.key", hosts: hosts.iter().map(|h| h.to_string()).collect(), ..Default::default() };
+        async move { comms.set(&k, Scope::Installation, name, New::Value(Zeroizing::new(value.as_bytes().to_vec())), rule).await.unwrap() }
+    };
+    assert_eq!(t.ok(carol, "GET", "/meet", &[], Value::Null).await, json!({"available": false, "recordings": false}), "an address alone is not enough");
+    operator("meet.key", "APIacme", &["meet.acme.test"]).await;
+    operator("meet.secret", "a-secret-only-livekit-and-ferrum-know", &["meet.acme.test"]).await;
+    assert_eq!(t.ok(carol, "GET", "/meet", &[], Value::Null).await, json!({"available": true, "recordings": false}));
     assert!(comms.reveal(&k, Scope::Installation, "meet.secret").await.is_err(), "the secret signs; nobody reads it");
     let pass = join(bob, "channel", deals_id).await.unwrap();
     assert_eq!((pass["url"].clone(), pass["title"].clone()), (json!("wss://meet.acme.test"), json!("#deals")));
@@ -1290,6 +1283,10 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
         std::env::set_var("FERRUM_MEET_API_URL", &livekit.url);
         std::env::set_var("FERRUM_MEET_RECORDINGS", "true");
     }
+    // The server API's host is not one the secret signs for until the operator says so.
+    let r = join(bob, "channel", deals_id).await;
+    assert!(format!("{r:?}").contains("may not sign for 127.0.0.1"), "{r:?}");
+    operator("meet.secret", "a-secret-only-livekit-and-ferrum-know", &["meet.acme.test", "127.0.0.1"]).await;
     assert_eq!(t.ok(carol, "GET", "/meet", &[], Value::Null).await, json!({"available": true, "recordings": true}));
     livekit.refuse.store(true, std::sync::atomic::Ordering::SeqCst);
     refused(
@@ -1333,8 +1330,7 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
         .await
         .unwrap(),
     ));
-    // A link the web app made before Comms had pages of its own (`/app/meet/…`) still leads here.
-    k.update(alice, "CalendarEvent", review, obj(json!({"meeting_link": format!("https://erp.acme.test/app/meet/event/{review}")})), None).await.unwrap();
+    k.update(alice, "CalendarEvent", review, obj(json!({"meeting_link": format!("https://erp.acme.test/meet/event/{review}")})), None).await.unwrap();
     t.drain().await;
     let invitation: String = t
         .scalar("select content from e_communication where tenant_id = $1 and reference_id = $2::text and recipients like '%pat@partner.test%' order by created_at desc limit 1", Some(review))
@@ -1406,13 +1402,32 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     let kept: String = t.scalar("select guest_key from comms_meeting where tenant_id = $1 and id = $2", Some(shared)).await;
     assert!(kept.starts_with("fv1.") && !kept.contains(&renewed_key), "{kept}");
     refused(guest(json!({"token": format!("r.{}.{kept}", shared.simple()), "name": "Sam"})).await, "not found");
+    // Nothing anyone reads in the database signs a guest's link either: no value of Comms' rooms, nor any secret field as it
+    // is kept (the key that signs event guests' links is one), signs Pat's.
+    let readable: Vec<String> = {
+        let mut tx = k.db.system_tx().await.unwrap();
+        sqlx::query_scalar("select guest_key from comms_meeting where guest_key is not null union all select sealed from record_secret")
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap()
+    };
+    assert!(readable.len() > 1, "{readable:?}");
+    let pat_claim = format!("meet-guest|{review}|pat@partner.test");
+    for key in readable.iter().flat_map(|v| [Some(v.as_bytes().to_vec()), hex::decode(v).ok()]).flatten() {
+        use hmac::Mac;
+        let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(&key).unwrap();
+        mac.update(pat_claim.as_bytes());
+        let signature = hex::encode(&mac.finalize().into_bytes()[..16]);
+        let token = format!("e.{}.{}.{signature}", review.simple(), base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("pat@partner.test"));
+        assert_ne!(token, pats, "a value read from the database signs Pat's link");
+    }
     // Copied to another room, it opens nothing there.
     let elsewhere = uid(&t.ok(alice, "POST", "/meet/rooms", &[], json!({"title": "Elsewhere"})).await);
     t.exec(&format!("update comms_meeting set guest_key = '{kept}' where tenant_id = $1 and id = $2"), Some(elsewhere)).await;
     refused(guest(json!({"token": format!("r.{}.{renewed_key}", elsewhere.simple()), "name": "Sam"})).await, "not found");
     assert_eq!(join(carol, "room", elsewhere).await.unwrap()["guest_path"], Value::Null, "nor is it shown there");
-    // A replica whose vault is closed refuses a new link and a guest with a sealed one, plainly; people in the room join
-    // all the same, without the link to share. Nothing is kept another way.
+    // A replica whose vault is closed refuses a new link, a guest, and people in the room too (LiveKit's secret is the
+    // vault's), plainly. Nothing is kept another way.
     {
         let db = Db::connect(DbConfig { url: db_url(), max_connections: 4, ..Default::default() }).await.expect("connect");
         let closed = Kernel::boot(db, catalog(), HookRegistry::default(), KernelSettings::default(), None).await.expect("it starts with the vault closed");
@@ -1420,23 +1435,23 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
         let on = |ctx: Option<&Ctx>, path: String, body: Value| {
             t.request(ctx, "POST", &path, &[], if body.is_null() { vec![] } else { body.to_string().into_bytes() }, "application/json")
         };
-        for (req, what) in [
-            (on(Some(alice), format!("/meet/room/{shared}/guest-link"), Value::Null), "a new link"),
-            (on(None, "/meet/guest".into(), json!({"token": renewed_link, "name": "Sam"})), "a guest"),
+        let vault_closed = "Comms cannot reach the operator's secrets right now: the vault is unavailable";
+        for (req, what, says) in [
+            (
+                on(Some(alice), format!("/meet/room/{shared}/guest-link"), Value::Null),
+                "a new link",
+                "Comms cannot make or open guest links right now: its keys are unavailable",
+            ),
+            (on(None, "/meet/guest".into(), json!({"token": renewed_link, "name": "Sam"})), "a guest", vault_closed),
+            (on(Some(carol), format!("/meet/room/{shared}/token"), Value::Null), "someone in the room", vault_closed),
         ] {
             let e = site.handle(&closed, req).await.expect_err(what);
-            assert_eq!(e.to_string(), "Comms cannot make or open guest links right now: its keys are unavailable", "{what}");
+            assert_eq!(e.to_string(), says, "{what}");
         }
-        let joined = site.handle(&closed, on(Some(carol), format!("/meet/room/{shared}/token"), Value::Null)).await.expect("people join");
-        assert_eq!(serde_json::from_slice::<Value>(&joined.body).unwrap()["guest_path"], Value::Null);
         assert_eq!(t.scalar::<String>("select guest_key from comms_meeting where tenant_id = $1 and id = $2", Some(shared)).await, kept, "unchanged");
     }
-    // A link the build before made, its key kept as it is: honoured until the release after this one seals it.
-    t.exec("update comms_meeting set guest_key = 'kept-as-it-was-by-the-build-before' where tenant_id = $1 and id = $2", Some(shared)).await;
-    let before = format!("r.{}.kept-as-it-was-by-the-build-before", shared.simple());
-    guest(json!({"token": before, "name": "Sam"})).await.expect("a link from before the upgrade still works");
-    assert_eq!(join(carol, "room", shared).await.unwrap()["guest_path"], json!(format!("/meet/guest/acme/{before}")));
-    // ... but never in a sandbox of the workspace (a copy under another id, marked as the platform marks one).
+    // Nor in a sandbox of the workspace (a copy under another id, marked as the platform marks one): what a room keeps is
+    // sealed for its own workspace.
     let copy = k
         .create_tenant(NewTenant {
             slug: "acme-try".into(),
@@ -1461,11 +1476,6 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
         }
         tx.commit().await.unwrap();
     }
-    let in_copy = SiteRequest {
-        tenant: copy,
-        ..t.request(None, "POST", "/meet/guest", &[], json!({"token": before, "name": "Sam"}).to_string().into_bytes(), "application/json")
-    };
-    refused(k.hooks.site("comms").unwrap().handle(&k, in_copy).await, "not found");
     let sealed_in_copy = SiteRequest {
         tenant: copy,
         ..t.request(
@@ -1501,24 +1511,14 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
         mac.update(unsigned.as_bytes());
         mac.verify_slice(&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(signature).unwrap()).is_ok()
     };
-    // The vault holds another secret: the environment's, while it is set, still signs.
-    comms.rotate(&k, Scope::Installation, "meet.secret", New::Value(Zeroizing::new(b"another-secret-of-the-vault".to_vec()))).await.unwrap();
     let pass = join(bob, "channel", deals_id).await.unwrap();
-    assert!(signed_with(pass["token"].as_str().unwrap(), "a-secret-only-livekit-and-ferrum-know"), "the environment wins");
+    assert!(signed_with(pass["token"].as_str().unwrap(), "a-secret-only-livekit-and-ferrum-know"), "signed by the vault");
     // SAFETY: as above.
-    unsafe {
-        for var in ["FERRUM_MEET_URL", "FERRUM_MEET_KEY", "FERRUM_MEET_SECRET"] {
-            std::env::remove_var(var);
-        }
-    }
-    // The address as the settings table gives it, nothing in the environment. The secret was kept for the browsers' host
-    // only: the server API's (set after) is not one it signs for until the operator says so.
+    unsafe { std::env::remove_var("FERRUM_MEET_URL") };
+    // The address as the settings table gives it; a new secret the operator gives takes over at once.
     let stored = |url: &str| ferrum_kernel::env::set([("FERRUM_MEET_URL".to_string(), Some(url.to_string()))].into());
     stored("wss://meet.acme.test/");
-    let r = join(bob, "channel", deals_id).await;
-    assert!(format!("{r:?}").contains("may not sign for 127.0.0.1"), "{r:?}");
-    let both = Rule { hosts: vec!["meet.acme.test".into(), "127.0.0.1".into()], ..Default::default() };
-    comms.set(&k, Scope::Installation, "meet.secret", New::Value(Zeroizing::new(b"another-secret-of-the-vault".to_vec())), both).await.unwrap();
+    operator("meet.secret", "another-secret-of-the-vault", &["meet.acme.test", "127.0.0.1"]).await;
     let pass = join(bob, "channel", deals_id).await.unwrap();
     assert_eq!(pass["url"], "wss://meet.acme.test", "the stored address reaches Comms");
     assert!(signed_with(pass["token"].as_str().unwrap(), "another-secret-of-the-vault"), "signed by the vault");
@@ -1593,12 +1593,6 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     let names: Vec<&str> = heard.as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
     assert_eq!(names, ["Alice Rao"], "the meeting keeps the others' words");
     app_inbound(&t, &admin, &users, &smtp).await;
-    // Every secret field Comms read (accounts' passwords, mailboxes', feeds' and calendars' addresses, its signing key)
-    // it read with its own handle: none past the vault, which the platform notes (`ferrum task legacy_key`).
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    let past: Vec<_> =
-        k.legacy_key(vec![]).await.unwrap().uses.into_iter().filter(|u| u.0.starts_with("reader:") && u.1.starts_with("src/")).map(|u| u.1).collect();
-    assert!(past.is_empty(), "read past the vault: {past:?}");
 }
 
 /// A calendar and contacts app's session (CalDAV and CardDAV under `/dav`): discovery, an event
@@ -1794,8 +1788,7 @@ async fn calendar_apps(t: &T, users: &HashMap<String, Ctx>) {
 /// Hosted mailboxes on a real Stalwart (`FERRUM_MAIL_URL`, `FERRUM_MAIL_ADMIN`,
 /// `FERRUM_MAIL_ADMIN_SECRET`; `tests/stalwart.sh` starts one): skipped without one.
 /// Several calendars and sharing them (0.17): THE access rule, from every route that reads or
-/// writes events, at each level and unshared; a leaver loses access; the owner removes it at once;
-/// the default calendar is made and filled for events from before (timed over 10,000 events).
+/// writes events, at each level and unshared; a leaver loses access; the owner removes it at once.
 async fn calendar_sharing(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>) {
     // Edit goes to Meera (a Comms User too); Erin is a Comms User nothing is shared with.
     let erin_id = t.k.create_user(admin, "erin@acme.test", "Erin Elsewhere", Some(PASSWORD), &["Comms User".to_string()], false).await.expect("user");
@@ -1806,7 +1799,7 @@ async fn calendar_sharing(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>) {
     let personal = mine.iter().find(|c| c["is_default"] == json!(true)).expect("a default calendar for everyone").clone();
     assert_eq!(personal["name"], json!("Personal"));
     let personal_id = personal["id"].as_str().unwrap().to_string();
-    // Every event of Alice's from before is in it now.
+    // Every event of Alice's is in one of her calendars.
     let loose: i64 = t
         .scalar("select count(*) from e_calendar_event where tenant_id = $1 and owner = 'alice@acme.test' and calendar is null and $2::uuid is null", None)
         .await;
@@ -1954,44 +1947,8 @@ async fn calendar_sharing(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>) {
     assert_eq!(k.get(alice, "CalendarEvent", ev, false).await.unwrap()["calendar"], json!(personal_id));
     assert!(titles(&listed(carol).await).is_empty());
 
-    // The default calendar for events from before 0.17, over 10,000 of them: made and filled once, idempotently.
-    let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
-    sqlx::query(
-        "insert into e_calendar_event select (jsonb_populate_record(null::e_calendar_event, to_jsonb(e) || jsonb_build_object('id', gen_random_uuid(), \
-         'ical_uid', gen_random_uuid()::text, 'calendar', null, 'owner', 'carol@acme.test'))).* from e_calendar_event e, generate_series(1, 10000) where e.tenant_id = $1 and e.id = $2",
-    )
-    .bind(t.tenant)
-    .bind(ev)
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-    // As before 0.17: Carol's events in no calendar, and Carol with none.
-    sqlx::query("update e_calendar_event set calendar = null where tenant_id = $1 and owner = 'carol@acme.test'")
-        .bind(t.tenant)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    sqlx::query("delete from e_calendar where tenant_id = $1 and owner = 'carol@acme.test'").bind(t.tenant).execute(&mut *tx).await.unwrap();
-    tx.commit().await.unwrap();
-    let started = std::time::Instant::now();
-    t.ok(carol, "GET", "/calendar/calendars", &[], Value::Null).await;
-    println!("default calendar made and 10,000 events put in it in {:?}", started.elapsed());
-    let again = std::time::Instant::now();
-    t.ok(carol, "GET", "/calendar/calendars", &[], Value::Null).await;
-    println!("and asked again (nothing to do) in {:?}", again.elapsed());
-    let loose: i64 = t
-        .scalar("select count(*) from e_calendar_event where tenant_id = $1 and owner = 'carol@acme.test' and calendar is null and $2::uuid is null", None)
-        .await;
-    assert_eq!(loose, 0);
-    let cals_of_carol: i64 = t.scalar("select count(*) from e_calendar where tenant_id = $1 and owner = 'carol@acme.test' and $2::uuid is null", None).await;
-    assert_eq!(cals_of_carol, 1);
-    let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
-    sqlx::query("delete from e_calendar_event where tenant_id = $1 and owner = 'carol@acme.test' and subject like 'Salary%'")
-        .bind(t.tenant)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
     // Erin leaves again, so later counts of the team are as they were.
+    let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
     sqlx::query("update app_user set is_active = false where tenant_id = $1 and email = 'erin@acme.test'").bind(t.tenant).execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
 }
@@ -3095,11 +3052,11 @@ async fn app_inbound(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>, smtp: &Sm
         ("cc", "boss@cust.test"),
         ("delivered-to", "support@acme.test"),
         ("return-path", "cu@cust.test"),
-        ("x-ferrum-helpdesk", "TKT-1"),
         ("x-ferrum-auth", "verified"),
     ] {
         assert!(got.headers.get(name).is_some_and(|v| v.contains(wanted)), "{name}: {:?}", got.headers);
     }
+    assert!(!got.headers.contains_key("x-ferrum-helpdesk"), "an app's marker the sender wrote is not Mail's word: {:?}", got.headers);
     assert!(got.headers["authentication-results"].contains("dkim=pass"), "kept on one line: {:?}", got.headers["authentication-results"]);
     assert!(got.headers.values().all(|v| !v.contains(['\r', '\n', '\t'])), "no line breaks in any value");
     let stored = t.comm(comm).await;
@@ -3122,6 +3079,11 @@ async fn app_inbound(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>, smtp: &Sm
     let forged = "From: x@cust.test\r\nTo: support@acme.test\r\nMessage-ID: <forged@cust.test>\r\nAuthentication-Results: mx.acme.test; dkim=fail header.d=cust.test\r\n\
         Authentication-Results: evil.test; dkim=pass header.d=cust.test\r\nSubject: hi\r\n\r\nhi\r\n";
     assert_eq!(t.comm(uid(&post(forged).await)).await["headers"]["x-ferrum-auth"], json!("unverified"));
+    // Mail's own headers are Mail's to write: a sender who writes Mail's verdict, or an app's marker, has it not kept.
+    let claimed = "Authentication-Results: mx.acme.test; dmarc=fail header.from=cust.test\r\nFrom: x@cust.test\r\nTo: support@acme.test\r\n\
+        Message-ID: <claimed@cust.test>\r\nSubject: hi\r\nX-Ferrum-Auth: verified\r\nX-Ferrum-Helpdesk: TKT-9\r\n\r\nhi\r\n";
+    let kept = t.comm(uid(&post(claimed).await)).await["headers"].clone();
+    assert_eq!((kept["x-ferrum-auth"].clone(), kept.get("x-ferrum-helpdesk")), (json!("unverified"), None), "{kept}");
 
     // ───────────── a reply with In-Reply-To is delivered with the same thread ─────────────
     let reply = "From: cu@cust.test\r\nTo: support+k3j9x2@acme.test\r\nSubject: Re: Printer on fire\r\nMessage-ID: <m2@cust.test>\r\nIn-Reply-To: <m1@cust.test>\r\n\

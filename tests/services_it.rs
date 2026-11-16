@@ -4,12 +4,12 @@
 //!
 //! * `meet` on a new installation: `meet.secret` made by the first render, once though two replicas render at once;
 //!   LiveKit started on the file written takes the tokens Comms signs for a person joining.
-//! * `meet` where Comms 0.22 copied LiveKit's key and secret from the environment: the render keeps them, so that LiveKit
-//!   still running on its environment, LiveKit started on the file, and Comms 0.22's tokens are all let in; a rotation's
-//!   overlap lets in the version before and the new one, and its end leaves the version before out.
+//! * `meet` where the operator set LiveKit's secret before the first render (`PUT /api/operator/secrets/comms/meet.secret`):
+//!   the render keeps it; a rotation's overlap lets in the version before and the new one, and its end leaves the version
+//!   before out.
 //! * `mail`: `mail.admin_secret` made once and bound to the mail server's host, written alone into `admin-secret`, and
 //!   what Comms signs in to the mail server with (a stand-in reads the file as Stalwart would: Stalwart is not here); one
-//!   kept from the environment; a rotation taken at the mail server's next start.
+//!   the operator set before the first render, kept; a rotation taken at the mail server's next start.
 //! * Nothing set up: plain refusals, nothing made. A closed vault: nothing written. No secret in a log, an error, the
 //!   vault's record or a table.
 
@@ -22,6 +22,7 @@ use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 fn url() -> String {
@@ -47,8 +48,7 @@ async fn replica(database_url: String) -> (Arc<Kernel>, Vault) {
         comms = Some(h.vault());
     });
     hooks.own("comms", &ferrum_app_comms::packages().unwrap().iter().map(|p| p.name().to_string()).collect::<Vec<_>>());
-    let settings = KernelSettings { secret_key: Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), ..Default::default() };
-    let k = Kernel::boot(db, Catalog::from_packages(packages).expect("catalog"), hooks, settings, None).await.expect("boot");
+    let k = Kernel::boot(db, Catalog::from_packages(packages).expect("catalog"), hooks, KernelSettings::default(), None).await.expect("boot");
     (k, comms.expect("Comms' handle"))
 }
 
@@ -259,19 +259,15 @@ async fn scenario(logs: Logs) {
         println!("livekit-server is not installed (FERRUM_TEST_LIVEKIT): LiveKit was not started");
     }
 
-    // ── meet, where Comms 0.22 copied LiveKit's secret from the environment: kept as it is ──
+    // ── meet, where the operator set LiveKit's secret before the first render: kept as it is ──
     comms.remove(&k, Scope::Installation, "meet.secret").await.unwrap();
-    let env_secret = "the-secret-livekit-was-given-in-its-environment-0123";
-    secrets.push(env_secret.into());
-    resolved(&[
-        ("FERRUM_MEET_URL", Some(format!("ws://127.0.0.1:{port}"))),
-        ("FERRUM_MEET_KEY", Some("APIacme".into())),
-        ("FERRUM_MEET_SECRET", Some(env_secret.into())),
-    ]);
-    assert_eq!(call(&k, &admin, "GET", "/meet").await.unwrap(), json!({"available": true, "recordings": false}), "copied into the vault once");
+    let typed = "the-secret-livekit-was-given-by-its-operator-0123";
+    secrets.push(typed.into());
+    let value = vault::New::Value(Zeroizing::new(typed.as_bytes().to_vec()));
+    comms.set(&k, Scope::Installation, "meet.secret", value, vault::Rule::default()).await.unwrap();
     let kept = k.render("meet", &lk).await.unwrap();
     let one = keys_of(file(&kept, "livekit.yaml"));
-    assert!(one.len() == 1 && one[0].0 == "ferrum.1" && one[0].1 == env_secret, "the secret LiveKit runs with");
+    assert!(one.len() == 1 && one[0].0 == "ferrum.1" && one[0].1 == typed, "the secret LiveKit runs with");
     assert_eq!(events(&k, "manage", "meet.secret").await.len(), 1, "kept once");
 
     // ── mail, new: made once, bound to the mail server's host, the file the secret alone ──
@@ -311,18 +307,53 @@ async fn scenario(logs: Logs) {
     assert!(e.contains("may not be sent to localhost"), "{e}");
     errors.push(e);
 
-    // ── mail, where Comms 0.22 copied the administrator's password from the environment: kept as the mail server takes it ──
+    // ── mail, where the operator set the administrator's password before the first render: kept as the mail server takes it ──
     comms.remove(&k, Scope::Installation, "mail.admin_secret").await.unwrap();
     let typed = "the-administrators-password-typed-for-both-0123";
     secrets.push(typed.into());
     mail.accept(typed);
-    resolved(&[("FERRUM_MAIL_URL", Some(mail_url.clone())), admin_name.clone(), ("FERRUM_MAIL_ADMIN_SECRET", Some(typed.into()))]);
-    assert_eq!(ferrum_app_comms::mail_admin_account(&k).await.expect("signed in with the environment's"), "admin-account");
+    let value = vault::New::Value(Zeroizing::new(typed.as_bytes().to_vec()));
+    let rule = vault::Rule { hosts: vec!["127.0.0.1".into()], ..Default::default() };
+    comms.set(&k, Scope::Installation, "mail.admin_secret", value, rule).await.unwrap();
     resolved(&[("FERRUM_MAIL_URL", Some(mail_url.clone())), admin_name.clone()]);
+    assert_eq!(ferrum_app_comms::mail_admin_account(&k).await.expect("signed in with the operator's"), "admin-account");
     let kept = k.render("mail", &none).await.expect("kept: nothing is made, so the address is not needed");
     assert!(file(&kept, "admin-secret") == typed.as_bytes(), "the password the mail server already takes");
     assert_eq!(events(&k, "manage", "mail.admin_secret").await.len(), 1);
     assert_eq!(ferrum_app_comms::mail_admin_account(&k).await.expect("nothing restarted"), "admin-account");
+
+    // ── someone who leaves keeps no mailbox for long, whichever replica runs the upkeep ──
+    // The workspace has hosted mail; each round that brings its mailboxes in step signs in to the mail server first (the
+    // stand-in knows nothing more, so the round stops there).
+    let sys = Ctx::system(tenant, k.registry.schema(tenant).await.unwrap());
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let row: Option<uuid::Uuid> =
+        sqlx::query_scalar("select id from e_comms_settings where tenant_id = $1").bind(tenant).fetch_optional(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let domain = json!({"mail_domain": "acme.test"}).as_object().cloned().unwrap();
+    match row {
+        Some(id) => k.update(&sys, "CommsSettings", id, domain, None).await.map(|_| ()),
+        None => k.insert(&sys, "CommsSettings", domain).await.map(|_| ()),
+    }
+    .expect("hosted mail for acme.test");
+    let signed_in = || mail.sessions.load(Ordering::SeqCst);
+    let round = |k: Arc<Kernel>| async move {
+        let _ = ferrum_app_comms::maintenance(&k).await;
+    };
+    let before = signed_in();
+    round(k2.clone()).await;
+    assert_eq!(signed_in(), before + 1, "a round brings the mailboxes in step");
+    round(k2.clone()).await;
+    round(k.clone()).await;
+    assert_eq!(signed_in(), before + 1, "not again within ten minutes, on either replica");
+    // Someone leaves, and this replica hears of it; the next round, on the other, brings the mailboxes in step at once.
+    let lee = k.create_user(&admin, "lee@acme.test", "Lee Leaver", Some("Correct-Horse-9"), &[], false).await.expect("user");
+    k.deprovision_user(&admin, lee, None, "left").await.expect("deprovisioned");
+    while k.dispatch_outbox_once().await.expect("dispatch") > 0 {}
+    round(k2.clone()).await;
+    assert_eq!(signed_in(), before + 2, "at the next round, whichever replica runs it");
+    round(k2.clone()).await;
+    assert_eq!(signed_in(), before + 2, "and then not again within ten minutes");
 
     // ── nothing secret anywhere it should not be ──
     let record = serde_json::to_string(&vault::events(&k.db, None, 1000).await.unwrap()).unwrap();
@@ -491,6 +522,8 @@ impl Livekit {
 struct Stalwart {
     port: u16,
     password: Arc<Mutex<Option<Zeroizing<String>>>>,
+    /// How often the administrator signed in.
+    sessions: Arc<AtomicUsize>,
 }
 
 impl Stalwart {
@@ -498,12 +531,13 @@ impl Stalwart {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let password: Arc<Mutex<Option<Zeroizing<String>>>> = Arc::default();
-        let held = password.clone();
+        let sessions: Arc<AtomicUsize> = Arc::default();
+        let (held, counted) = (password.clone(), sessions.clone());
         tokio::spawn(async move {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             loop {
                 let Ok((mut sock, _)) = listener.accept().await else { return };
-                let held = held.clone();
+                let (held, counted) = (held.clone(), counted.clone());
                 tokio::spawn(async move {
                     let mut buf = vec![0u8; 8192];
                     let mut n = 0;
@@ -518,6 +552,9 @@ impl Stalwart {
                     let pair = auth.and_then(|a| base64::Engine::decode(&base64::engine::general_purpose::STANDARD, a).ok());
                     let expected = held.lock().unwrap().as_ref().map(|p| format!("admin:{}", p.as_str()).into_bytes());
                     let ok = head.starts_with("GET /jmap/session ") && pair.is_some() && pair == expected;
+                    if ok {
+                        counted.fetch_add(1, Ordering::SeqCst);
+                    }
                     let (status, body) = if ok {
                         ("200 OK", json!({"primaryAccounts": {"urn:stalwart:jmap": "admin-account"}}).to_string())
                     } else {
@@ -529,7 +566,7 @@ impl Stalwart {
                 });
             }
         });
-        Stalwart { port, password }
+        Stalwart { port, password, sessions }
     }
 
     /// Started (again) on the file written for it.

@@ -56,8 +56,8 @@ pub struct ParsedMail {
     pub headers: BTreeMap<String, String>,
 }
 
-/// Headers kept as they came (first occurrence), besides the ones kept in their own form below and every
-/// `x-ferrum-` one (an app's own marker on mail it sent).
+/// Headers kept as they came (first occurrence), besides the ones kept in their own form below. No `x-ferrum-` name is
+/// ever taken from a message: those are Mail's own to write (`x-ferrum-auth`), so an app may read them as Mail's word.
 const KEPT_HEADERS: &[&str] = &[
     "auto-submitted",
     "precedence",
@@ -106,11 +106,11 @@ fn header_text(v: &HeaderValue<'_>) -> Option<String> {
 
 /// The headers of a received message worth keeping for the apps that route, thread and sort it: Message-ID,
 /// In-Reply-To, References, Reply-To, To, Cc, the recipient it was delivered to, Auto-Submitted, Precedence,
-/// List-Id, List-Unsubscribe, Return-Path, the usual auto-reply and bounce markers, any `x-ferrum-` marker, and
-/// two that say what the mail server found: `authentication-results` (the topmost, the receiving server's own) and
-/// `x-ferrum-auth`, `verified` when that says the From domain was authenticated (DMARC, or an aligned DKIM pass) and
-/// `unverified` otherwise, including when there is no such header. Names are lower case. A message without a header
-/// has no entry for it.
+/// List-Id, List-Unsubscribe, Return-Path, the usual auto-reply and bounce markers, and two that say what the mail
+/// server found: `authentication-results` (the topmost, the receiving server's own) and Mail's verdict `x-ferrum-auth`,
+/// `verified` when that says the From domain was authenticated (DMARC, or an aligned DKIM pass) and `unverified`
+/// otherwise, including when there is no such header. The verdict is always written, whatever the message said and
+/// however much of the rest was kept. Names are lower case. A message without a header has no entry for it.
 pub fn received_headers(msg: &mail_parser::Message<'_>, parsed: &ParsedMail) -> BTreeMap<String, String> {
     let mut out: BTreeMap<String, String> = BTreeMap::new();
     let mut total = 0;
@@ -134,7 +134,7 @@ pub fn received_headers(msg: &mail_parser::Message<'_>, parsed: &ParsedMail) -> 
     let first_raw = |name: &str| raw.iter().find(|(n, _)| n == name).map(|(_, v)| *v);
     for h in msg.headers() {
         let name = h.name().to_ascii_lowercase();
-        if (KEPT_HEADERS.contains(&name.as_str()) || name.starts_with("x-ferrum-"))
+        if KEPT_HEADERS.contains(&name.as_str())
             && let Some(v) = header_text(h.value()).filter(|v| !v.trim().is_empty()).or_else(|| first_raw(&name).map(decode_words))
         {
             put(&name, v);
@@ -146,7 +146,7 @@ pub fn received_headers(msg: &mail_parser::Message<'_>, parsed: &ParsedMail) -> 
     if let Some(a) = top {
         put("authentication-results", a);
     }
-    put("x-ferrum-auth", if verified { "verified" } else { "unverified" }.into());
+    out.insert("x-ferrum-auth".into(), if verified { "verified" } else { "unverified" }.into());
     out
 }
 
@@ -795,15 +795,37 @@ JVBERi0xLjQKJcfsj6IK\r\n\
     fn received_headers_are_decoded_one_line_and_bounded() {
         let raw = format!(
             "From: a@x.test\r\nTo: s@acme.test\r\nSubject: hi\r\nMessage-ID: <h@x.test>\r\nAuto-Submitted: =?utf-8?q?auto-replied?=\r\n\
-             List-Id: Tickets\r\n <t.x.test>\r\nX-Ferrum-Helpdesk: {}\r\nX-Other: not kept\r\n\r\nbody\r\n",
+             List-Id: Tickets\r\n <t.x.test>\r\nX-Original-To: {}\r\nX-Other: not kept\r\n\r\nbody\r\n",
             "9".repeat(5000)
         );
         let h = parse_mime(raw.as_bytes()).unwrap().headers;
         assert_eq!(h.get("auto-submitted").map(String::as_str), Some("auto-replied"));
         assert!(h["list-id"].contains("Tickets") && h["list-id"].contains("t.x.test"), "unfolded: {:?}", h["list-id"]);
-        assert_eq!(h["x-ferrum-helpdesk"].len(), MAX_HEADER_VALUE, "cut");
+        assert_eq!(h["x-original-to"].len(), MAX_HEADER_VALUE, "cut");
         assert!(!h.contains_key("x-other") && !h.contains_key("subject"), "only what apps use: {h:?}");
         assert_eq!(h["x-ferrum-auth"], "unverified");
         assert!(h.values().all(|v| !v.contains(['\r', '\n'])));
+    }
+
+    /// `x-ferrum-` names are Mail's own to write: a sender who writes one in the message writes nothing Mail stores.
+    #[test]
+    fn a_sender_cannot_write_mails_own_headers() {
+        // DMARC failed, says the receiving server at the top; the sender says Mail verified it.
+        let forged = "Authentication-Results: mx.acme.test; dmarc=fail header.from=cust.test\r\nFrom: x@cust.test\r\nTo: support@acme.test\r\n\
+            Message-ID: <f1@cust.test>\r\nSubject: hi\r\nX-Ferrum-Auth: verified\r\n\r\nhi\r\n";
+        assert_eq!(parse_mime(forged.as_bytes()).unwrap().headers["x-ferrum-auth"], "unverified", "Mail's verdict, not the sender's");
+        // The sender marks the message as one Helpdesk sent.
+        let marked = "From: x@cust.test\r\nTo: support@acme.test\r\nMessage-ID: <f2@cust.test>\r\nSubject: hi\r\nX-Ferrum-Helpdesk: TKT-1\r\n\r\nhi\r\n";
+        let h = parse_mime(marked.as_bytes()).unwrap().headers;
+        assert!(!h.contains_key("x-ferrum-helpdesk"), "no x-ferrum- name comes from the message: {h:?}");
+        // A sender who fills what Mail keeps of a message's headers still leaves Mail's verdict standing.
+        let full = format!(
+            "From: x@cust.test\r\nTo: support@acme.test\r\nMessage-ID: <f3@cust.test>\r\nSubject: hi\r\nX-Original-To: {a}\r\nEnvelope-To: {a}\r\n\
+             X-Envelope-To: {a}\r\nX-Autoreply: {a}\r\nX-Autorespond: {a}\r\nX-Failed-Recipients: {b}\r\n\
+             Authentication-Results: mx.acme.test; dmarc=fail header.from=cust.test\r\n\r\nhi\r\n",
+            a = "9".repeat(2000),
+            b = "9".repeat(1966)
+        );
+        assert_eq!(parse_mime(full.as_bytes()).unwrap().headers.get("x-ferrum-auth").map(String::as_str), Some("unverified"));
     }
 }

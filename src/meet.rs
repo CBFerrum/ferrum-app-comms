@@ -11,7 +11,7 @@
 //!
 //! The operator turns meetings on with the setting `comms.meet_url` (`FERRUM_MEET_URL`: LiveKit as browsers reach it,
 //! `wss://`) and an API key and its secret as LiveKit was given them, Comms' secrets `meet.key` and `meet.secret` in the
-//! installation's vault (or `FERRUM_MEET_KEY` and `FERRUM_MEET_SECRET`, which win while set; keys.rs).
+//! installation's vault (keys.rs).
 //!
 //! Or LiveKit takes its keys from the vault as it starts: the service `meet` ([`Service`]; `ferrum task render
 //! service:meet to:<dir>`) writes `livekit.yaml`, with `meet.secret` made by the vault at the first render (or the one
@@ -34,9 +34,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ferrum_kernel::vault::Zeroizing;
 use ferrum_kernel::{Ctx, Error, Kernel, Result, SiteRequest, SiteResponse, Tx};
-use hmac::{Hmac, Mac};
 use serde_json::{Map, Value, json};
-use sha2::Sha256;
 use sqlx::AssertSqlSafe;
 use std::time::Duration;
 use uuid::Uuid;
@@ -48,8 +46,6 @@ const TOKEN_SECONDS: i64 = 6 * 3600;
 pub(crate) struct Server {
     pub(crate) url: String,
     pub(crate) key: String,
-    /// The environment's secret, while it sets one; none: the vault's signs.
-    secret: Option<Zeroizing<String>>,
     /// The version of the vault's secret that signs, the one `key` names; none: its current one.
     version: Option<i32>,
 }
@@ -66,9 +62,9 @@ fn hosts(url: &str) -> Vec<String> {
     out
 }
 
-/// LiveKit, when the operator set it up: its addresses are settings; its key and secret are Comms' in the vault, or the
-/// environment's while it sets them. A secret in the vault signs only for the hosts its rule names, so that a changed
-/// address does not take what it signs elsewhere.
+/// LiveKit, when the operator set it up: its addresses are settings; its key and secret are Comms' in the vault. A secret
+/// the operator set signs only for the hosts its rule names, so that a changed address does not take what it signs
+/// elsewhere.
 pub(crate) async fn server(k: &Kernel) -> Result<Server> {
     let not_set_up = || Error::invalid("video meetings are not set up on this server");
     let url = setting("FERRUM_MEET_URL").ok_or_else(not_set_up)?.trim_end_matches('/').to_string();
@@ -77,30 +73,22 @@ pub(crate) async fn server(k: &Kernel) -> Result<Server> {
         return Err(not_set_up());
     }
     let hosts = hosts(&url);
-    let secret = keys::MEET_SECRET.environment(k, &hosts).await;
-    if secret.is_none()
-        && let Some(d) = keys::MEET_SECRET.describe(k).await?.filter(|d| d.managed_by.is_some())
-    {
+    if let Some(d) = keys::MEET_SECRET.describe(k).await?.filter(|d| d.managed_by.is_some()) {
         // The service meet's (a render made or kept it), bound to LiveKit by the render, not to an address: the version
         // before while a rotation's overlap lasts, which a LiveKit not restarted since knows too; else the current one.
         let previous = d.previous_until.is_some_and(|until| until > chrono::Utc::now());
         let version = if previous { d.version - 1 } else { d.version };
-        return Ok(Server { url, key: key_name(version), secret: None, version: Some(version) });
+        return Ok(Server { url, key: key_name(version), version: Some(version) });
     }
-    let key = match keys::MEET_KEY.environment(k, &hosts).await {
-        Some(key) => key.to_string(),
-        None => keys::MEET_KEY.reveal(k).await?.ok_or_else(not_set_up)?.to_string(),
-    };
-    if secret.is_none() {
-        let allowed = keys::MEET_SECRET.hosts(k).await?.ok_or_else(not_set_up)?;
-        if let Some(host) = hosts.iter().find(|h| !keys::names(&allowed, h)) {
-            tracing::warn!(host, "Comms' secret meet.secret does not name the meeting server's host: meetings are off until its rule does");
-            return Err(Error::Unavailable(format!(
-                "LiveKit's secret may not sign for {host}: the meeting server's address moved, so change the hosts of Comms' secret meet.secret to match"
-            )));
-        }
+    let key = keys::MEET_KEY.reveal(k).await?.ok_or_else(not_set_up)?.to_string();
+    let allowed = keys::MEET_SECRET.hosts(k).await?.ok_or_else(not_set_up)?;
+    if let Some(host) = hosts.iter().find(|h| !keys::names(&allowed, h)) {
+        tracing::warn!(host, "Comms' secret meet.secret does not name the meeting server's host: meetings are off until its rule does");
+        return Err(Error::Unavailable(format!(
+            "LiveKit's secret may not sign for {host}: the meeting server's address moved, so change the hosts of Comms' secret meet.secret to match"
+        )));
     }
-    Ok(Server { url, key, secret, version: None })
+    Ok(Server { url, key, version: None })
 }
 
 /// The API key LiveKit's rendered file names a version of `meet.secret` by.
@@ -108,24 +96,15 @@ fn key_name(version: i32) -> String {
     format!("ferrum.{version}")
 }
 
-/// `claims` as a LiveKit token (a JWT, HS256), signed with the environment's secret or by the vault.
+/// `claims` as a LiveKit token (a JWT, HS256), signed by the vault.
 pub(crate) async fn signed(k: &Kernel, server: &Server, claims: &Value) -> Result<String> {
     let unsigned = unsigned(claims);
-    let signature = match &server.secret {
-        Some(secret) => hmac(secret.as_bytes(), &unsigned),
-        None => keys::MEET_SECRET.sign_at(k, unsigned.as_bytes(), server.version).await?,
-    };
+    let signature = keys::MEET_SECRET.sign_at(k, unsigned.as_bytes(), server.version).await?;
     Ok(format!("{unsigned}.{}", URL_SAFE_NO_PAD.encode(signature)))
 }
 
 fn unsigned(claims: &Value) -> String {
     format!("{}.{}", URL_SAFE_NO_PAD.encode(r#"{"alg":"HS256","typ":"JWT"}"#), URL_SAFE_NO_PAD.encode(claims.to_string()))
-}
-
-fn hmac(secret: &[u8], message: &str) -> Vec<u8> {
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any key length");
-    mac.update(message.as_bytes());
-    mac.finalize().into_bytes().to_vec()
 }
 
 /// Whether the operator runs LiveKit Egress beside LiveKit, for recordings (a setting).
@@ -557,9 +536,8 @@ fn guest_claim(event: Uuid, email: &str) -> String {
 /// The link to an event's meeting for one outside guest, when `link` (the event's meeting link) is
 /// this event's meeting here: the invitation carries it instead.
 pub(crate) async fn invitation_link(k: &Kernel, tx: &mut Tx, tenant: Uuid, event: Uuid, link: &str, email: &str) -> Result<Option<String>> {
-    // Links made before Comms had pages of its own lead to the web app (`/app/meet/…`).
     let link = link.trim();
-    let Some((origin, rest)) = link.split_once("/app/meet/event/").or_else(|| link.split_once("/meet/event/")) else { return Ok(None) };
+    let Some((origin, rest)) = link.split_once("/meet/event/") else { return Ok(None) };
     if server(k).await.is_err()
         || rest.trim_end_matches('/').parse::<Uuid>().ok() != Some(event)
         || !origin.starts_with("http")
@@ -685,10 +663,9 @@ const OVERLAP_SECS: i64 = 86_400;
 /// LiveKit's configuration file, written as LiveKit starts (`ferrum task render service:meet to:<dir>`, then
 /// `livekit-server --config <dir>/livekit.yaml`): its ports, the address it gives browsers (`comms.meet_node_ip`,
 /// `comms.meet_external_ip`) and its keys. `meet.secret` is made by the vault at the first render where it holds none,
-/// or, where it holds one that is no service's yet (Comms 0.22 copied it from `FERRUM_MEET_SECRET`, or a person set it),
-/// kept as it is (keys.rs, `made_or_kept`). Each version kept is written under the API key `ferrum.<version>`, the
-/// current one first, which is what Comms names in the tokens it signs with the vault's (LiveKit started on this file no
-/// longer knows the API key it was given in its environment).
+/// or, where the operator set one before it, kept as it is (keys.rs, `made_or_kept`). Each version kept is written under
+/// the API key `ferrum.<version>`, the current one first, which is what Comms names in the tokens it signs with the
+/// vault's (LiveKit started on this file knows no other API key).
 pub(crate) struct Service;
 
 #[async_trait::async_trait]
@@ -752,14 +729,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tokens_are_signed_for_one_room() {
-        let server = Server { url: "wss://meet.test".into(), key: "APIkey".into(), secret: Some(Zeroizing::new("a-secret".into())), version: None };
-        let unsigned = unsigned(&claims(&server, "u.1", "Ana Rao", "t-room-x", 1_000_000));
-        let t = format!("{unsigned}.{}", URL_SAFE_NO_PAD.encode(hmac(b"a-secret", &unsigned)));
+    fn tokens_are_made_for_one_room() {
+        let server = Server { url: "wss://meet.test".into(), key: "APIkey".into(), version: None };
+        let t = unsigned(&claims(&server, "u.1", "Ana Rao", "t-room-x", 1_000_000));
         let parts: Vec<&str> = t.split('.').collect();
-        let mut mac = Hmac::<Sha256>::new_from_slice(b"a-secret").unwrap();
-        mac.update(format!("{}.{}", parts[0], parts[1]).as_bytes());
-        mac.verify_slice(&URL_SAFE_NO_PAD.decode(parts[2]).unwrap()).expect("signed with the secret");
         let part = |i: usize| serde_json::from_slice::<Value>(&URL_SAFE_NO_PAD.decode(parts[i]).unwrap()).unwrap();
         assert_eq!(part(0)["alg"], "HS256");
         let claims = part(1);
