@@ -9,8 +9,9 @@
 //! an event's outside guests by the personal link their invitation carries, anyone by a room's
 //! guest link. Removing the guest from the event, or turning the room's link off, stops the link.
 //!
-//! The operator turns meetings on with `FERRUM_MEET_URL` (LiveKit as browsers reach it, `wss://`),
-//! `FERRUM_MEET_KEY` and `FERRUM_MEET_SECRET` (an API key and its secret, as LiveKit was given).
+//! The operator turns meetings on with the setting `comms.meet_url` (`FERRUM_MEET_URL`: LiveKit as browsers reach it,
+//! `wss://`) and an API key and its secret as LiveKit was given them, Comms' secrets `meet.key` and `meet.secret` in the
+//! installation's vault (or `FERRUM_MEET_KEY` and `FERRUM_MEET_SECRET`, which win while set; keys.rs).
 //!
 //! Captions are each person's own: their browser's speech recognition captions their voice into
 //! the call (LiveKit's `lk.transcription` text stream, the one LiveKit's own transcription agents
@@ -25,6 +26,7 @@ use crate::util::{self, created, ok, s};
 use crate::{calendar, chat, keys, recur};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use ferrum_kernel::vault::Zeroizing;
 use ferrum_kernel::{Ctx, Error, Kernel, Result, SiteRequest, SiteResponse, Tx};
 use hmac::{Hmac, Mac};
 use serde_json::{Map, Value, json};
@@ -40,20 +42,68 @@ const TOKEN_SECONDS: i64 = 6 * 3600;
 pub(crate) struct Server {
     pub(crate) url: String,
     pub(crate) key: String,
-    pub(crate) secret: String,
+    /// The environment's secret, while it sets one; none: the vault's signs.
+    secret: Option<Zeroizing<String>>,
 }
 
-/// LiveKit, when the operator set it up. Its addresses are settings (`ferrum_kernel::env`: the environment, else the
-/// settings table); its key and secret stay in the environment until the platform's own secrets move into the vault.
-pub(crate) fn server() -> Option<Server> {
-    let setting = |name: &str| ferrum_kernel::env::var(name).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
-    let secret = |name: &str| std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
-    let url = setting("FERRUM_MEET_URL")?.trim_end_matches('/').to_string();
+/// A setting (`ferrum_kernel::env`: the environment, else the settings table), read at each use.
+fn setting(name: &str) -> Option<String> {
+    ferrum_kernel::env::var(name).map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+/// The hosts LiveKit's tokens go to: the browsers' address and, when it is another, the server API's.
+fn hosts(url: &str) -> Vec<String> {
+    let mut out: Vec<String> = [Some(url.to_string()), setting("FERRUM_MEET_API_URL")].into_iter().flatten().filter_map(|u| keys::host(&u)).collect();
+    out.dedup();
+    out
+}
+
+/// LiveKit, when the operator set it up: its addresses are settings; its key and secret are Comms' in the vault, or the
+/// environment's while it sets them. A secret in the vault signs only for the hosts its rule names, so that a changed
+/// address does not take what it signs elsewhere.
+pub(crate) async fn server(k: &Kernel) -> Result<Server> {
+    let not_set_up = || Error::invalid("video meetings are not set up on this server");
+    let url = setting("FERRUM_MEET_URL").ok_or_else(not_set_up)?.trim_end_matches('/').to_string();
     if !url.starts_with("wss://") && !url.starts_with("ws://") {
         tracing::warn!("FERRUM_MEET_URL must start with wss:// (ws:// only for a test): meetings are off");
-        return None;
+        return Err(not_set_up());
     }
-    Some(Server { url, key: secret("FERRUM_MEET_KEY")?, secret: secret("FERRUM_MEET_SECRET")? })
+    let hosts = hosts(&url);
+    let key = match keys::MEET_KEY.environment(k, &hosts).await {
+        Some(key) => key.to_string(),
+        None => keys::MEET_KEY.reveal(k).await?.ok_or_else(not_set_up)?.to_string(),
+    };
+    let secret = keys::MEET_SECRET.environment(k, &hosts).await;
+    if secret.is_none() {
+        let allowed = keys::MEET_SECRET.hosts(k).await?.ok_or_else(not_set_up)?;
+        if let Some(host) = hosts.iter().find(|h| !keys::names(&allowed, h)) {
+            tracing::warn!(host, "Comms' secret meet.secret does not name the meeting server's host: meetings are off until its rule does");
+            return Err(Error::Unavailable(format!(
+                "LiveKit's secret may not sign for {host}: the meeting server's address moved, so change the hosts of Comms' secret meet.secret to match"
+            )));
+        }
+    }
+    Ok(Server { url, key, secret })
+}
+
+/// `claims` as a LiveKit token (a JWT, HS256), signed with the environment's secret or by the vault.
+pub(crate) async fn signed(k: &Kernel, server: &Server, claims: &Value) -> Result<String> {
+    let unsigned = unsigned(claims);
+    let signature = match &server.secret {
+        Some(secret) => hmac(secret.as_bytes(), &unsigned),
+        None => keys::MEET_SECRET.sign(k, unsigned.as_bytes()).await?,
+    };
+    Ok(format!("{unsigned}.{}", URL_SAFE_NO_PAD.encode(signature)))
+}
+
+fn unsigned(claims: &Value) -> String {
+    format!("{}.{}", URL_SAFE_NO_PAD.encode(r#"{"alg":"HS256","typ":"JWT"}"#), URL_SAFE_NO_PAD.encode(claims.to_string()))
+}
+
+fn hmac(secret: &[u8], message: &str) -> Vec<u8> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any key length");
+    mac.update(message.as_bytes());
+    mac.finalize().into_bytes().to_vec()
 }
 
 /// Whether the operator runs LiveKit Egress beside LiveKit, for recordings (a setting).
@@ -63,8 +113,8 @@ fn recordings_on() -> bool {
 
 /// LiveKit's server API: `FERRUM_MEET_API_URL` (a setting), or the browsers' address over http(s).
 pub(crate) fn api_url(server: &Server) -> String {
-    match ferrum_kernel::env::var("FERRUM_MEET_API_URL").map(|v| v.trim().trim_end_matches('/').to_string()).filter(|v| !v.is_empty()) {
-        Some(url) => url,
+    match setting("FERRUM_MEET_API_URL") {
+        Some(url) => url.trim_end_matches('/').to_string(),
         None => server.url.replacen("wss://", "https://", 1).replacen("ws://", "http://", 1),
     }
 }
@@ -72,7 +122,10 @@ pub(crate) fn api_url(server: &Server) -> String {
 /// `/api/app/comms/meet/...`
 pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> Result<SiteResponse> {
     match (req.method.as_str(), path) {
-        ("GET", []) => Ok(ok(json!({"available": server().is_some(), "recordings": server().is_some() && recordings_on()}))),
+        ("GET", []) => {
+            let available = server(k).await.is_ok();
+            Ok(ok(json!({"available": available, "recordings": available && recordings_on()})))
+        }
         ("GET", [kind, id, "transcript"]) => Ok(ok(transcript(k, ctx, kind, uuid(id)?).await?)),
         ("POST", [kind, id, "transcript"]) => Ok(ok(said(k, ctx, kind, uuid(id)?, util::body_json(req)?).await?)),
         ("GET", [kind, id, "recordings"]) => Ok(ok(recordings(k, ctx, kind, uuid(id)?).await?)),
@@ -82,7 +135,7 @@ pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> 
         ("POST", ["room", id, "guest-link"]) => Ok(ok(guest_link(k, ctx, uuid(id)?, true).await?)),
         ("DELETE", ["room", id, "guest-link"]) => Ok(ok(guest_link(k, ctx, uuid(id)?, false).await?)),
         ("POST", [kind, id, "token"]) => {
-            let server = server().ok_or_else(|| Error::invalid("video meetings are not set up on this server"))?;
+            let server = server(k).await?;
             let id = id.parse().map_err(|_| Error::NotFound("Meeting".into()))?;
             Ok(ok(join(k, ctx, &server, kind, id).await?))
         }
@@ -117,7 +170,7 @@ async fn join(k: &Kernel, ctx: &Ctx, server: &Server, kind: &str, id: Uuid) -> R
     let name = if ctx.full_name.trim().is_empty() { ctx.email.clone() } else { ctx.full_name.clone() };
     // Each joining is its own participant, so a person can be in from two devices.
     let identity = format!("{}.{}", ctx.user.simple(), hex::encode(rand::random::<[u8; 4]>()));
-    let token = token(server, &identity, &name, &room_name(ctx.tenant, kind, id), chrono::Utc::now().timestamp());
+    let token = token(k, server, &identity, &name, &room_name(ctx.tenant, kind, id), chrono::Utc::now().timestamp()).await?;
     Ok(json!({"url": server.url, "token": token, "title": title, "guest_path": guest_path}))
 }
 
@@ -246,12 +299,9 @@ async fn transcript(k: &Kernel, ctx: &Ctx, kind: &str, id: Uuid) -> Result<Value
 // ───────────────────────────── recordings ─────────────────────────────
 
 /// A short-lived token for LiveKit's server API, allowed to record rooms.
-fn api_token(server: &Server, now: i64) -> String {
+async fn api_token(k: &Kernel, server: &Server, now: i64) -> Result<String> {
     let claims = json!({"iss": server.key, "sub": "ferrum-comms", "nbf": now - 10, "exp": now + 600, "video": {"roomRecord": true}});
-    let unsigned = format!("{}.{}", URL_SAFE_NO_PAD.encode(r#"{"alg":"HS256","typ":"JWT"}"#), URL_SAFE_NO_PAD.encode(claims.to_string()));
-    let mut mac = Hmac::<Sha256>::new_from_slice(server.secret.as_bytes()).expect("HMAC accepts any key length");
-    mac.update(unsigned.as_bytes());
-    format!("{unsigned}.{}", URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
+    signed(k, server, &claims).await
 }
 
 /// One call to LiveKit Egress's API (Twirp, JSON).
@@ -262,7 +312,7 @@ async fn egress(k: &Kernel, server: &Server, method: &str, body: Value) -> Resul
     let unavailable = |e: String| Error::Unavailable(format!("the meeting server's recordings: {e}"));
     let res = client
         .post(parsed)
-        .header("authorization", format!("Bearer {}", api_token(server, chrono::Utc::now().timestamp())))
+        .header("authorization", format!("Bearer {}", api_token(k, server, chrono::Utc::now().timestamp()).await?))
         .header("content-type", "application/json")
         .body(body.to_string())
         .send()
@@ -313,7 +363,7 @@ async fn recordings(k: &Kernel, ctx: &Ctx, kind: &str, id: Uuid) -> Result<Value
             .fetch_all(&mut *tx)
             .await?;
     tx.commit().await?;
-    if let (false, Some(server)) = (going.is_empty(), server()) {
+    if let (false, Ok(server)) = (going.is_empty(), server(k).await) {
         let listed = egress(k, &server, "ListEgress", json!({"room_name": room})).await?;
         let mut tx = k.db.tenant_tx(ctx.tenant).await?;
         for info in listed.get("items").and_then(Value::as_array).into_iter().flatten() {
@@ -349,7 +399,7 @@ async fn recordings(k: &Kernel, ctx: &Ctx, kind: &str, id: Uuid) -> Result<Value
 
 /// `POST /meet/{kind}/{id}/recordings`: starts recording the call, one recording at a time.
 async fn start_recording(k: &Kernel, ctx: &Ctx, kind: &str, id: Uuid) -> Result<Value> {
-    let server = server().filter(|_| recordings_on()).ok_or_else(|| Error::invalid("recordings are not set up on this server"))?;
+    let server = server(k).await.ok().filter(|_| recordings_on()).ok_or_else(|| Error::invalid("recordings are not set up on this server"))?;
     admit(k, ctx, kind, id).await?;
     let room = room_name(ctx.tenant, kind, id);
     let rec = Uuid::new_v4();
@@ -402,7 +452,7 @@ async fn start_recording(k: &Kernel, ctx: &Ctx, kind: &str, id: Uuid) -> Result<
 /// `POST /meet/{kind}/{id}/recordings/{rec}/stop`: stops a recording of the call. Its file is
 /// finished and stored after; the recordings list says where once it is.
 async fn stop_recording(k: &Kernel, ctx: &Ctx, kind: &str, id: Uuid, rec: Uuid) -> Result<Value> {
-    let server = server().ok_or_else(|| Error::invalid("video meetings are not set up on this server"))?;
+    let server = server(k).await?;
     admit(k, ctx, kind, id).await?;
     let room = room_name(ctx.tenant, kind, id);
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
@@ -488,7 +538,7 @@ pub(crate) async fn invitation_link(k: &Kernel, tx: &mut Tx, tenant: Uuid, event
     // Links made before Comms had pages of its own lead to the web app (`/app/meet/…`).
     let link = link.trim();
     let Some((origin, rest)) = link.split_once("/app/meet/event/").or_else(|| link.split_once("/meet/event/")) else { return Ok(None) };
-    if server().is_none()
+    if server(k).await.is_err()
         || rest.trim_end_matches('/').parse::<Uuid>().ok() != Some(event)
         || !origin.starts_with("http")
         || origin.contains(char::is_whitespace)
@@ -504,7 +554,7 @@ pub(crate) async fn invitation_link(k: &Kernel, tx: &mut Tx, tenant: Uuid, event
 /// `POST /api/site/{tenant}/comms/meet/guest {token, name?}`: someone outside the workspace joins by
 /// their link, as "Name (guest)". An event's link names its guest; a room's takes the name typed.
 pub async fn guest(k: &Kernel, req: &SiteRequest) -> Result<SiteResponse> {
-    let server = server().ok_or_else(|| Error::invalid("video meetings are not set up on this server"))?;
+    let server = server(k).await?;
     let body = util::body_json(req)?;
     let link = body.get("token").and_then(Value::as_str).unwrap_or_default();
     let typed = body.get("name").and_then(Value::as_str).map(|n| util::clean_line(n, 60)).filter(|n| !n.trim().is_empty());
@@ -565,13 +615,13 @@ pub async fn guest(k: &Kernel, req: &SiteRequest) -> Result<SiteResponse> {
             let title = crate::meetings::admit_guest(k, tenant, room).await?.ok_or_else(gone)?;
             let identity = format!("guest.{}.{}", hex::encode(&email), hex::encode(rand::random::<[u8; 4]>()));
             let name = typed.unwrap_or(signed_name);
-            let pass = token(&server, &identity, &format!("{name} (guest)"), &room_name(tenant, "room", room), chrono::Utc::now().timestamp());
+            let pass = token(k, &server, &identity, &format!("{name} (guest)"), &room_name(tenant, "room", room), chrono::Utc::now().timestamp()).await?;
             return Ok(ok(json!({"url": server.url, "token": pass, "title": title, "name": name})));
         }
         _ => return Err(gone()),
     };
     let identity = format!("guest.{}", hex::encode(rand::random::<[u8; 6]>()));
-    let pass = token(&server, &identity, &format!("{name} (guest)"), &room_name(tenant, kind, id), chrono::Utc::now().timestamp());
+    let pass = token(k, &server, &identity, &format!("{name} (guest)"), &room_name(tenant, kind, id), chrono::Utc::now().timestamp()).await?;
     Ok(ok(json!({"url": server.url, "token": pass, "title": title, "name": name})))
 }
 
@@ -594,15 +644,15 @@ async fn event_title(k: &Kernel, ctx: &Ctx, tx: &mut Tx, id: Uuid) -> Result<Str
 
 /// A LiveKit access token: a JWT (HS256) admitting `identity` to `room` with camera,
 /// microphone, screen sharing and the meeting's chat.
-pub(crate) fn token(server: &Server, identity: &str, name: &str, room: &str, now: i64) -> String {
-    let claims = json!({
+pub(crate) async fn token(k: &Kernel, server: &Server, identity: &str, name: &str, room: &str, now: i64) -> Result<String> {
+    signed(k, server, &claims(server, identity, name, room, now)).await
+}
+
+fn claims(server: &Server, identity: &str, name: &str, room: &str, now: i64) -> Value {
+    json!({
         "iss": server.key, "sub": identity, "name": name, "nbf": now - 10, "exp": now + TOKEN_SECONDS,
         "video": {"room": room, "roomJoin": true, "canPublish": true, "canSubscribe": true, "canPublishData": true},
-    });
-    let unsigned = format!("{}.{}", URL_SAFE_NO_PAD.encode(r#"{"alg":"HS256","typ":"JWT"}"#), URL_SAFE_NO_PAD.encode(claims.to_string()));
-    let mut mac = Hmac::<Sha256>::new_from_slice(server.secret.as_bytes()).expect("HMAC accepts any key length");
-    mac.update(unsigned.as_bytes());
-    format!("{unsigned}.{}", URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
+    })
 }
 
 #[cfg(test)]
@@ -611,8 +661,9 @@ mod tests {
 
     #[test]
     fn tokens_are_signed_for_one_room() {
-        let server = Server { url: "wss://meet.test".into(), key: "APIkey".into(), secret: "a-secret".into() };
-        let t = token(&server, "u.1", "Ana Rao", "t-room-x", 1_000_000);
+        let server = Server { url: "wss://meet.test".into(), key: "APIkey".into(), secret: Some(Zeroizing::new("a-secret".into())) };
+        let unsigned = unsigned(&claims(&server, "u.1", "Ana Rao", "t-room-x", 1_000_000));
+        let t = format!("{unsigned}.{}", URL_SAFE_NO_PAD.encode(hmac(b"a-secret", &unsigned)));
         let parts: Vec<&str> = t.split('.').collect();
         let mut mac = Hmac::<Sha256>::new_from_slice(b"a-secret").unwrap();
         mac.update(format!("{}.{}", parts[0], parts[1]).as_bytes());

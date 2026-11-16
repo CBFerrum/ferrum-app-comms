@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.22.0
+
+Needs platform 0.3.9 (Ferrum `22d082f7` or later), which reads apps' operator settings. No database or interface change.
+
+**Comms' settings can live in the database.** Comms declares the six it reads: `comms.meet_url`, `comms.meet_api_url`,
+`comms.meet_recordings`, `comms.mail_url`, `comms.mail_admin` and `comms.mail_host`, kept in the server's settings
+table and read at each use, so a change applies on every replica within seconds. The variables still win through this
+release.
+
+**LiveKit's key and secret and the mail administrator's password live in Comms' own vault**, in the installation's
+scope: `meet.key` (read: it goes in each token), `meet.secret` (never read: the vault signs meeting tokens with it) and
+`mail.admin_secret` (never read: the vault puts it on requests to the mail server). Each serves only the hosts its rule
+names: a meeting token is not signed for, and no administrator's or person's mailbox password goes to, an address on
+another host; the refusal says to change the secret's hosts. `FERRUM_MEET_KEY`, `FERRUM_MEET_SECRET` and
+`FERRUM_MAIL_ADMIN_SECRET`, while set, still win, and each is kept in the vault once (under a database lock, so replicas
+starting together keep it once), for the hosts of the addresses then; a server API address added later needs adding to
+`meet.secret`'s hosts once the variables go. With neither, meetings and hosted mail say they are not set up, as before.
+
+**A person's mailbox password goes only to the host it was set for.** Each hosted mailbox's kept password now records
+the mail server's host it was set for (`comms_mailbox_host`, beside the password, never in its store). Webmail and the
+new-mail check send it only while the mail server's address is on that host (any port). If the address has moved to
+another host, nothing is sent: the kept password is forgotten, the next sync sets a new one through the administrator,
+and the person sees "The mail server's address has changed, so your mailbox's password is being set again. Try again in
+a few minutes." A mailbox from before this release has no host yet. At its first use it takes the host in force only when
+a changed settings row could not have given that address: the administrator's password is in the environment, or the
+administrator's password in the vault names that host. Otherwise its password is set again in the same way.
+
 ## 0.21.1
 
 Comms reads its secret fields (an account's SMTP and IMAP passwords and inbound token, a hosted mailbox's password, a subscribed calendar's address, a calendar feed's token, its signing key) with its own handle on the vault, in the same transaction as before, instead of the platform's reader that any app could use, which is deprecated. Its one general reader (a token naming its record) is used for two of its own fields only, `CalendarFeed.token` and `EmailAccount.inbound_token`; the handle refuses any other app's. Another app's test that registers Comms says it owns its packages too (`hooks.own("comms", …)`), as the server does, or its fields are the platform's and Comms is refused them. Needs a platform with the vault's field reader (0.3.8 on the platform's main from cdec881). People see nothing new; while the vault is closed these reads refuse plainly. No database or interface change.

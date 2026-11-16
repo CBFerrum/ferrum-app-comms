@@ -176,6 +176,10 @@ async fn mailbox(k: &Kernel, ctx: &Ctx) -> Result<Mailbox> {
     if status.as_deref() != Some("Active") {
         return Err(Error::Forbidden("your mailbox is locked".into()));
     }
+    tx.commit().await?;
+    // Its password goes only to the host it was set for.
+    hosted::password_goes_to(k, ctx.tenant, row, &url).await?;
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let secret = crate::keys::field(k, &mut tx, ctx.tenant, "HostedMailbox", row, "secret").await?;
     tx.commit().await?;
     Ok(Mailbox { row, url, auth: secret.map(|s| hosted::basic(&address, &s)) })

@@ -543,6 +543,10 @@ pub async fn run(k: &Kernel, tenant: Uuid, budget: Duration) -> Result<usize> {
             break;
         }
         let (Ok(user), Some(account)) = (user.parse::<Uuid>(), account) else { continue };
+        // Its password goes only to the host it was set for; one kept for another is set again, and not sent.
+        if hosted::password_goes_to(k, tenant, mailbox, &url).await.is_err() {
+            continue;
+        }
         let mut tx = k.db.tenant_tx(tenant).await?;
         let secret = crate::keys::field(k, &mut tx, tenant, "HostedMailbox", mailbox, "secret").await?;
         tx.commit().await?;
