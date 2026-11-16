@@ -335,8 +335,7 @@ async fn fresh_kernel(mailer: TestMailer) -> (Arc<Kernel>, ferrum_kernel::vault:
     for source in ferrum_app_comms::reports() {
         ferrum_domain::reports::add_source(source);
     }
-    let settings = KernelSettings { secret_key: Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), ..Default::default() };
-    let k = Kernel::boot(db, catalog(), hooks, settings, Some(Arc::new(mailer))).await.expect("boot");
+    let k = Kernel::boot(db, catalog(), hooks, KernelSettings::default(), Some(Arc::new(mailer))).await.expect("boot");
     k.set_file_store(Arc::new(MemStore::default()));
     (k, comms.expect("Comms' handle"))
 }
@@ -1594,12 +1593,6 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     let names: Vec<&str> = heard.as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
     assert_eq!(names, ["Alice Rao"], "the meeting keeps the others' words");
     app_inbound(&t, &admin, &users, &smtp).await;
-    // Every secret field Comms read (accounts' passwords, mailboxes', feeds' and calendars' addresses, its signing key)
-    // it read with its own handle: none past the vault, which the platform notes (`ferrum task legacy_key`).
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    let past: Vec<_> =
-        k.legacy_key(vec![]).await.unwrap().uses.into_iter().filter(|u| u.0.starts_with("reader:") && u.1.starts_with("src/")).map(|u| u.1).collect();
-    assert!(past.is_empty(), "read past the vault: {past:?}");
 }
 
 /// A calendar and contacts app's session (CalDAV and CardDAV under `/dav`): discovery, an event

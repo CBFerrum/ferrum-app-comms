@@ -46,7 +46,6 @@ async fn kernel(settings: KernelSettings, mails: Mails) -> Arc<Kernel> {
     hooks.app("comms", &[], ferrum_app_comms::register);
     let comms_packages: Vec<String> = ferrum_app_comms::packages().unwrap().iter().map(|p| p.name().to_string()).collect();
     hooks.own("comms", &comms_packages);
-    let settings = KernelSettings { secret_key: Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), ..settings };
     Kernel::boot(db, Catalog::from_packages(packages).expect("catalog"), hooks, settings, Some(Arc::new(mails))).await.expect("boot")
 }
 

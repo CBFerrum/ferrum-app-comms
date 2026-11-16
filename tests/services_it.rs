@@ -48,8 +48,7 @@ async fn replica(database_url: String) -> (Arc<Kernel>, Vault) {
         comms = Some(h.vault());
     });
     hooks.own("comms", &ferrum_app_comms::packages().unwrap().iter().map(|p| p.name().to_string()).collect::<Vec<_>>());
-    let settings = KernelSettings { secret_key: Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), ..Default::default() };
-    let k = Kernel::boot(db, Catalog::from_packages(packages).expect("catalog"), hooks, settings, None).await.expect("boot");
+    let k = Kernel::boot(db, Catalog::from_packages(packages).expect("catalog"), hooks, KernelSettings::default(), None).await.expect("boot");
     (k, comms.expect("Comms' handle"))
 }
 

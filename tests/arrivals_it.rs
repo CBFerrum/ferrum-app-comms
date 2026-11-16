@@ -150,8 +150,7 @@ async fn scenario() {
     let comms = comms.expect("Comms' handle");
     let comms_packages: Vec<String> = ferrum_app_comms::packages().unwrap().iter().map(|p| p.name().to_string()).collect();
     hooks.own("comms", &comms_packages);
-    let settings = KernelSettings { secret_key: Some(ferrum_kernel::secret::SecretKey::new([7u8; 32])), ..Default::default() };
-    let k = Kernel::boot(db, Catalog::from_packages(packages).expect("catalog"), hooks, settings, None).await.expect("boot");
+    let k = Kernel::boot(db, Catalog::from_packages(packages).expect("catalog"), hooks, KernelSettings::default(), None).await.expect("boot");
     let tenant = k
         .create_tenant(NewTenant {
             slug: "acme".into(),
