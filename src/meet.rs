@@ -13,6 +13,12 @@
 //! `wss://`) and an API key and its secret as LiveKit was given them, Comms' secrets `meet.key` and `meet.secret` in the
 //! installation's vault (or `FERRUM_MEET_KEY` and `FERRUM_MEET_SECRET`, which win while set; keys.rs).
 //!
+//! Or LiveKit takes its keys from the vault as it starts: the service `meet` ([`Service`]; `ferrum task render
+//! service:meet to:<dir>`) writes `livekit.yaml`, with `meet.secret` made by the vault at the first render (or the one
+//! already there kept), under the API key `ferrum.<version>`, both the current and the one before while a rotation's
+//! overlap lasts. Comms then signs with the version before during the overlap, which a LiveKit not restarted yet knows
+//! too, and with the current one after it.
+//!
 //! Captions are each person's own: their browser's speech recognition captions their voice into
 //! the call (LiveKit's `lk.transcription` text stream, the one LiveKit's own transcription agents
 //! use, so an operator's agent shows the same way), and what they captioned is kept as the
@@ -44,6 +50,8 @@ pub(crate) struct Server {
     pub(crate) key: String,
     /// The environment's secret, while it sets one; none: the vault's signs.
     secret: Option<Zeroizing<String>>,
+    /// The version of the vault's secret that signs, the one `key` names; none: its current one.
+    version: Option<i32>,
 }
 
 /// A setting (`ferrum_kernel::env`: the environment, else the settings table), read at each use.
@@ -69,11 +77,20 @@ pub(crate) async fn server(k: &Kernel) -> Result<Server> {
         return Err(not_set_up());
     }
     let hosts = hosts(&url);
+    let secret = keys::MEET_SECRET.environment(k, &hosts).await;
+    if secret.is_none()
+        && let Some(d) = keys::MEET_SECRET.describe(k).await?.filter(|d| d.managed_by.is_some())
+    {
+        // The service meet's (a render made or kept it), bound to LiveKit by the render, not to an address: the version
+        // before while a rotation's overlap lasts, which a LiveKit not restarted since knows too; else the current one.
+        let previous = d.previous_until.is_some_and(|until| until > chrono::Utc::now());
+        let version = if previous { d.version - 1 } else { d.version };
+        return Ok(Server { url, key: key_name(version), secret: None, version: Some(version) });
+    }
     let key = match keys::MEET_KEY.environment(k, &hosts).await {
         Some(key) => key.to_string(),
         None => keys::MEET_KEY.reveal(k).await?.ok_or_else(not_set_up)?.to_string(),
     };
-    let secret = keys::MEET_SECRET.environment(k, &hosts).await;
     if secret.is_none() {
         let allowed = keys::MEET_SECRET.hosts(k).await?.ok_or_else(not_set_up)?;
         if let Some(host) = hosts.iter().find(|h| !keys::names(&allowed, h)) {
@@ -83,7 +100,12 @@ pub(crate) async fn server(k: &Kernel) -> Result<Server> {
             )));
         }
     }
-    Ok(Server { url, key, secret })
+    Ok(Server { url, key, secret, version: None })
+}
+
+/// The API key LiveKit's rendered file names a version of `meet.secret` by.
+fn key_name(version: i32) -> String {
+    format!("ferrum.{version}")
 }
 
 /// `claims` as a LiveKit token (a JWT, HS256), signed with the environment's secret or by the vault.
@@ -91,7 +113,7 @@ pub(crate) async fn signed(k: &Kernel, server: &Server, claims: &Value) -> Resul
     let unsigned = unsigned(claims);
     let signature = match &server.secret {
         Some(secret) => hmac(secret.as_bytes(), &unsigned),
-        None => keys::MEET_SECRET.sign(k, unsigned.as_bytes()).await?,
+        None => keys::MEET_SECRET.sign_at(k, unsigned.as_bytes(), server.version).await?,
     };
     Ok(format!("{unsigned}.{}", URL_SAFE_NO_PAD.encode(signature)))
 }
@@ -655,13 +677,83 @@ fn claims(server: &Server, identity: &str, name: &str, room: &str, now: i64) -> 
     })
 }
 
+// ───────────────────────────── the service meet ─────────────────────────────
+
+/// How long the secret before a rotation still signs, and is still given to LiveKit: a day, to restart LiveKit in.
+const OVERLAP_SECS: i64 = 86_400;
+
+/// LiveKit's configuration file, written as LiveKit starts (`ferrum task render service:meet to:<dir>`, then
+/// `livekit-server --config <dir>/livekit.yaml`): its ports, the address it gives browsers (`comms.meet_node_ip`,
+/// `comms.meet_external_ip`) and its keys. `meet.secret` is made by the vault at the first render where it holds none,
+/// or, where it holds one that is no service's yet (Comms 0.22 copied it from `FERRUM_MEET_SECRET`, or a person set it),
+/// kept as it is (keys.rs, `made_or_kept`). Each version kept is written under the API key `ferrum.<version>`, the
+/// current one first, which is what Comms names in the tokens it signs with the vault's (LiveKit started on this file no
+/// longer knows the API key it was given in its environment).
+pub(crate) struct Service;
+
+#[async_trait::async_trait]
+impl ferrum_kernel::companion::Companion for Service {
+    fn files(&self) -> &'static [&'static str] {
+        &["livekit.yaml"]
+    }
+
+    fn made(&self) -> &'static [&'static str] {
+        &[keys::MEET_SECRET.name]
+    }
+
+    async fn render(&self, r: &ferrum_kernel::companion::Rendering<'_>) -> Result<Vec<ferrum_kernel::companion::File>> {
+        let rule = ferrum_kernel::vault::Rule { reveal: true, overlap_secs: OVERLAP_SECS, ..Default::default() };
+        keys::made_or_kept(r, keys::MEET_SECRET.name, rule, || Ok(vec![])).await?;
+        let external = match r.setting("comms.meet_external_ip").map(|v| v.to_ascii_lowercase()).as_deref() {
+            None | Some("true") => true,
+            Some("false") => false,
+            Some(_) => return Err(Error::invalid("comms.meet_external_ip is true or false")),
+        };
+        let node_ip = r.setting("comms.meet_node_ip").unwrap_or_default();
+        if !node_ip.is_empty() && node_ip.parse::<std::net::IpAddr>().is_err() {
+            return Err(Error::invalid("comms.meet_node_ip is the IP address LiveKit gives browsers, such as 203.0.113.7"));
+        }
+        // ponytail: room for the file up front, so that no copy of a secret is left behind in memory a reallocation freed.
+        let mut yaml = Zeroizing::new(String::with_capacity(4096));
+        yaml.push_str("port: 7880\nrtc:\n  tcp_port: 7881\n  udp_port: 7882\n");
+        yaml.push_str(if external { "  use_external_ip: true\n" } else { "  use_external_ip: false\n" });
+        yaml.push_str("  node_ip: ");
+        quoted(&mut yaml, &node_ip);
+        yaml.push_str("\nkeys:\n");
+        for v in r.versions(keys::MEET_SECRET.name).await? {
+            let secret = std::str::from_utf8(&v.value).map_err(|_| Error::invalid("meet.secret is text"))?;
+            yaml.push_str("  ");
+            quoted(&mut yaml, &key_name(v.version));
+            yaml.push_str(": ");
+            quoted(&mut yaml, secret);
+            yaml.push('\n');
+        }
+        let bytes = Zeroizing::new(std::mem::take(&mut *yaml).into_bytes());
+        Ok(vec![ferrum_kernel::companion::File { name: "livekit.yaml".into(), bytes, secret: true }])
+    }
+}
+
+/// `text` as a YAML double-quoted scalar, onto `out`: JSON's escapes, which YAML takes.
+fn quoted(out: &mut String, text: &str) {
+    out.push('"');
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn tokens_are_signed_for_one_room() {
-        let server = Server { url: "wss://meet.test".into(), key: "APIkey".into(), secret: Some(Zeroizing::new("a-secret".into())) };
+        let server = Server { url: "wss://meet.test".into(), key: "APIkey".into(), secret: Some(Zeroizing::new("a-secret".into())), version: None };
         let unsigned = unsigned(&claims(&server, "u.1", "Ana Rao", "t-room-x", 1_000_000));
         let t = format!("{unsigned}.{}", URL_SAFE_NO_PAD.encode(hmac(b"a-secret", &unsigned)));
         let parts: Vec<&str> = t.split('.').collect();
@@ -674,5 +766,16 @@ mod tests {
         assert_eq!((claims["iss"].clone(), claims["sub"].clone(), claims["name"].clone()), (json!("APIkey"), json!("u.1"), json!("Ana Rao")));
         assert_eq!((claims["nbf"].clone(), claims["exp"].clone()), (json!(999_990), json!(1_000_000 + TOKEN_SECONDS)));
         assert_eq!(claims["video"], json!({"room": "t-room-x", "roomJoin": true, "canPublish": true, "canSubscribe": true, "canPublishData": true}));
+    }
+
+    /// What an operator typed (a key from LiveKit's environment) goes into livekit.yaml as one quoted value, whatever it holds.
+    #[test]
+    fn values_are_quoted_whole() {
+        for text in ["APIkey", "", "a \"b\" \\c", "line\nbreak\ttab\u{7f}", "ünïcødé: {x}, #y"] {
+            let mut out = String::new();
+            quoted(&mut out, text);
+            assert!(!out.contains('\n'), "{out}");
+            assert_eq!(serde_json::from_str::<String>(&out).unwrap(), text, "{out}");
+        }
     }
 }
