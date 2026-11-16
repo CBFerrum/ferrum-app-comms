@@ -1,21 +1,6 @@
 -- Private bookkeeping of the comms package (not entities, so never exposed through the generic
--- API): newsletter deliveries and announced reminders. Credentials live in secret fields and
+-- API): announced reminders. Credentials live in secret fields and
 -- attachments in the platform's file storage.
-
--- One row per newsletter recipient, claimed before sending so nobody is mailed twice.
-create table comms_newsletter_delivery (
-  tenant_id uuid not null,
-  newsletter_id uuid not null,
-  email text not null,
-  status text not null check (status in ('sending', 'sent', 'failed')),
-  error text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unsubscribed_at timestamptz,
-  primary key (tenant_id, newsletter_id, email),
-  foreign key (tenant_id, newsletter_id) references e_newsletter (tenant_id, id) on delete cascade
-);
-create index comms_newsletter_delivery_recent on comms_newsletter_delivery (tenant_id, created_at);
 
 -- Reminders already announced: (event, occurrence, offset) fires once.
 create table comms_reminder_log (
@@ -32,7 +17,7 @@ create index comms_reminder_log_fired on comms_reminder_log (fired_at);
 do $$
 declare t text;
 begin
-  foreach t in array array['comms_newsletter_delivery', 'comms_reminder_log'] loop
+  foreach t in array array['comms_reminder_log'] loop
     execute format('alter table %I enable row level security', t);
     execute format('alter table %I force row level security', t);
     execute format(

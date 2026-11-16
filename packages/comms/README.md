@@ -2,7 +2,7 @@
 
 Package `comms` (depends on `core`, logic in `crates/pkg-comms`): email accounts (SMTP sending,
 IMAP polling, inbound webhook), a threaded **Communication** log on any record, email templates,
-mailing lists and newsletters, team chat with live pushes, and calendars with recurrence,
+mailing lists, team chat with live pushes, and calendars with recurrence,
 reminders, free/busy, RSVP and iCalendar (invitations, feeds, import), and video meetings
 on a LiveKit server.
 
@@ -15,7 +15,7 @@ shape (`{"error", "message", "fields"?}`): `not_found` (404), `forbidden` (403),
 | Role | Can |
 |---|---|
 | Comms User | send mail and log calls/notes on records they can read, see the timelines of those records (their own communications also through the generic API), use chat, keep a calendar (own events; events they are invited to are readable) |
-| Comms Manager | email accounts (incl. setting passwords), templates, email groups and members, newsletters, every communication, Communication Settings |
+| Comms Manager | email accounts (incl. setting passwords), templates, email groups and members, every communication, Communication Settings |
 | Chat Admin | every chat channel and message through the generic API (moderation) |
 
 Administrators can do everything. People use chat and calendars through the endpoints below;
@@ -24,15 +24,13 @@ the generic API on `ChatChannel`/`ChatMessage` is for chat administrators only.
 ## Setup
 
 1. **Communication Settings** (`CommsSettings`): `public_url` (e.g. `https://erp.example.com`) —
-   where unsubscribe links, invitations' answer pages, meeting links, the inbound webhook URL and
-   calendar feed URLs point. Left empty, the server's addresses are used: links people follow go
+   where invitations' answer pages, meeting links, the inbound webhook URL and calendar feed URLs
+   point. Left empty, the server's addresses are used: links people follow go
    through the operator's link host when there is one (`FERRUM_LINK_HOST`, so they keep working
    when the workspace's address changes), else the workspace's own address; the inbound address
    and feeds, which other services call, start at the hooks host (`FERRUM_HOOKS_HOST`), else the
    server's public address. A page of the interface (an answer page, a meeting) is reached on the
-   workspace's main host, which serves it; an unsubscribe link may land on its portal's host. A
-   one-click unsubscribe (`List-Unsubscribe`) is posted by mailboxes, and goes to the hooks host.
-   `newsletter_hourly_limit` (default 500); `max_send_attempts` (default 5).
+   workspace's main host, which serves it. `max_send_attempts` (default 5).
 2. **Email Account**: SMTP (`smtp_security`: `STARTTLS` | `TLS` | `None`) and/or IMAP
    (`imap_security`: `TLS` | `STARTTLS` | `None`, `imap_folder`, `poll_interval_minutes`).
    `smtp_password` / `imap_password` are **secret fields** (the server needs `FERRUM_SECRET_KEY`):
@@ -309,8 +307,6 @@ What apps send:
 | Method & path | What |
 |---|---|
 | `POST /inbound/{token}` | A provider forwards one received message (up to 32 MB): the raw MIME as the body (`message/rfc822`), or a `multipart/form-data` form with a `body-mime` (Mailgun), `email` (SendGrid) or `raw` field → `202 {status: "created" \| "duplicate", id}`. Unknown token → 404 |
-| `GET /unsubscribe?n=&e=&s=` | Confirmation page for a newsletter unsubscribe link (a GET never unsubscribes, so link scanners cannot) |
-| `POST /unsubscribe?n=&e=&s=` | Unsubscribes the address from the newsletter's groups and shows a confirmation page; also the RFC 8058 one-click target of the `List-Unsubscribe` header. A changed or incomplete link → 403 page |
 | `GET /calendar/{token}.ics` | The token owner's calendar as iCalendar (events since 180 days ago, recurrences as RRULE, reminders as VALARM) |
 | `POST /meet/guest` | A guest joins a meeting by their link (see Meetings) |
 
@@ -380,30 +376,23 @@ in_reply_to, from, to, cc, subject, at}`: never the body or the files. Raised on
 look forward, only from the time the owner allows it and never for a mailbox marked private. Mail kept as
 `Communication` raises `Communication.created` as before.
 
-## Newsletters
+## Email groups
 
-`EmailGroup` + `EmailGroupMember` (`email` unique per group, `unsubscribed`). A `Newsletter`
-(`subject`, `content` HTML with `{{ member.member_name }}`, `{{ member.email }}`,
-`{{ unsubscribe_url }}`; `email_groups`; `email_account`; `schedule_at`) is scheduled with the
-actions `schedule` / `unschedule` / `cancel_newsletter`, then sent by maintenance in batches within
-the hourly limit, each member once (an address in several groups is mailed once), never to
-unsubscribed members. Every mail has a personal HMAC-signed unsubscribe link (added as a footer
-when the content has no `{{ unsubscribe_url }}`) and `List-Unsubscribe` / `List-Unsubscribe-Post`
-headers. Status `Draft` → `Scheduled` → `Sending` → `Sent` (or `Cancelled`); `total_recipients`,
-`sent_count`, `failed_count` follow along.
+`EmailGroup` + `EmailGroupMember` (`email` unique per group, `unsubscribed`): a mailing list on the hosted mail server
+when the group has a `mail_address` (Distribution list, above), and an audience the Campaigns app sends bulk mail to,
+with consent, topics, the suppression list, one-click unsubscribe and its hourly limit.
 
 ## Reports
 
-`email_activity` (sent / received / failed / waiting per account and day), `newsletter_performance`
-(recipients, delivered %, unsubscribes), `chat_activity` (messages and active members per channel;
-chat administrators). Parameters `from_date` / `to_date` default to the last 30 days.
+`email_activity` (sent / received / failed / waiting per account and day), `chat_activity` (messages
+and active members per channel; chat administrators). Parameters `from_date` / `to_date` default to the last 30 days.
 
 ## Background work
 
 Every minute (`maintenance`, one replica at a time): retry due mail and requeue mail stuck in
 Sending for 10 minutes; poll IMAP accounts whose interval passed (only UIDs above the last one; a
 new UIDVALIDITY rereads the folder; the first poll takes the newest 50; at most 50 per poll);
-start due newsletters and send the next batch; announce due reminders; keep hosted mailboxes in
+announce due reminders; keep hosted mailboxes in
 step (every ten minutes); purge old reminder bookkeeping and meeting rooms nobody joined for 90 days. While an account's SMTP server is failing, newly queued mail waits for these retries
 instead of holding up the outbox worker with a timeout per message.
 Received mail is deduplicated by Message-ID, so the webhook and the poller can both deliver the

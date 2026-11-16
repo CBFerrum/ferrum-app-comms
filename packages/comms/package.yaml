@@ -1,7 +1,7 @@
 package: comms
-version: 0.4.0
+version: 0.5.0
 label: Communication
-description: Mail (accounts, threaded communications on any record, templates, inbound mail, newsletters), team chat and calendars with ICS.
+description: Mail (accounts, threaded communications on any record, templates, inbound mail), team chat and calendars with ICS.
 # The people mail goes to and the address book calendar and contacts apps read (Ferrum
 # docs/plan/apps-ui.md §13): the platform's shared contacts.
 depends: [core, contacts]
@@ -11,8 +11,8 @@ modules:
     label: Communication
     icon: mail
     order: 40
-    items: [Communication, CalendarEvent, EmailTemplate, EmailAccount, EmailGroup, EmailGroupMember, Newsletter, ChatChannel, ChatMessage,
-            CommsSettings, HostedMailbox, SharedMailbox, report:email_activity, report:newsletter_performance, report:chat_activity]
+    items: [Communication, CalendarEvent, EmailTemplate, EmailAccount, EmailGroup, EmailGroupMember, ChatChannel, ChatMessage,
+            CommsSettings, HostedMailbox, SharedMailbox, report:email_activity, report:chat_activity]
 
 # What a personal-data request exports and erases for a person (their email): the messages they
 # sent, emptied of their address, name, words and attached files' list.
@@ -34,14 +34,13 @@ roles:
       - {entity: Contact, read: true}
       - {entity: Address, read: true}
   - name: Comms Manager
-    description: Email accounts and their credentials, templates, mailing lists, newsletters and every communication.
+    description: Email accounts and their credentials, templates, mailing lists and every communication.
     permissions:
       - {entity: Communication, read: true, write: true, create: true, delete: true, export: true}
       - {entity: EmailAccount, read: true, write: true, create: true, delete: true}
       - {entity: EmailTemplate, read: true, write: true, create: true, delete: true, export: true, import: true}
       - {entity: EmailGroup, read: true, write: true, create: true, delete: true}
       - {entity: EmailGroupMember, read: true, write: true, create: true, delete: true, export: true, import: true}
-      - {entity: Newsletter, read: true, write: true, create: true, delete: true}
       - {entity: CommsSettings, read: true, write: true, create: true}
       - {entity: HostedMailbox, read: true}
       - {entity: SharedMailbox, read: true, write: true, create: true, delete: true}
@@ -51,4 +50,4 @@ roles:
     permissions:
       - {entity: ChatChannel, read: true, write: true, create: true, delete: true, export: true}
       - {entity: ChatMessage, read: true, write: true, create: true, delete: true, export: true}
-export_tables: [comms_newsletter_delivery, comms_reminder_log, comms_meeting, comms_mail_route, comms_mail_filing]
+export_tables: [comms_reminder_log, comms_meeting, comms_mail_route, comms_mail_filing]
