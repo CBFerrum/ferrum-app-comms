@@ -22,6 +22,7 @@ use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 fn url() -> String {
@@ -322,6 +323,39 @@ async fn scenario(logs: Logs) {
     assert_eq!(events(&k, "manage", "mail.admin_secret").await.len(), 1);
     assert_eq!(ferrum_app_comms::mail_admin_account(&k).await.expect("nothing restarted"), "admin-account");
 
+    // ── someone who leaves keeps no mailbox for long, whichever replica runs the upkeep ──
+    // The workspace has hosted mail; each round that brings its mailboxes in step signs in to the mail server first (the
+    // stand-in knows nothing more, so the round stops there).
+    let sys = Ctx::system(tenant, k.registry.schema(tenant).await.unwrap());
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let row: Option<uuid::Uuid> =
+        sqlx::query_scalar("select id from e_comms_settings where tenant_id = $1").bind(tenant).fetch_optional(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let domain = json!({"mail_domain": "acme.test"}).as_object().cloned().unwrap();
+    match row {
+        Some(id) => k.update(&sys, "CommsSettings", id, domain, None).await.map(|_| ()),
+        None => k.insert(&sys, "CommsSettings", domain).await.map(|_| ()),
+    }
+    .expect("hosted mail for acme.test");
+    let signed_in = || mail.sessions.load(Ordering::SeqCst);
+    let round = |k: Arc<Kernel>| async move {
+        let _ = ferrum_app_comms::maintenance(&k).await;
+    };
+    let before = signed_in();
+    round(k2.clone()).await;
+    assert_eq!(signed_in(), before + 1, "a round brings the mailboxes in step");
+    round(k2.clone()).await;
+    round(k.clone()).await;
+    assert_eq!(signed_in(), before + 1, "not again within ten minutes, on either replica");
+    // Someone leaves, and this replica hears of it; the next round, on the other, brings the mailboxes in step at once.
+    let lee = k.create_user(&admin, "lee@acme.test", "Lee Leaver", Some("Correct-Horse-9"), &[], false).await.expect("user");
+    k.deprovision_user(&admin, lee, None, "left").await.expect("deprovisioned");
+    while k.dispatch_outbox_once().await.expect("dispatch") > 0 {}
+    round(k2.clone()).await;
+    assert_eq!(signed_in(), before + 2, "at the next round, whichever replica runs it");
+    round(k2.clone()).await;
+    assert_eq!(signed_in(), before + 2, "and then not again within ten minutes");
+
     // ── nothing secret anywhere it should not be ──
     let record = serde_json::to_string(&vault::events(&k.db, None, 1000).await.unwrap()).unwrap();
     let mut tx = k.db.pool.begin().await.unwrap();
@@ -489,6 +523,8 @@ impl Livekit {
 struct Stalwart {
     port: u16,
     password: Arc<Mutex<Option<Zeroizing<String>>>>,
+    /// How often the administrator signed in.
+    sessions: Arc<AtomicUsize>,
 }
 
 impl Stalwart {
@@ -496,12 +532,13 @@ impl Stalwart {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let password: Arc<Mutex<Option<Zeroizing<String>>>> = Arc::default();
-        let held = password.clone();
+        let sessions: Arc<AtomicUsize> = Arc::default();
+        let (held, counted) = (password.clone(), sessions.clone());
         tokio::spawn(async move {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             loop {
                 let Ok((mut sock, _)) = listener.accept().await else { return };
-                let held = held.clone();
+                let (held, counted) = (held.clone(), counted.clone());
                 tokio::spawn(async move {
                     let mut buf = vec![0u8; 8192];
                     let mut n = 0;
@@ -516,6 +553,9 @@ impl Stalwart {
                     let pair = auth.and_then(|a| base64::Engine::decode(&base64::engine::general_purpose::STANDARD, a).ok());
                     let expected = held.lock().unwrap().as_ref().map(|p| format!("admin:{}", p.as_str()).into_bytes());
                     let ok = head.starts_with("GET /jmap/session ") && pair.is_some() && pair == expected;
+                    if ok {
+                        counted.fetch_add(1, Ordering::SeqCst);
+                    }
                     let (status, body) = if ok {
                         ("200 OK", json!({"primaryAccounts": {"urn:stalwart:jmap": "admin-account"}}).to_string())
                     } else {
@@ -527,7 +567,7 @@ impl Stalwart {
                 });
             }
         });
-        Stalwart { port, password }
+        Stalwart { port, password, sessions }
     }
 
     /// Started (again) on the file written for it.

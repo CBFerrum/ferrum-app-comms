@@ -26,11 +26,10 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use ferrum_kernel::vault::{Carry, Scope};
-use ferrum_kernel::{Ctx, Doc, DocHook, Error, HookCtx, Kernel, Result};
+use ferrum_kernel::{Ctx, Doc, DocHook, Error, HookCtx, Kernel, Result, Tx};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use uuid::Uuid;
 
 /// How often maintenance brings a workspace's mailboxes in step.
@@ -504,13 +503,14 @@ pub async fn reconcile(k: &Kernel, tenant: Uuid) -> Result<Value> {
     Ok(report)
 }
 
-/// The next maintenance round brings the workspace in step (a changed shared mailbox or list),
-/// instead of waiting out the ten minutes.
-// ponytail: the wait is per replica; one whose maintenance round runs elsewhere waits it out.
-pub(crate) fn soon(tenant: Uuid) {
-    if let Some(last) = LAST.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-        last.remove(&tenant);
-    }
+/// The next maintenance round, on whichever replica runs it, brings the workspace in step (someone left, a changed
+/// shared mailbox or list, the settings) instead of waiting out the ten minutes: in `tx`, with the change that asks.
+pub(crate) async fn soon(tx: &mut Tx, tenant: Uuid) -> Result<()> {
+    sqlx::query("insert into comms_mail_sync (tenant_id) values ($1) on conflict (tenant_id) do update set due_at = now()")
+        .bind(tenant)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }
 
 /// When the mail server refuses a person's kept password (restored from a backup, changed by hand,
@@ -522,20 +522,26 @@ pub(crate) async fn renew(k: &Kernel, tenant: Uuid, mailbox: Uuid) -> Result<()>
     reconcile(k, tenant).await.map(|_| ())
 }
 
-static LAST: Mutex<Option<HashMap<Uuid, Instant>>> = Mutex::new(None);
-
-/// From maintenance: [`reconcile`] at most every ten minutes, for workspaces with hosted mail.
+/// From maintenance: [`reconcile`] when it is due (ten minutes after the last, or at once after [`soon`]), for workspaces
+/// with hosted mail. The round that takes it, on whichever replica, moves the next time on in the same statement, so two
+/// rounds at once do not both.
 pub async fn reconcile_due(k: &Kernel, tenant: Uuid) -> Result<()> {
     if !configured(k).await? || mail_domain(k, tenant).await?.is_none() {
         return Ok(());
     }
-    {
-        let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
-        let last = last.get_or_insert_with(HashMap::new);
-        if last.get(&tenant).is_some_and(|at| at.elapsed() < EVERY) {
-            return Ok(());
-        }
-        last.insert(tenant, Instant::now());
+    let mut tx = k.db.tenant_tx(tenant).await?;
+    let taken = sqlx::query(
+        "insert into comms_mail_sync (tenant_id, due_at) values ($1, now() + make_interval(secs => $2)) \
+         on conflict (tenant_id) do update set due_at = excluded.due_at where comms_mail_sync.due_at <= now()",
+    )
+    .bind(tenant)
+    .bind(EVERY.as_secs_f64())
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    tx.commit().await?;
+    if taken == 0 {
+        return Ok(());
     }
     reconcile(k, tenant).await.map(|_| ())
 }
@@ -546,8 +552,7 @@ pub struct SettingsHook;
 #[async_trait]
 impl DocHook for SettingsHook {
     async fn after_save(&self, hc: &mut HookCtx<'_>, _doc: &Doc, _old: Option<&Doc>) -> Result<()> {
-        soon(hc.ctx.tenant);
-        Ok(())
+        soon(hc.tx, hc.ctx.tenant).await
     }
     async fn action(&self, hc: &mut HookCtx<'_>, name: &str, _doc: &Doc, _params: &Value) -> Result<Option<Value>> {
         match name {

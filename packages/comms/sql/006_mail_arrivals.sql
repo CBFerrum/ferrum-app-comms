@@ -1,5 +1,5 @@
 -- New mail known on the server (src/arrivals.rs): where each hosted mailbox was last looked at, the
--- notifications' targets, and the workspace's allowed and blocked senders. Bookkeeping, not
+-- notifications' targets, when the mailboxes are next brought in step, and the workspace's allowed and blocked senders. Bookkeeping, not
 -- entities: never exposed through the generic API.
 
 -- One row per hosted mailbox: the mail server's Email state last seen (null until the first look,
@@ -33,6 +33,13 @@ create table comms_mail_notice (
 );
 create index comms_mail_notice_created on comms_mail_notice (created_at);
 
+-- When each workspace's hosted mailboxes are next brought in step (src/hosted.rs): ten minutes after the last time,
+-- and at the next round of upkeep, whichever replica runs it, once a change asks for it (`soon`).
+create table comms_mail_sync (
+  tenant_id uuid primary key references tenant(id) on delete cascade,
+  due_at timestamptz not null default now()
+);
+
 -- Senders the whole workspace allows (never Spam) or blocks (always Spam): an address or a domain.
 create table comms_mail_sender (
   tenant_id uuid not null references tenant(id) on delete cascade,
@@ -46,7 +53,7 @@ create table comms_mail_sender (
 do $$
 declare t text;
 begin
-  foreach t in array array['comms_mail_cursor', 'comms_mail_notice', 'comms_mail_sender'] loop
+  foreach t in array array['comms_mail_cursor', 'comms_mail_notice', 'comms_mail_sync', 'comms_mail_sender'] loop
     execute format('alter table %I enable row level security', t);
     execute format('alter table %I force row level security', t);
     execute format(

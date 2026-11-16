@@ -610,8 +610,12 @@ pub struct MailSink;
 impl EventSink for MailSink {
     async fn on_event(&self, k: &Kernel, ev: &Event) -> Result<()> {
         if ev.topic == ferrum_kernel::lifecycle::DEPROVISIONED_TOPIC {
-            // Someone gone keeps no mailbox: it locks at the next round of maintenance.
-            crate::hosted::soon(ev.tenant_id);
+            // Someone gone keeps no mailbox: it locks at the next round of maintenance, whichever replica runs it.
+            if matches!(k.registry.schema(ev.tenant_id).await, Ok(s) if s.packages.iter().any(|p| p == "comms")) {
+                let mut tx = k.db.tenant_tx(ev.tenant_id).await?;
+                crate::hosted::soon(&mut tx, ev.tenant_id).await?;
+                tx.commit().await?;
+            }
             return Ok(());
         }
         if ev.entity.as_deref() != Some("Communication") || !(ev.topic.ends_with(".created") || ev.topic.ends_with(".updated")) {
