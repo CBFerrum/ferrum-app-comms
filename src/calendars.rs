@@ -10,10 +10,9 @@
 //! | `FreeBusy` | a share "see only free and busy", or a "busy only" event in a details share: when, as "Busy" |
 //! | `None` | nothing: the event does not exist for them |
 //!
-//! Every event belongs to exactly one calendar of its organizer's; one with none (made before
-//! 0.17) belongs to its organizer's default calendar, which [`ensure_default`] makes ("Personal")
-//! and fills, idempotently, the first time the organizer's calendars are asked for. A share counts
-//! only while both people are active in the workspace (a leaver is deactivated: `app_user.is_active`).
+//! Every event belongs to exactly one calendar of its organizer's: the one it names, else their default
+//! ("Personal"), which [`ensure_default`] makes the first time it is needed. A share counts only while
+//! both people are active in the workspace (a leaver is deactivated: `app_user.is_active`).
 //!
 //! A share names a person (by sign-in email) or a group: a role of the workspace, as Drive shares
 //! with roles. A group's members are read when access is checked (`user_role`, unexpired), so
@@ -144,7 +143,7 @@ pub async fn groups(k: &Kernel, ctx: &Ctx) -> Result<Value> {
     )
 }
 
-/// My default calendar ("Personal", made now if I have none), with my events that have no calendar put in it.
+/// My default calendar ("Personal", made now if I have none).
 pub async fn ensure_default(k: &Kernel, tx: &mut Tx, ctx: &Ctx, owner: &str) -> Result<Uuid> {
     let owner = owner.to_lowercase();
     let found: Option<Uuid> = sqlx::query_scalar("select id from e_calendar where tenant_id = $1 and owner = $2 order by is_default desc, created_at limit 1")
@@ -152,21 +151,13 @@ pub async fn ensure_default(k: &Kernel, tx: &mut Tx, ctx: &Ctx, owner: &str) -> 
         .bind(&owner)
         .fetch_optional(&mut **tx)
         .await?;
-    let id = match found {
-        Some(id) => id,
+    match found {
+        Some(id) => Ok(id),
         None => {
             let doc = util::obj(json!({"calendar_name": "Personal", "owner": owner, "tone": "blue", "is_default": true}));
-            util::doc_id(&k.insert_tx(&util::sys(ctx), tx, "Calendar", doc).await?)?
+            util::doc_id(&k.insert_tx(&util::sys(ctx), tx, "Calendar", doc).await?)
         }
-    };
-    // One statement, indexed by owner: safe to run again, and cheap (measured in the report).
-    sqlx::query("update e_calendar_event set calendar = $3 where tenant_id = $1 and owner = $2 and calendar is null")
-        .bind(ctx.tenant)
-        .bind(&owner)
-        .bind(id)
-        .execute(&mut **tx)
-        .await?;
-    Ok(id)
+    }
 }
 
 /// One share as its owner reads it: a person or a group, and the level.

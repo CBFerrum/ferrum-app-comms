@@ -1794,8 +1794,7 @@ async fn calendar_apps(t: &T, users: &HashMap<String, Ctx>) {
 /// Hosted mailboxes on a real Stalwart (`FERRUM_MAIL_URL`, `FERRUM_MAIL_ADMIN`,
 /// `FERRUM_MAIL_ADMIN_SECRET`; `tests/stalwart.sh` starts one): skipped without one.
 /// Several calendars and sharing them (0.17): THE access rule, from every route that reads or
-/// writes events, at each level and unshared; a leaver loses access; the owner removes it at once;
-/// the default calendar is made and filled for events from before (timed over 10,000 events).
+/// writes events, at each level and unshared; a leaver loses access; the owner removes it at once.
 async fn calendar_sharing(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>) {
     // Edit goes to Meera (a Comms User too); Erin is a Comms User nothing is shared with.
     let erin_id = t.k.create_user(admin, "erin@acme.test", "Erin Elsewhere", Some(PASSWORD), &["Comms User".to_string()], false).await.expect("user");
@@ -1806,7 +1805,7 @@ async fn calendar_sharing(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>) {
     let personal = mine.iter().find(|c| c["is_default"] == json!(true)).expect("a default calendar for everyone").clone();
     assert_eq!(personal["name"], json!("Personal"));
     let personal_id = personal["id"].as_str().unwrap().to_string();
-    // Every event of Alice's from before is in it now.
+    // Every event of Alice's is in one of her calendars.
     let loose: i64 = t
         .scalar("select count(*) from e_calendar_event where tenant_id = $1 and owner = 'alice@acme.test' and calendar is null and $2::uuid is null", None)
         .await;
@@ -1954,44 +1953,8 @@ async fn calendar_sharing(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>) {
     assert_eq!(k.get(alice, "CalendarEvent", ev, false).await.unwrap()["calendar"], json!(personal_id));
     assert!(titles(&listed(carol).await).is_empty());
 
-    // The default calendar for events from before 0.17, over 10,000 of them: made and filled once, idempotently.
-    let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
-    sqlx::query(
-        "insert into e_calendar_event select (jsonb_populate_record(null::e_calendar_event, to_jsonb(e) || jsonb_build_object('id', gen_random_uuid(), \
-         'ical_uid', gen_random_uuid()::text, 'calendar', null, 'owner', 'carol@acme.test'))).* from e_calendar_event e, generate_series(1, 10000) where e.tenant_id = $1 and e.id = $2",
-    )
-    .bind(t.tenant)
-    .bind(ev)
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-    // As before 0.17: Carol's events in no calendar, and Carol with none.
-    sqlx::query("update e_calendar_event set calendar = null where tenant_id = $1 and owner = 'carol@acme.test'")
-        .bind(t.tenant)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    sqlx::query("delete from e_calendar where tenant_id = $1 and owner = 'carol@acme.test'").bind(t.tenant).execute(&mut *tx).await.unwrap();
-    tx.commit().await.unwrap();
-    let started = std::time::Instant::now();
-    t.ok(carol, "GET", "/calendar/calendars", &[], Value::Null).await;
-    println!("default calendar made and 10,000 events put in it in {:?}", started.elapsed());
-    let again = std::time::Instant::now();
-    t.ok(carol, "GET", "/calendar/calendars", &[], Value::Null).await;
-    println!("and asked again (nothing to do) in {:?}", again.elapsed());
-    let loose: i64 = t
-        .scalar("select count(*) from e_calendar_event where tenant_id = $1 and owner = 'carol@acme.test' and calendar is null and $2::uuid is null", None)
-        .await;
-    assert_eq!(loose, 0);
-    let cals_of_carol: i64 = t.scalar("select count(*) from e_calendar where tenant_id = $1 and owner = 'carol@acme.test' and $2::uuid is null", None).await;
-    assert_eq!(cals_of_carol, 1);
-    let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
-    sqlx::query("delete from e_calendar_event where tenant_id = $1 and owner = 'carol@acme.test' and subject like 'Salary%'")
-        .bind(t.tenant)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
     // Erin leaves again, so later counts of the team are as they were.
+    let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
     sqlx::query("update app_user set is_active = false where tenant_id = $1 and email = 'erin@acme.test'").bind(t.tenant).execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
 }

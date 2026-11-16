@@ -1149,25 +1149,6 @@ pub async fn fire_reminders(k: &Kernel, tenant: Uuid) -> Result<usize> {
                     continue;
                 }
                 let mut tx = k.db.tenant_tx(tenant).await?;
-                // An occurrence whose instant moved (repeating events follow their zone's clock
-                // since 0.16) and was reminded at its old instant on the same local day counts as
-                // reminded.
-                let near: Vec<DateTime<Utc>> = sqlx::query_scalar(
-                    "select occurrence_start from comms_reminder_log where tenant_id = $1 and event_id = $2 and minutes_before = $3 \
-                     and occurrence_start between $4 and $5 and occurrence_start <> $6",
-                )
-                .bind(tenant)
-                .bind(event)
-                .bind(*m as i32)
-                .bind(start - Duration::days(1))
-                .bind(start + Duration::days(1))
-                .bind(start)
-                .fetch_all(&mut *tx)
-                .await?;
-                if reminded_that_day(start, &near, sr.zone) {
-                    tx.commit().await?;
-                    continue;
-                }
                 let first = sqlx::query(
                     "insert into comms_reminder_log (tenant_id, event_id, occurrence_start, minutes_before) values ($1, $2, $3, $4) on conflict do nothing",
                 )
@@ -1343,13 +1324,6 @@ async fn shared_delete(k: &Kernel, ctx: &Ctx, event: Uuid) -> Result<Value> {
     Ok(json!({"deleted": event}))
 }
 
-/// Whether a reminder for the occurrence at `start` already went out for one at another instant of
-/// the same local day (in the event's zone): the same occurrence, moved by a change of clocks.
-fn reminded_that_day(start: DateTime<Utc>, fired: &[DateTime<Utc>], zone: Option<chrono_tz::Tz>) -> bool {
-    let day = recur::wall(start, zone).date();
-    fired.iter().any(|f| *f != start && recur::wall(*f, zone).date() == day)
-}
-
 /// `GET /calendar/search?q=`: the bar's search provider (`shell.search`): events I can see (mine,
 /// those I am invited to, public ones) whose title, place, notes, organizer or guests match, from
 /// half a year back to a year on, each opening at its next occurrence (or its last one).
@@ -1456,14 +1430,6 @@ mod tests {
         assert_eq!((ev.tzid.map(|z| z.name()), ev.rrule.as_deref()), (Some("Asia/Kolkata"), Some("FREQ=WEEKLY;COUNT=2")));
         let all_day = event(json!({"subject": "Offsite", "starts_at": "2026-12-24T00:00:00Z", "ends_at": "2026-12-26T00:00:00Z", "all_day": true}));
         assert_eq!(when(&all_day), "Thu 24 Dec 2026 – Fri 25 Dec 2026 (all day)");
-        // A reminder at 08:00 UTC for a London 09:00 that is now 09:00 UTC (after the clocks went back) was that day's.
-        let at = |v: &str| v.parse::<DateTime<Utc>>().unwrap();
-        let london = ics::zone("Europe/London");
-        assert!(reminded_that_day(at("2026-11-02T09:00:00Z"), &[at("2026-11-02T08:00:00Z")], london));
-        assert!(!reminded_that_day(at("2026-11-02T09:00:00Z"), &[at("2026-10-26T09:00:00Z"), at("2026-11-02T09:00:00Z")], london));
-        // Kolkata 00:30 is 19:00 UTC the day before: the day is the event's own.
-        assert!(reminded_that_day(at("2026-11-01T19:00:00Z"), &[at("2026-11-01T18:30:00Z")], ics::zone("Asia/Kolkata")));
-        assert!(!reminded_that_day(at("2026-11-02T03:30:00Z"), &[at("2026-11-01T03:30:00Z")], ics::zone("Asia/Kolkata")));
         assert!(found(&d, "board ASHA") && found(&d, "guest@partner") && found(&d, "Guest") && !found(&d, "board lunch"));
         assert_eq!(merge(vec![]), vec![]);
         let t = |h: u32| NaiveDate::from_ymd_opt(2026, 11, 2).unwrap().and_hms_opt(h, 0, 0).unwrap().and_utc();

@@ -837,7 +837,7 @@ async fn events(k: &Kernel, ctx: &Ctx, c: &Coll, only: Option<&[Uuid]>) -> Resul
             where a.tenant_id = e.tenant_id and a.parent_id = e.id), 'reminders', (select coalesce(jsonb_agg(to_jsonb(r) order by r.idx), '[]') \
             from {rem} r where r.tenant_id = e.tenant_id and r.parent_id = e.id)), coalesce(n.name, e.id::text || '.ics') \
          from e_calendar_event e left join comms_dav_name n on n.tenant_id = e.tenant_id and n.event_id = e.id \
-         where e.tenant_id = $1 and (case when $5 then (e.owner = $2 and (e.calendar = $4 or e.calendar is null)) or (e.owner <> $2 and exists (select 1 \
+         where e.tenant_id = $1 and (case when $5 then (e.owner = $2 and e.calendar = $4) or (e.owner <> $2 and exists (select 1 \
               from {att} a where a.tenant_id = e.tenant_id and a.parent_id = e.id and a.email = $2 and a.response <> 'Declined')) else e.calendar = $4 end) \
          and (e.recurrence is not null or e.ends_at > now() - interval '{DAYS_BACK} days' or e.starts_at > now() - interval '{DAYS_BACK} days') \
          and ($3::uuid[] is null or e.id = any($3)) order by e.starts_at, e.id limit {MAX_ITEMS}",
