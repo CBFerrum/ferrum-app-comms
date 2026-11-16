@@ -41,7 +41,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 | | |
 |---|---|
-| 📦 **Version** | 0.24.0 |
+| 📦 **Version** | 0.25.0 |
 | 🖥️ **Kind** | Its own interface: four shell apps at `/mail/`, `/chat/`, `/calendar/` and `/meet/` |
 | ➕ **What it adds** | 19 entities in one package, 3 roles, 2 reports, 4 launcher apps, 3 intents, a side panel, bar search, 10 kinds of notification, 2 public pages |
 | 🧱 **Depends on** | The platform's `core` and `contacts` packages. Nothing else is required |

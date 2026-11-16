@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.25.0
+
+Package `comms` 0.6.0. Database change: the package's SQL is one baseline, `001_comms.sql` (edited in place: nothing is
+installed; a development database that applied the old files keeps their checksums and needs resetting);
+`comms_mailbox_host` is gone, `comms_mail_sync` is new, and every table of the package enforces row-level security.
+The interface is unchanged.
+
+**Mail keeps no `x-ferrum-` header a sender wrote.** Every `x-ferrum-*` header of an incoming message was kept before
+Mail wrote its own verdict, and the first value of a name won: a sender who wrote `X-Ferrum-Auth: verified` had it stored
+as Mail's verdict although the receiving server said DMARC failed, and one who wrote `X-Ferrum-Helpdesk` had the mail
+taken by Helpdesk as its own. No `x-ferrum-` name is taken from a message now, and Mail's verdict `x-ferrum-auth` is
+always written, over anything and whatever else was kept.
+
+**Two tables enforce row-level security.** `comms_calendar_hours` and `comms_event_proposal` held workspaces' rows
+without it, and the platform's doctor reported a blocker for any installation with Comms.
+
+**Hosted mailboxes are brought in step on time, whichever replica runs the upkeep.** When each workspace was last
+brought in step, and "soon" (someone left, a shared mailbox or list changed, the settings were saved), lived in one
+replica's memory, so a person who left could keep their mailbox for ten minutes more per replica rotation. The next time
+is now a row (`comms_mail_sync`) that any replica's round takes.
+
+**Comms' secrets live in its vault only.** `FERRUM_MEET_KEY`, `FERRUM_MEET_SECRET` and `FERRUM_MAIL_ADMIN_SECRET` are
+not read, and nothing is copied from the environment. The services `meet` and `mail` make `meet.secret` and
+`mail.admin_secret` at their first render, or keep the one the operator set before it
+(`PUT /api/operator/secrets/comms/<name>`); an operator who runs LiveKit themselves sets `meet.key` and `meet.secret`
+there, bound to its hosts. The settings declare no `sends:` any more. People's mailbox passwords go only to a host the
+rule of `mail.admin_secret` names. With the vault closed, meetings are refused plainly, as guest links are.
+
+**Only today's shapes are read.** A room's guest link opens only with the key the room keeps sealed (one kept as it is,
+from before 0.21, does not), and an event's meeting link only in Comms' own form (`/meet/event/…`). Events without a
+calendar (before 0.17) are no longer gathered into the default calendar each time calendars are read, an exception
+instant removes only the occurrence that starts then (not any within three hours, for instants stored before 0.16), and a
+reminder goes once per occurrence and offset, so a meeting moved later the same day is reminded at its new time.
+
+**The mail domain's checks ask DNS through hickory's resolver**, the one the platform already builds, instead of a client
+of Comms' own. A name that does not exist, or has no records of the kind, still reads as nothing published; a failing
+server as an error.
+
 ## 0.24.0
 
 Package `comms` 0.5.0. Database change: the entities `Newsletter` and `NewsletterEmailGroup`, the setting
