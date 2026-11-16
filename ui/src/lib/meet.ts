@@ -44,7 +44,7 @@ export function useMeetRecordings(enabled = true) {
 export const meetLink = (kind: MeetKind, id: string, origin = location.origin) => `${origin}/meet/${kind}/${id}`;
 
 /** The page in this app (`/meet/{kind}/{id}`) a meeting link of this app opens, from today's links
- *  and those the web app made before (`/app/meet/…`); null for others. */
+ *  and the web app's earlier ones for a channel or a room (`/app/meet/…`; its event links are no longer served); null for others. */
 export function meetPath(href: string | null | undefined, origin = location.origin): string | null {
   if (!href) return null;
   let url: URL;
@@ -53,8 +53,8 @@ export function meetPath(href: string | null | undefined, origin = location.orig
   } catch {
     return null;
   }
-  const m = url.origin === origin ? /^(?:\/app)?\/meet\/(channel|event|room)\/([0-9a-f-]{36})\/?$/i.exec(url.pathname) : null;
-  return m ? `/meet/${m[1].toLowerCase()}/${m[2].toLowerCase()}` : null;
+  const m = url.origin === origin ? /^(?:\/app\/meet\/(channel|room)|\/meet\/(channel|event|room))\/([0-9a-f-]{36})\/?$/i.exec(url.pathname) : null;
+  return m ? `/meet/${(m[1] ?? m[2]).toLowerCase()}/${m[3].toLowerCase()}` : null;
 }
 
 /** What the browser and the device are, as far as opening a call goes. */

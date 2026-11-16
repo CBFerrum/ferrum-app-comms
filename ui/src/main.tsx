@@ -4,21 +4,13 @@
 // public page (/meet/guest/…). What Comms does for other apps (compose, schedule, share, the Chat
 // panel) is in Intents.tsx.
 
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { StrictMode, useEffect } from "react";
-import { createRoot } from "react-dom/client";
-import { createBrowserRouter, Link, Outlet, RouterProvider, useLocation, useRouteError } from "react-router";
-import { addCatalogs, isPublicPage, routeBase, shell, t, wordsReady } from "@ferrum/client";
-import { ConfirmHost, EmptyState, StatePanel, Toaster } from "@ferrum/kit";
+import { useEffect } from "react";
+import { Link, Outlet, useLocation, useRouteError } from "react-router";
+import { isPublicPage, routeBase, shell, t } from "@ferrum/client";
+import { EmptyState, StatePanel } from "@ferrum/kit";
+import { mountApp } from "@ferrum/records/frame";
 import { Failure } from "./States";
 import "./styles.css";
-
-// Its own words in the page's language (src/locales), fetched as the page starts; it is drawn once they are in.
-void addCatalogs({ ar: () => import("./locales/ar.json"), hi: () => import("./locales/hi.json") });
-
-const queryClient = new QueryClient({
-  defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false, staleTime: 30_000 } },
-});
 
 /** A route's first segment as the bootstrap gives it (`mail`). ponytail: pages link to `/mail/…`
  *  directly; an operator's remapped routes cover these entries only (docs/plan/apps-ui.md §10.1). */
@@ -63,7 +55,12 @@ const domain = () => import("./MailDomain");
 const editor = () => import("./CalendarEditor");
 const rsvp = () => import("./CalendarRsvp");
 
-const router = createBrowserRouter([
+// One interface at the root, no base of its own: its four routes (mail, chat, calendar, meet) are in the paths below, so
+// the route given is "" (routeBase("") is "/").
+mountApp({
+  route: "",
+  catalogs: { ar: () => import("./locales/ar.json"), hi: () => import("./locales/hi.json") },
+  routes: [
   {
     path: "/",
     element: <Frame />,
@@ -90,17 +87,5 @@ const router = createBrowserRouter([
       { path: "*", element: <NotFound /> },
     ],
   },
-]);
-
-// Drawn once the page's words are in (its language's catalogs, fetched as the page starts).
-void wordsReady().then(() =>
-  createRoot(document.getElementById("root")!).render(
-    <StrictMode>
-      <QueryClientProvider client={queryClient}>
-        <RouterProvider router={router} />
-        <Toaster />
-        <ConfirmHost />
-      </QueryClientProvider>
-    </StrictMode>,
-  ),
-);
+  ],
+});

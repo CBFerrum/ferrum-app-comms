@@ -17,8 +17,9 @@ describe("meet", () => {
     for (const href of [
       "https://meet.google.com/abc-defg-hij",
       `https://evil.example.net/app/meet/event/${ID}`,
+      `${ORIGIN}/app/meet/event/${ID}`,
       `${ORIGIN}/app/meet/space/${ID}`,
-      `${ORIGIN}/app/meet/event/${ID}/extra`,
+      `${ORIGIN}/meet/event/${ID}/extra`,
       `${ORIGIN}/app/drive?item=${ID}`,
       "not a link at all ::",
       "",
