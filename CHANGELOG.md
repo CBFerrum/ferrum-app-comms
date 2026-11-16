@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.24.0
+
+Package `comms` 0.5.0. Database change: the entities `Newsletter` and `NewsletterEmailGroup`, the setting
+`newsletter_hourly_limit` and the table `comms_newsletter_delivery` are gone (the package's SQL is edited in place: nothing
+is installed). No interface change. Campaigns 0.6 needs this version.
+
+**Newsletters are gone: bulk mail to email groups is the Campaigns app's.** A newsletter went to its groups' members asking
+only each member's own `unsubscribed` flag (and whether processing of their data was restricted), so someone who had
+opted out of marketing through the platform's consent (`contact_consent`, which every app's marketing asks) or in another
+app was still mailed, and Mail's unsubscribe link never recorded that opt-out there. Its hourly limit was shared one way
+only: Campaigns counted newsletters and took a lock, newsletters counted only themselves and took none, so the two
+together could pass it. Campaigns sends to the same email groups (a group in a campaign's audience) with consent, topics,
+the suppression list, one-click unsubscribe and its own reports, so Mail's second, weaker way goes: `Newsletter` and its
+groups, the setting, the delivery table, the public `/unsubscribe` page, the Newsletter Performance report and the
+maintenance step that sent them. The hourly limit is Campaigns' setting now. Email groups stay: they are the mail
+server's mailing lists and Campaigns' audiences.
+
 ## 0.23.0
 
 Needs the platform's companion calls (Ferrum `9a9bd8f0` or later; its app API still says 0.3.9). No database or

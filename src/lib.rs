@@ -1,4 +1,4 @@
-//! Messaging, mail and calendar: email accounts (SMTP/IMAP), threaded communications on any record, templates, newsletters, team chat and calendars with ICS.
+//! Messaging, mail and calendar: email accounts (SMTP/IMAP), threaded communications on any record, templates, team chat and calendars with ICS.
 //!
 //! Hooks are registered per entity, so a tenant without the `comms` package never runs them; the
 //! mail sender is an outbox event sink and the endpoints a `Site` (see packages/comms/README.md).
@@ -21,7 +21,6 @@ mod mail;
 mod mailadmin;
 pub(crate) mod meet;
 pub mod meetings;
-mod newsletter;
 pub mod outbound;
 mod proposals;
 pub mod recur;
@@ -43,11 +42,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
-/// Time one maintenance round may spend per tenant retrying mail, polling mailboxes and sending
-/// newsletters (each mail or mailbox started before the budget runs out is finished).
+/// Time one maintenance round may spend per tenant retrying mail and polling mailboxes (each mail
+/// or mailbox started before the budget runs out is finished).
 const RETRY_BUDGET: Duration = Duration::from_secs(20);
 const POLL_BUDGET: Duration = Duration::from_secs(40);
-const SEND_BUDGET: Duration = Duration::from_secs(30);
 /// New hosted mail (`arrivals.rs`): looked at first, so a notification waits at most about a round.
 const ARRIVALS_BUDGET: Duration = Duration::from_secs(20);
 /// Calendars subscribed to by their address (`subscribe.rs`): each due one fetched while this lasts.
@@ -62,7 +60,6 @@ pub fn register(hooks: &mut HookRegistry) {
         .register("EmailAccount", Arc::new(account::AccountHook))
         .register("Communication", Arc::new(mail::CommunicationHook))
         .register("EmailTemplate", Arc::new(template::TemplateHook))
-        .register("Newsletter", Arc::new(newsletter::NewsletterHook))
         .register("ChatChannel", Arc::new(chat::ChannelHook))
         .register("ChatMessage", Arc::new(chat::MessageHook))
         .register("CalendarEvent", Arc::new(calendar::EventHook))
@@ -91,7 +88,7 @@ pub async fn maintenance(k: &Kernel) -> Result<()> {
 }
 
 /// [`maintenance`] reading mailboxes through `mailboxes` (tests pass a fake mailbox). Per tenant:
-/// look at new hosted mail (notify, file, wake snoozed mail, apply calendar answers), retry due mail, poll due IMAP accounts, send newsletter batches, announce reminders, keep hosted
+/// look at new hosted mail (notify, file, wake snoozed mail, apply calendar answers), retry due mail, poll due IMAP accounts, announce reminders, keep hosted
 /// mailboxes in step, purge.
 /// A failing step is logged and does not stop the others; the first error is returned.
 pub async fn maintenance_with(k: &Kernel, mailboxes: &dyn MailboxConnector) -> Result<()> {
@@ -112,7 +109,6 @@ pub async fn maintenance_with(k: &Kernel, mailboxes: &dyn MailboxConnector) -> R
             ("new mail", arrivals::run(k, tenant, ARRIVALS_BUDGET).await),
             ("mail retries", mail::retry_due(k, tenant, RETRY_BUDGET).await),
             ("mail polling", inbound::poll_due(k, tenant, mailboxes, POLL_BUDGET).await),
-            ("newsletters", newsletter::run(k, tenant, SEND_BUDGET).await),
             ("reminders", calendar::fire_reminders(k, tenant).await),
             ("calendar subscriptions", subscribe::run(k, tenant, SUBSCRIBE_BUDGET).await),
             ("meeting attendance", meetings::upkeep(k, tenant).await),

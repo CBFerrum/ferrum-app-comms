@@ -174,20 +174,17 @@ pub fn verify(key: &[u8], message: &str, signature: &str) -> bool {
 #[derive(Debug, Clone)]
 pub struct Settings {
     pub public_url: Option<String>,
-    pub hourly_limit: i64,
     pub max_attempts: i64,
 }
 
 pub async fn settings(tx: &mut Tx, tenant: Uuid) -> Result<Settings> {
-    let row: Option<(Option<String>, Option<i64>, Option<i64>)> =
-        sqlx::query_as("select public_url, newsletter_hourly_limit, max_send_attempts from e_comms_settings where tenant_id = $1 limit 1")
-            .bind(tenant)
-            .fetch_optional(&mut **tx)
-            .await?;
-    let (url, limit, attempts) = row.unwrap_or_default();
+    let row: Option<(Option<String>, Option<i64>)> = sqlx::query_as("select public_url, max_send_attempts from e_comms_settings where tenant_id = $1 limit 1")
+        .bind(tenant)
+        .fetch_optional(&mut **tx)
+        .await?;
+    let (url, attempts) = row.unwrap_or_default();
     Ok(Settings {
         public_url: url.map(|u| u.trim().trim_end_matches('/').to_string()).filter(|u| !u.is_empty()),
-        hourly_limit: limit.unwrap_or(500).max(1),
         max_attempts: attempts.unwrap_or(5).clamp(1, 20),
     })
 }
@@ -205,14 +202,10 @@ pub async fn site_path(tx: &mut Tx, tenant: Uuid) -> Result<String> {
 /// Who follows or calls an address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum For {
-    /// People outside the workspace, in their browser, to the package's endpoints (`/api/site/…`, which every host of the
-    /// workspace serves): through `p`, to its portal's host when it has one.
-    People,
     /// People to a page of the interface (`shell.public`), which only the workspace's main host serves (its portal's host
     /// leads everything but the portal, sign-in and the API to the portal): through `s`.
     Pages,
-    /// Other services, which call it (a mail provider posting mail, a mailbox's one-click unsubscribe, a calendar service
-    /// fetching a feed).
+    /// Other services, which call it (a mail provider posting mail, a calendar service fetching a feed).
     Services,
 }
 
@@ -226,7 +219,6 @@ pub async fn address(k: &Kernel, tx: &mut Tx, tenant: Uuid, path: &str, to: For)
         return Ok(Some(format!("{base}{path}")));
     }
     Ok(match to {
-        For::People => k.person_link(tenant, Audience::Outside, path).await,
         For::Pages => k.person_link(tenant, Audience::Staff, path).await,
         For::Services => k.settings.callback_base().map(|base| format!("{base}{path}")),
     })
@@ -392,23 +384,6 @@ pub fn created(v: Value) -> SiteResponse {
 
 pub fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
-}
-
-/// A small self-contained HTML page (no scripts, no external resources).
-pub fn page(status: u16, title: &str, body_html: &str) -> SiteResponse {
-    let html = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-         <meta name=\"robots\" content=\"noindex\"><title>{t}</title><style>body{{font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;\
-         color:#1f2328;background:#f6f8fa;margin:0;padding:48px 16px}}main{{max-width:460px;margin:auto;background:#fff;border:1px solid #d0d7de;\
-         border-radius:8px;padding:24px}}h1{{font-size:20px;margin:0 0 12px}}button{{font:inherit;padding:8px 16px;border-radius:6px;border:1px solid #1f6feb;\
-         background:#1f6feb;color:#fff;cursor:pointer}}</style></head><body><main><h1>{t}</h1>{body_html}</main></body></html>",
-        t = html_escape(title)
-    );
-    let mut r = SiteResponse::text(status, "text/html; charset=utf-8", html);
-    r.headers.push(("content-security-policy".into(), "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'".into()));
-    r.headers.push(("cache-control".into(), "no-store".into()));
-    r.headers.push(("x-frame-options".into(), "DENY".into()));
-    r
 }
 
 /// Percent-encodes a query value.

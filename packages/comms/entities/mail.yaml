@@ -4,9 +4,8 @@
   module: communication
   fields:
     - {name: public_url, type: url, label: Public URL, description: "Address this server is reached at from the internet (e.g. https://erp.example.com); used in unsubscribe links, inbound webhook and calendar feed URLs"}
-    - {name: newsletter_hourly_limit, type: int, default: 500, min: 1, max: 1000000, description: "Newsletter mails sent per hour at most (respect your provider's sending limits)"}
     - {name: max_send_attempts, type: int, default: 5, min: 1, max: 20, description: "Attempts before an outgoing email is marked Failed"}
-    - {name: signing_key, type: secret, read_only: true, hidden: true, description: "Signs unsubscribe links; created automatically"}
+    - {name: signing_key, type: secret, read_only: true, hidden: true, description: "Signs invitation answer and meeting guest links; created automatically"}
     - {name: mail_domain, type: data, max_length: 253, label: Mail Domain, description: "With hosted mail (a Stalwart server the operator runs): the domain whose people get a mailbox there, e.g. acme.com. Empty: no hosted mailboxes"}
   actions:
     - {name: sync_mail, label: Sync Mailboxes, permission: write}
@@ -187,37 +186,3 @@
     - {name: unsubscribed, type: check, in_list: true, in_filter: true}
   unique: [[email_group, email]]
   list: {columns: [email, member_name, email_group, unsubscribed], sort: email asc}
-
-- name: NewsletterEmailGroup
-  label: Newsletter Email Group
-  kind: child
-  fields:
-    - {name: email_group, type: link, to: EmailGroup, required: true, in_list: true}
-
-- name: Newsletter
-  label: Newsletter
-  kind: master
-  module: communication
-  title_field: subject
-  description: "Sent in batches to the members of its email groups (never to unsubscribed ones), within the hourly limit, each with a personal unsubscribe link."
-  fields:
-    - {name: subject, type: data, required: true, max_length: 998, in_list: true}
-    - {name: email_account, type: link, to: EmailAccount, description: "Blank = the default outgoing account"}
-    - {name: email_groups, type: table, of: NewsletterEmailGroup, required: true}
-    - {name: content, type: text, required: true, description: "HTML; {{ member.member_name }}, {{ member.email }} and {{ unsubscribe_url }} are available. An unsubscribe footer is added when the content has no {{ unsubscribe_url }}"}
-    - {name: schedule_at, type: datetime, in_list: true, description: "Blank = as soon as it is scheduled"}
-    - {name: status, type: select, options: [Draft, Scheduled, Sending, Sent, Cancelled], default: Draft, read_only: true, no_copy: true, in_list: true, in_filter: true}
-    - {name: total_recipients, type: int, read_only: true, no_copy: true}
-    - {name: sent_count, type: int, read_only: true, no_copy: true, in_list: true}
-    - {name: failed_count, type: int, read_only: true, no_copy: true}
-    - {name: started_at, type: datetime, read_only: true, no_copy: true}
-    - {name: finished_at, type: datetime, read_only: true, no_copy: true}
-    - {name: last_error, type: text, read_only: true, no_copy: true}
-  actions:
-    - {name: schedule, label: Schedule, permission: write, condition: "doc.status == 'Draft'"}
-    - {name: unschedule, label: Back to Draft, permission: write, condition: "doc.status == 'Scheduled'"}
-    - {name: cancel_newsletter, label: Stop Sending, permission: write, condition: "doc.status == 'Scheduled' || doc.status == 'Sending'", confirm: "Recipients not mailed yet will not receive it. Continue?"}
-  form:
-    - {label: Newsletter, fields: [subject, email_account, email_groups, schedule_at, content]}
-    - {label: Delivery, fields: [status, total_recipients, sent_count, failed_count, started_at, finished_at, last_error]}
-  list: {columns: [subject, status, schedule_at, sent_count], sort: schedule_at desc}

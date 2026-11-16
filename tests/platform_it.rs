@@ -1,9 +1,9 @@
 //! What Comms takes from the platform, against a real PostgreSQL (`FERRUM_COMMS_TEST_DATABASE_URL`, default
 //! `postgres://ferrum:ferrum@localhost:5432/ferrum_comms_test`; reset first).
 //!
-//! * Its addresses, with no public address of its own: the links people follow go through the operator's link host (an
-//!   unsubscribe link to `p`, a page of the interface to `s`), and the addresses services call (the inbound address, a
-//!   calendar feed) start at the hooks host. With an address of its own, nothing changes; with none at all, there is none.
+//! * Its addresses, with no public address of its own: the links people follow go through the operator's link host (a
+//!   page of the interface, to `s`), and the addresses services call (the inbound address, a calendar feed) start at the
+//!   hooks host. With an address of its own, nothing changes; with none at all, there is none.
 //! * Its calendar reads over CalDAV, in a workspace that records reads of calendar events: each event opened, and each
 //!   listing, is on the audit trail as the platform's own reads are, and a read that cannot be recorded is refused.
 
@@ -111,14 +111,13 @@ async fn scenario() {
     let db = Db::connect(DbConfig { url: url(), max_connections: 2, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists vault cascade; drop schema if exists public cascade; create schema public;").execute(&db.pool).await.expect("reset");
     db.pool.close().await;
-    let mails = Mails::default();
     let named = KernelSettings {
         public_url: Some("https://erp.acme.test".into()),
         link_host: Some("go.acme.test".into()),
         hooks_url: Some("https://hooks.acme.test".into()),
         ..Default::default()
     };
-    let k = kernel(named, mails.clone()).await;
+    let k = kernel(named, Mails::default()).await;
     let tenant = k
         .create_tenant(NewTenant {
             slug: "acme".into(),
@@ -169,15 +168,6 @@ async fn scenario() {
         .unwrap();
     tx.commit().await.unwrap();
     assert!(invitation.contains("https://go.acme.test/go/acme/s/calendar/rsvp/acme/r."), "{invitation}");
-    // A newsletter may go out, and its unsubscribe link goes through the link host to the API, which the portal serves too.
-    let group = uid(&Value::Object(k.insert(&mgr, "EmailGroup", obj(json!({"group_name": "Customers"}))).await.unwrap()));
-    k.insert(&mgr, "EmailGroupMember", obj(json!({"email_group": group, "email": "a@x.test"}))).await.unwrap();
-    let news =
-        k.insert(&mgr, "Newsletter", obj(json!({"subject": "News", "content": "<p>Hello</p>", "email_groups": [{"email_group": group}]}))).await.unwrap();
-    k.run_action(&mgr, "Newsletter", uid(&Value::Object(news)), "schedule", json!({})).await.expect("scheduled with the platform's address");
-    ferrum_app_comms::maintenance(&k).await.expect("maintenance");
-    let letter = mails.0.lock().unwrap().iter().find(|m| m.0 == "a@x.test").map(|m| m.2.clone()).expect("the newsletter");
-    assert!(letter.contains("https://go.acme.test/go/acme/p/api/site/acme/comms/unsubscribe?n="), "{letter}");
     // A meeting's pages are pages of the interface too.
     // SAFETY: the one test in this process.
     unsafe {

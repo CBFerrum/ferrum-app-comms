@@ -3,7 +3,7 @@ name = "ferrum-app-comms"
 version = "0.7.0"
 edition = "2024"
 license = "AGPL-3.0-only"
-description = "Messaging, mail and calendar: email accounts (SMTP/IMAP), threaded communications on any record, templates, newsletters, team chat and calendars with ICS."
+description = "Messaging, mail and calendar: email accounts (SMTP/IMAP), threaded communications on any record, templates, team chat and calendars with ICS."
 repository = "https://github.com/CBFerrum/ferrum-app-comms"
 build = "build.rs"
 

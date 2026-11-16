@@ -2,9 +2,9 @@
 //! default `postgres://ferrum:ferrum@localhost:5432/ferrum_comms_test`). The database is reset first.
 //!
 //! A sales team mails a customer from its record through a real (in-process) SMTP server, gets
-//! the reply through the inbound webhook and a fake IMAP mailbox, survives SMTP outages, sends a
-//! newsletter within an hourly limit, chats in private, direct and public channels, and plans a
-//! recurring meeting with a colleague and an outside guest — with the refusal paths along the way.
+//! the reply through the inbound webhook and a fake IMAP mailbox, survives SMTP outages, chats in
+//! private, direct and public channels, and plans a recurring meeting with a colleague and an
+//! outside guest — with the refusal paths along the way.
 
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -518,7 +518,7 @@ async fn scenario() {
     imap.0.lock().unwrap().validity = 7;
 
     // ───────────── settings and an account whose passwords are write-only ─────────────
-    k.insert(mgr, "CommsSettings", obj(json!({"public_url": "https://erp.acme.test/", "newsletter_hourly_limit": 2, "max_send_attempts": 3}))).await.unwrap();
+    k.insert(mgr, "CommsSettings", obj(json!({"public_url": "https://erp.acme.test/", "max_send_attempts": 3}))).await.unwrap();
     // The mail domain's health is for managers, and says plainly that there is no domain to check yet.
     let health = t.ok(mgr, "GET", "/domain", &[], Value::Null).await;
     assert_eq!(health["domain"], Value::Null);
@@ -887,83 +887,10 @@ async fn scenario() {
     assert_eq!(k.get(mgr, "EmailAccount", account_id, false).await.unwrap()["uid_validity"], json!(8));
     assert_eq!(t.scalar::<i64>(count, None).await, received_before, "a new UIDVALIDITY rereads the folder without duplicates");
 
-    // ───────────── newsletters: hourly limit, unsubscribed members, signed unsubscribe links ─────────────
+    // ───────────── email groups: an address is in a group once ─────────────
     let customers = uid(&Value::Object(k.insert(mgr, "EmailGroup", obj(json!({"group_name": "Customers"}))).await.unwrap()));
-    let partners = uid(&Value::Object(k.insert(mgr, "EmailGroup", obj(json!({"group_name": "Partners"}))).await.unwrap()));
-    for (g, email, unsubscribed) in [
-        (customers, "a@x.test", false),
-        (customers, "b@x.test", true),
-        (customers, "C@x.test", false),
-        (partners, "c@x.test", false),
-        (partners, "d@x.test", false),
-    ] {
-        k.insert(mgr, "EmailGroupMember", obj(json!({"email_group": g, "email": email, "member_name": email.to_uppercase(), "unsubscribed": unsubscribed})))
-            .await
-            .unwrap();
-    }
+    k.insert(mgr, "EmailGroupMember", obj(json!({"email_group": customers, "email": "a@x.test"}))).await.unwrap();
     refused(k.insert(mgr, "EmailGroupMember", obj(json!({"email_group": customers, "email": "a@x.test"}))).await, "conflict");
-    let news = k
-        .insert(
-            mgr,
-            "Newsletter",
-            obj(json!({"subject": "News for {{ member.member_name }}", "content": "<p>Hello {{ member.member_name }}</p>",
-                                               "email_groups": [{"email_group": customers}, {"email_group": partners}]})),
-        )
-        .await
-        .unwrap();
-    let news_id = uid(&Value::Object(news));
-    k.run_action(mgr, "Newsletter", news_id, "schedule", json!({})).await.unwrap();
-    refused(k.update(mgr, "Newsletter", news_id, obj(json!({"subject": "Changed"})), None).await, "invalid");
-    let before = smtp.count();
-    t.maintenance(&imap).await;
-    let n = k.get(mgr, "Newsletter", news_id, false).await.unwrap();
-    assert_eq!((n["status"].clone(), n["sent_count"].clone(), n["total_recipients"].clone()), (json!("Sending"), json!(2), json!(3)));
-    assert_eq!(smtp.count(), before + 2, "the hourly limit of 2");
-    t.maintenance(&imap).await;
-    assert_eq!(smtp.count(), before + 2, "still within the same hour");
-    k.update(
-        mgr,
-        "CommsSettings",
-        uid(&Value::Object(k.list(mgr, "CommsSettings", &Default::default()).await.unwrap().rows[0].clone())),
-        obj(json!({"newsletter_hourly_limit": 100})),
-        None,
-    )
-    .await
-    .unwrap();
-    t.maintenance(&imap).await;
-    t.maintenance(&imap).await;
-    let n = k.get(mgr, "Newsletter", news_id, false).await.unwrap();
-    assert_eq!((n["status"].clone(), n["sent_count"].clone(), n["failed_count"].clone()), (json!("Sent"), json!(3), json!(0)));
-    let letters: Vec<Received> = smtp.mails()[before..].to_vec();
-    let mut recipients: Vec<String> = letters.iter().flat_map(|m| m.to.clone()).collect();
-    recipients.sort();
-    assert_eq!(recipients, vec!["a@x.test", "c@x.test", "d@x.test"], "unsubscribed b@ never mailed, c@ once");
-    let to_a = letters.iter().find(|m| m.to == ["a@x.test"]).unwrap();
-    assert_eq!(parse(&to_a.data).subject, "News for A@X.TEST");
-    assert_eq!(header(&to_a.data, "List-Unsubscribe-Post").as_deref(), Some("List-Unsubscribe=One-Click"));
-    let link = header(&to_a.data, "List-Unsubscribe").unwrap().trim_matches(['<', '>']).to_string();
-    assert!(link.starts_with("https://erp.acme.test/api/site/acme/comms/unsubscribe?"), "{link}");
-    let query: Vec<(String, String)> =
-        link.split_once('?').unwrap().1.split('&').map(|p| p.split_once('=').unwrap()).map(|(a, b)| (a.to_string(), b.replace("%40", "@"))).collect();
-    let q = |k: &str| query.iter().find(|(a, _)| a == k).unwrap().1.clone();
-    let (nq, eq, sq) = (q("n"), q("e"), q("s"));
-    let page = |method: &str, e: &str, s: &str| {
-        t.raw(t.request(None, method, "/unsubscribe", &[("n", &nq), ("e", e), ("s", s)], vec![], "application/x-www-form-urlencoded"))
-    };
-    let confirm = page("GET", &eq, &sq).await.unwrap();
-    assert_eq!(confirm.status, 200);
-    assert!(String::from_utf8_lossy(&confirm.body).contains("<form method=\"post\""));
-    let mut forged = sq.clone().into_bytes();
-    forged[3] = if forged[3] == b'0' { b'1' } else { b'0' };
-    for (e, s) in [(eq.as_str(), String::from_utf8(forged).unwrap()), ("d@x.test", sq.clone()), (eq.as_str(), String::new())] {
-        let r = page("POST", e, &s).await.unwrap();
-        assert_eq!(r.status, 403, "tampered link refused");
-    }
-    assert_eq!(t.scalar::<i64>("select count(*) from e_email_group_member where tenant_id = $1 and unsubscribed and $2::uuid is null", None).await, 1);
-    let done = page("POST", &eq, &sq).await.unwrap();
-    assert_eq!(done.status, 200);
-    assert!(String::from_utf8_lossy(&done.body).contains("a@x.test"));
-    assert_eq!(t.scalar::<i64>("select count(*) from e_email_group_member where tenant_id = $1 and unsubscribed and $2::uuid is null", None).await, 2);
 
     // ───────────── chat: private channels stay invisible to non-members ─────────────
     let mut live = sqlx::postgres::PgListener::connect_with(&k.db.pool).await.unwrap();
@@ -1634,11 +1561,6 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     // failed: the bounce and the two bulk mails the header checks left queued when the server refused them
     // (a withheld email is neither).
     assert_eq!((totals["sent"].clone(), totals["received"].clone(), totals["failed"].clone()), (json!(15), json!(5), json!(3)), "{activity}");
-    let letters = report(mgr, "newsletter_performance").await.unwrap();
-    assert_eq!(
-        (letters["rows"][0]["sent"].clone(), letters["rows"][0]["unsubscribed"].clone(), letters["rows"][0]["unsubscribe_rate"].clone()),
-        (json!(3), json!(1), json!("33.33"))
-    );
     let chats = report(&admin, "chat_activity").await.unwrap();
     assert!(chats["rows"].as_array().unwrap().iter().any(|r| r["channel"] == json!("#general") && r["messages"] == json!(6)), "{chats}");
     refused(report(alice, "chat_activity").await, "forbidden");

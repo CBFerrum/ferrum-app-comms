@@ -1,10 +1,9 @@
 //! The package's HTTP endpoints: `/api/app/comms/...` for signed-in users (Comms roles; webmail
 //! for whoever has a hosted mailbox) and `/api/site/{tenant}/comms/...` for the public (inbound
-//! mail webhook, unsubscribe pages, calendar feeds — each authenticated by an unguessable or
-//! signed token). See README.md.
+//! mail webhook, calendar feeds — each authenticated by an unguessable or signed token). See README.md.
 
 use crate::util::{self, created, ok};
-use crate::{calendar, chat, dav, dns, hosted, inbound, mail, mailadmin, meet, newsletter, webmail};
+use crate::{calendar, chat, dav, dns, hosted, inbound, mail, mailadmin, meet, webmail};
 use async_trait::async_trait;
 use ferrum_kernel::{Access, Action, Ctx, Error, Kernel, Result, Site, SiteRequest, SiteResponse};
 use serde_json::{Value, json};
@@ -43,7 +42,6 @@ async fn public(k: &Kernel, req: &SiteRequest, path: &[&str]) -> Result<SiteResp
         ("POST", ["inbound", token]) => {
             Ok(SiteResponse::json(202, &inbound::webhook(k, req.tenant, token, util::header(req, "content-type"), &req.body).await?))
         }
-        ("GET" | "POST", ["unsubscribe"]) => newsletter::unsubscribe(k, req).await,
         ("POST", ["meet", "guest"]) => meet::guest(k, req).await,
         ("GET", ["rsvp"]) => Ok(ok(calendar::answer_info(k, req.tenant, util::param(req, "token").unwrap_or_default()).await?)),
         ("POST", ["rsvp"]) => Ok(ok(calendar::answer(k, req.tenant, &req.client_ip, &util::body_json(req)?).await?)),

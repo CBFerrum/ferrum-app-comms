@@ -41,9 +41,9 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 | | |
 |---|---|
-| 📦 **Version** | 0.23.0 |
+| 📦 **Version** | 0.24.0 |
 | 🖥️ **Kind** | Its own interface: four shell apps at `/mail/`, `/chat/`, `/calendar/` and `/meet/` |
-| ➕ **What it adds** | 21 entities in one package, 3 roles, 3 reports, 4 launcher apps, 3 intents, a side panel, bar search, 10 kinds of notification, 2 public pages |
+| ➕ **What it adds** | 19 entities in one package, 3 roles, 2 reports, 4 launcher apps, 3 intents, a side panel, bar search, 10 kinds of notification, 2 public pages |
 | 🧱 **Depends on** | The platform's `core` and `contacts` packages. Nothing else is required |
 | 🤝 **Works with** | Drive (attach files, save attachments), CRM and Helpdesk (inbound mail routing), Campaigns (marketing mail), Bookings and Live (meetings for records), every app with a record timeline |
 | 🌍 **Languages** | English, Arabic, Hindi |
@@ -274,7 +274,6 @@ chat tool and a video meeting service, and it keeps every message about a record
 - **Reliable sending.** Retries back off from 1, 4, 16 and 64 minutes up to six hours until a limit; permanent failures (a 5xx reply, an invalid address) fail at once. The author is notified when an email fails and can retry it.
 - **Templates with fields.** An Email Template fills `{{ doc.field }}` from the record the mail is sent from, with a preview. Values are escaped.
 - **Inbound mail creates records.** An account can map a new inbound thread to a new record (a Lead or Ticket, for example). Auto-replies and bounces never create records. Received mail is de-duplicated by Message-ID.
-- **Newsletters.** Send to email groups in batches within an hourly limit, once per address, never to people who unsubscribed. Each mail carries a personal signed unsubscribe link and the `List-Unsubscribe` headers. Status runs Draft, Scheduled, Sending, Sent or Cancelled, with counts of recipients, sent and failed.
 - **Consent respected.** A communication has a Purpose, Transactional or Marketing. As mail goes out, each recipient is checked as they stand: marketing skips anyone who withdrew consent in any app, and nothing goes to anyone whose processing is restricted. If no one is left the email is Withheld, saying who and why.
 - **Extra headers for bulk senders.** Apps that queue mail can set `List-Unsubscribe`, `List-Id`, `Precedence`, `Auto-Submitted`, `Feedback-ID` and `X-` headers from an allow-list.
 - **Received mail keeps its headers.** Message-ID, In-Reply-To, References, Reply-To, delivered-to, Auto-Submitted, List-Id, Return-Path, the auto-reply and bounce markers, and the sender check result are stored with each received message and erased with the sender.
@@ -428,8 +427,7 @@ Everything Comms adds is ordinary Ferrum metadata and Rust, so its records get l
 | EmailAccount | A mailbox for SMTP sending and IMAP or webhook receiving | account name, address, company, default outgoing, SMTP and IMAP settings (secrets sealed) |
 | EmailTemplate | Subject and HTML body with record fields | name, record type, subject, body |
 | EmailGroup, EmailGroupMember | A mailing list and its members | list address, member email, unsubscribed |
-| Newsletter (and NewsletterEmailGroup) | A batch email to groups | subject, groups, content, schedule, status, counts |
-| CommsSettings | Workspace settings | public URL, hourly newsletter limit, send attempts, mail domain |
+| CommsSettings | Workspace settings | public URL, send attempts, mail domain |
 | HostedMailbox | A person's mailbox on the hosted mail server | email, status, last sync |
 | SharedMailbox, SharedMailboxMember | A mailbox several people read and answer | address, display name, members |
 | Calendar | A person's calendar, a subscription, or a room or resource | name, owner, colour, default, subscription address, capacity, place |
@@ -445,13 +443,13 @@ Everything Comms adds is ordinary Ferrum metadata and Rust, so its records get l
 | Role | What it can do |
 |---|---|
 | **Comms User** | Sends mail from records they can read, chats with colleagues, keeps a calendar and reads the shared address book |
-| **Comms Manager** | Manages email accounts and their credentials, templates, mailing lists, newsletters, shared mailboxes, rooms, settings and every communication |
+| **Comms Manager** | Manages email accounts and their credentials, templates, mailing lists, shared mailboxes, rooms, settings and every communication |
 | **Chat Admin** | Moderates chat through the generic API: every channel and message, private ones included |
 
 ### 📊 Reports and jobs
 
-- **Reports:** Email Activity (sent, received, failed and waiting per account and day), Newsletter Performance (recipients, delivered, unsubscribes) and Chat Activity (messages and active members per channel).
-- **Background work, every minute:** retry due mail, poll IMAP accounts, start due newsletters and send batches, announce reminders, look at new hosted mail for notifications and snoozes, refresh subscribed calendars, keep hosted mailboxes in step (every ten minutes), poll meeting attendance, and remove rooms and old reminder bookkeeping.
+- **Reports:** Email Activity (sent, received, failed and waiting per account and day) and Chat Activity (messages and active members per channel).
+- **Background work, every minute:** retry due mail, poll IMAP accounts, announce reminders, look at new hosted mail for notifications and snoozes, refresh subscribed calendars, keep hosted mailboxes in step (every ten minutes), poll meeting attendance, and remove rooms and old reminder bookkeeping.
 
 ## 🔌 Integrations
 
@@ -498,7 +496,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 | Import `.eml` and `.mbox`, export `.mbox` | ✅ | 🟡 | ✅ | ✅ | ❌ |
 | Per-mailbox quotas and domain DNS health | ✅ | ✅ | ✅ | ✅ | 🟡 |
 | Mail kept on business records, apps take inbound mail | ✅ | ❌ | 🟡 | 🟡 | ❌ |
-| Mailing lists and newsletters | ✅ | 🟡 | 🟡 | 🟡 | ❌ |
+| Mailing lists (newsletters: the Campaigns app) | ✅ | 🟡 | 🟡 | 🟡 | ❌ |
 | Marketing consent checked at send time | ✅ | ➖ | ➖ | ➖ | ➖ |
 | Self-hosted | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Open source | ✅ | ❌ | ❌ | ❌ | ✅ |
@@ -691,7 +689,7 @@ Ferrum Comms is a native app. It is compiled into the official Ferrum server ima
 
 **First steps**
 
-1. In **Communication Settings** set the public URL (used for unsubscribe links, the inbound webhook and feed addresses), the hourly newsletter limit and the number of send attempts.
+1. In **Communication Settings** set the public URL (used for invitation answers, meeting links, the inbound webhook and feed addresses) and the number of send attempts.
 2. For hosted mailboxes, run a Stalwart server, set the settings `comms.mail_url` and `comms.mail_admin` and the administrator's password as Comms' secret `mail.admin_secret` (below), then set the **Mail Domain**. Everyone whose address is in the domain gets a mailbox. Publish the DNS records Mail's domain health screen lists.
 3. For mail about records, add an **Email Account** (SMTP and IMAP or the inbound webhook) and mark a default outgoing account per company.
 4. For meetings, run a LiveKit server, set `comms.meet_url` and give LiveKit's API key and secret as Comms' secrets `meet.key` and `meet.secret`. For recordings also run LiveKit Egress and set `comms.meet_recordings` to `true`.

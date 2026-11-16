@@ -1,5 +1,5 @@
-//! Reports: email activity per account and day, newsletter performance and chat activity per
-//! channel. Each runs in a read-only transaction and sees only the records the caller may read.
+//! Reports: email activity per account and day and chat activity per channel. Each runs in a
+//! read-only transaction and sees only the records the caller may read.
 
 use async_trait::async_trait;
 use chrono::{Duration, NaiveDate};
@@ -27,15 +27,6 @@ fn period(p: &Params<'_>) -> Result<(NaiveDate, NaiveDate)> {
     Ok((from, to))
 }
 
-/// `part` as a percentage of `whole`, two decimals, in integer arithmetic.
-fn pct(part: i64, whole: i64) -> Value {
-    if whole == 0 {
-        return json!("0.00");
-    }
-    let basis_points = (part * 10_000 + whole / 2) / whole;
-    json!(format!("{}.{:02}", basis_points / 100, basis_points % 100))
-}
-
 #[async_trait]
 impl ReportSource for CommsReports {
     fn catalog(&self) -> Vec<Value> {
@@ -43,8 +34,6 @@ impl ReportSource for CommsReports {
             json!({"name": "email_activity", "label": "Email Activity", "module": "communication", "entity": "Communication", "params": [
                 date("from_date", "From Date"), date("to_date", "To Date"),
                 {"name": "email_account", "label": "Email Account", "type": "link", "to": "EmailAccount"}]}),
-            json!({"name": "newsletter_performance", "label": "Newsletter Performance", "module": "communication", "entity": "Newsletter", "params": [
-                date("from_date", "Sent From"), date("to_date", "Sent To")]}),
             json!({"name": "chat_activity", "label": "Chat Activity", "module": "communication", "entity": "ChatChannel", "params": [
                 date("from_date", "From Date"), date("to_date", "To Date")]}),
         ]
@@ -87,38 +76,6 @@ impl ReportSource for CommsReports {
                                 col("failed", "Failed", "int"), col("queued", "Waiting", "int")],
                     "rows": rows,
                     "totals": {"sent": totals[0], "received": totals[1], "failed": totals[2], "queued": totals[3]},
-                    "meta": {"from_date": from.to_string(), "to_date": to.to_string()},
-                })
-            }
-            "newsletter_performance" => {
-                let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
-                    "select n.subject, n.status, (coalesce(n.started_at, n.schedule_at) at time zone 'UTC')::date, coalesce(n.total_recipients, 0), \
-                     count(d.email) filter (where d.status = 'sent'), count(d.email) filter (where d.status = 'failed'), \
-                     count(d.email) filter (where d.unsubscribed_at is not null) \
-                     from e_newsletter n left join comms_newsletter_delivery d on d.tenant_id = n.tenant_id and d.newsletter_id = n.id \
-                     where n.status <> 'Draft' and n.tenant_id = ",
-                );
-                qb.push_bind(ctx.tenant)
-                    .push(" and coalesce(n.started_at, n.schedule_at, n.created_at) >= ")
-                    .push_bind(start)
-                    .push(" and coalesce(n.started_at, n.schedule_at, n.created_at) < ")
-                    .push_bind(end);
-                let ent = k.entity(ctx, "Newsletter")?;
-                row_scope(ctx, &ent, Action::Read)?.push_sql(&mut qb, "n");
-                qb.push(" group by n.tenant_id, n.id order by coalesce(n.started_at, n.schedule_at, n.created_at) desc");
-                let data: Vec<(String, String, Option<NaiveDate>, i64, i64, i64, i64)> = qb.build_query_as().fetch_all(&mut *tx).await?;
-                let rows: Vec<Value> = data
-                    .into_iter()
-                    .map(|(subject, status, day, total, sent, failed, unsubscribed)| {
-                        json!({"subject": subject, "status": status, "sent_on": day.map(|d| d.to_string()), "recipients": total, "sent": sent,
-                               "failed": failed, "unsubscribed": unsubscribed, "unsubscribe_rate": pct(unsubscribed, sent), "delivery_rate": pct(sent, sent + failed)})
-                    })
-                    .collect();
-                json!({
-                    "columns": [col("subject", "Newsletter", "data"), col("status", "Status", "data"), col("sent_on", "Sent On", "date"),
-                                col("recipients", "Recipients", "int"), col("sent", "Sent", "int"), col("failed", "Failed", "int"),
-                                col("delivery_rate", "Delivered %", "percent"), col("unsubscribed", "Unsubscribed", "int"), col("unsubscribe_rate", "Unsubscribe %", "percent")],
-                    "rows": rows,
                     "meta": {"from_date": from.to_string(), "to_date": to.to_string()},
                 })
             }
