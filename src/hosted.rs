@@ -174,7 +174,7 @@ impl Admin {
             None => {
                 // The vault puts the password on a request to this host, or refuses: one for the whole session.
                 let (_, parsed) = k.vetted_client(&url, true, Duration::from_secs(30), "Ferrum Comms").await?;
-                let carried = keys::vault()?.carry(k, Scope::Installation, keys::MAIL_ADMIN.name, &parsed, &Carry::Basic(user)).await;
+                let carried = keys::vault(k)?.carry(k, Scope::Installation, keys::MAIL_ADMIN.name, &parsed, &Carry::Basic(user)).await;
                 match carried {
                     Ok((_, header)) => header.to_string(),
                     Err(Error::NotFound(_)) => return Err(not_set_up()),

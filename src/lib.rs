@@ -56,7 +56,8 @@ const SUBSCRIBE_BUDGET: Duration = Duration::from_secs(30);
 /// Registers this package's document hooks, its mail sender and its endpoints. Call it inside the platform's
 /// registration of the app, `hooks.app("comms", …)`: Comms takes its own vault handle there (`keys.rs`).
 pub fn register(hooks: &mut HookRegistry) {
-    keys::remember(hooks.vault());
+    let site: Arc<dyn ferrum_kernel::Site> = Arc::new(site::CommsSite);
+    keys::remember(&site, hooks.vault());
     hooks
         .register("EmailAccount", Arc::new(account::AccountHook))
         .register("Communication", Arc::new(mail::CommunicationHook))
@@ -71,7 +72,7 @@ pub fn register(hooks: &mut HookRegistry) {
         .register("EmailGroup", Arc::new(groups::EmailGroupHook))
         .register("EmailGroupMember", Arc::new(groups::GroupMemberHook))
         .add_event_sink(Arc::new(mail::MailSink))
-        .add_site("comms", Arc::new(site::CommsSite));
+        .add_site("comms", site);
     hooks.add_personal_held(Arc::new(meet::Transcripts));
     hooks.add_personal_held(Arc::new(meetings::Attendance));
     // The programs beside the server whose files Comms renders as they start (`ferrum task render service:<name>`).
