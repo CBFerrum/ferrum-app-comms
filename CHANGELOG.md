@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.25.1
+
+Needs the same platform as 0.25.0. No database change. Interface only, `ui/dist` rebuilt with Ferrum-Frontend `06bd1a2`.
+
+- The page starts through the frontend's `mountApp`; the interface lint has no baseline file any more.
+- A meeting link of the web app's `/app/meet/event/{id}` form is no longer opened inside Comms, as the server no longer serves it.
+
 ## 0.25.0
 
 Package `comms` 0.6.0. Database change: the package's SQL is one baseline, `001_comms.sql` (edited in place: nothing is
