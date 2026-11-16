@@ -1,153 +1,25 @@
 //! Mail domain health: what the domain's DNS should say for its mail to arrive and be trusted,
 //! and what it says now, in words an operator can act on. The records to publish come from the
 //! mail server (the zone file it keeps for the domain, [`hosted::zone_file`]); what is published
-//! is asked of the DNS servers this server itself uses, directly (a small client for the few
-//! record types mail needs, [`System`]). Reverse DNS and the open port 25 cannot be seen from
+//! is asked of the DNS servers this server itself uses ([`System`], hickory's resolver, which the
+//! platform asks for a domain's proof too). Reverse DNS and the open port 25 cannot be seen from
 //! here, so they are listed as things to check by hand.
 
 use crate::hosted;
 use crate::util;
 use async_trait::async_trait;
-use ferrum_kernel::{Action, Ctx, Error, Kernel, Result};
+use ferrum_kernel::{Action, Ctx, Kernel, Result};
+use hickory_resolver::TokioResolver;
+use hickory_resolver::net::{DnsError, NetError};
+use hickory_resolver::proto::rr::{Name, RData, RecordType};
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap};
-use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpStream, UdpSocket};
-use tokio::time::timeout;
 
 // ───────────────────────────── asking DNS ─────────────────────────────
 
-/// Record types mail needs (RFC 1035 and later), by name.
-const TYPES: &[(&str, u16)] = &[("A", 1), ("NS", 2), ("CNAME", 5), ("MX", 15), ("TXT", 16), ("AAAA", 28), ("SRV", 33), ("TLSA", 52), ("CAA", 257)];
-
-fn type_code(kind: &str) -> Option<u16> {
-    TYPES.iter().find(|(k, _)| *k == kind).map(|(_, c)| *c)
-}
-
-/// A DNS question for `name` and `kind`, with EDNS0 so an answer larger than 512 bytes (a 2048-bit
-/// DKIM key) arrives whole over UDP.
-fn question(id: u16, name: &str, code: u16) -> Result<Vec<u8>> {
-    let mut p = Vec::with_capacity(64);
-    p.extend_from_slice(&id.to_be_bytes());
-    p.extend_from_slice(&[0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 1]); // recursion desired; one question, one additional (OPT)
-    let name = name.trim_end_matches('.');
-    if name.is_empty() || name.len() > 253 {
-        return Err(Error::invalid(format!("{name:?} is not a DNS name")));
-    }
-    for label in name.split('.') {
-        if label.is_empty() || label.len() > 63 || !label.is_ascii() {
-            return Err(Error::invalid(format!("{name:?} is not a DNS name")));
-        }
-        p.push(label.len() as u8);
-        p.extend_from_slice(label.as_bytes());
-    }
-    p.push(0);
-    p.extend_from_slice(&code.to_be_bytes());
-    p.extend_from_slice(&1u16.to_be_bytes()); // class IN
-    p.extend_from_slice(&[0, 0, 41, 0x04, 0xD0, 0, 0, 0, 0, 0, 0]); // OPT: root name, type 41, UDP size 1232, no options
-    Ok(p)
-}
-
-/// A name in a packet, following compression pointers; `pos` moves past it where it started.
-fn name_at(packet: &[u8], pos: &mut usize) -> std::result::Result<String, String> {
-    let (mut at, mut jumps, mut resume) = (*pos, 0, None);
-    let mut labels: Vec<String> = Vec::new();
-    loop {
-        let len = *packet.get(at).ok_or("a name runs past the end")? as usize;
-        if len == 0 {
-            at += 1;
-            break;
-        }
-        if len & 0xC0 == 0xC0 {
-            let low = *packet.get(at + 1).ok_or("a pointer runs past the end")? as usize;
-            resume.get_or_insert(at + 2);
-            jumps += 1;
-            if jumps > 64 {
-                return Err("a name points at itself".into());
-            }
-            at = ((len & 0x3F) << 8) | low;
-            continue;
-        }
-        let label = packet.get(at + 1..at + 1 + len).ok_or("a label runs past the end")?;
-        labels.push(String::from_utf8_lossy(label).into_owned());
-        at += 1 + len;
-    }
-    *pos = resume.unwrap_or(at);
-    Ok(labels.join("."))
-}
-
-/// What a DNS answer said: cut short (to be asked again over TCP), its code, and the records of
-/// the type asked for as text (`10 mail.acme.com`, the joined strings of a TXT).
-#[derive(Debug, PartialEq, Eq)]
-struct Answer {
-    truncated: bool,
-    rcode: u8,
-    records: Vec<String>,
-}
-
-fn answer(packet: &[u8], id: u16, code: u16) -> std::result::Result<Answer, String> {
-    if packet.len() < 12 || packet[..2] != id.to_be_bytes() {
-        return Err("the answer is not to our question".into());
-    }
-    let flags = u16::from_be_bytes([packet[2], packet[3]]);
-    let (questions, answers) = (u16::from_be_bytes([packet[4], packet[5]]), u16::from_be_bytes([packet[6], packet[7]]));
-    let mut pos = 12;
-    for _ in 0..questions {
-        name_at(packet, &mut pos)?;
-        pos += 4;
-    }
-    let mut records = Vec::new();
-    for _ in 0..answers {
-        name_at(packet, &mut pos)?;
-        let head = packet.get(pos..pos + 10).ok_or("a record runs past the end")?;
-        let (kind, len) = (u16::from_be_bytes([head[0], head[1]]), u16::from_be_bytes([head[8], head[9]]) as usize);
-        pos += 10;
-        let data = packet.get(pos..pos + len).ok_or("a record runs past the end")?;
-        let mut at = pos;
-        pos += len;
-        if kind != code {
-            continue;
-        }
-        let text = match kind {
-            1 if len == 4 => IpAddr::from([data[0], data[1], data[2], data[3]]).to_string(),
-            28 if len == 16 => IpAddr::from(<[u8; 16]>::try_from(data).map_err(|_| "bad AAAA")?).to_string(),
-            2 | 5 => name_at(packet, &mut at)?,
-            15 if len > 2 => {
-                at += 2;
-                format!("{} {}", u16::from_be_bytes([data[0], data[1]]), name_at(packet, &mut at)?)
-            }
-            16 => {
-                let (mut text, mut i) = (String::new(), 0);
-                while i < data.len() {
-                    let n = data[i] as usize;
-                    text.push_str(&String::from_utf8_lossy(data.get(i + 1..i + 1 + n).ok_or("a text runs past the end")?));
-                    i += 1 + n;
-                }
-                text
-            }
-            33 if len > 6 => {
-                at += 6;
-                format!(
-                    "{} {} {} {}",
-                    u16::from_be_bytes([data[0], data[1]]),
-                    u16::from_be_bytes([data[2], data[3]]),
-                    u16::from_be_bytes([data[4], data[5]]),
-                    name_at(packet, &mut at)?
-                )
-            }
-            52 if len > 3 => format!("{} {} {} {}", data[0], data[1], data[2], data[3..].iter().map(|b| format!("{b:02x}")).collect::<String>()),
-            257 if len > 2 && data.len() >= 2 + data[1] as usize => {
-                let tag = String::from_utf8_lossy(&data[2..2 + data[1] as usize]).into_owned();
-                format!("{} {tag} \"{}\"", data[0], String::from_utf8_lossy(&data[2 + data[1] as usize..]))
-            }
-            _ => continue,
-        };
-        records.push(text);
-    }
-    Ok(Answer { truncated: flags & 0x0200 != 0, rcode: (flags & 0x000F) as u8, records })
-}
+/// Record types mail needs, by name; others are not checked here.
+const TYPES: &[&str] = &["A", "NS", "CNAME", "MX", "TXT", "AAAA", "SRV", "TLSA", "CAA"];
 
 /// Who answers DNS questions.
 #[async_trait]
@@ -156,66 +28,36 @@ pub(crate) trait Resolve: Send + Sync {
     async fn lookup(&self, name: &str, kind: &str) -> std::result::Result<Vec<String>, String>;
 }
 
-/// The DNS servers this server is set up to use (`/etc/resolv.conf`).
+/// The DNS servers this server is set up to use (`/etc/resolv.conf`), each question asked afresh: nothing is kept.
 pub(crate) struct System;
 
-fn nameservers(conf: &str) -> Vec<SocketAddr> {
-    conf.lines()
-        .filter_map(|l| l.split('#').next()?.trim().strip_prefix("nameserver")?.trim().parse::<IpAddr>().ok())
-        .map(|ip| SocketAddr::new(ip, 53))
-        .take(3)
-        .collect()
-}
-
+/// How long one DNS server has to answer.
 const ASK: Duration = Duration::from_secs(3);
 
-async fn over_udp(server: SocketAddr, query: &[u8]) -> std::io::Result<Vec<u8>> {
-    let socket = UdpSocket::bind(if server.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" }).await?;
-    socket.connect(server).await?;
-    socket.send(query).await?;
-    let mut buf = vec![0u8; 4096];
-    let n = timeout(ASK, socket.recv(&mut buf)).await.map_err(|_| std::io::ErrorKind::TimedOut)??;
-    buf.truncate(n);
-    Ok(buf)
-}
-
-async fn over_tcp(server: SocketAddr, query: &[u8]) -> std::io::Result<Vec<u8>> {
-    let mut conn = timeout(ASK, TcpStream::connect(server)).await.map_err(|_| std::io::ErrorKind::TimedOut)??;
-    conn.write_all(&(query.len() as u16).to_be_bytes()).await?;
-    conn.write_all(query).await?;
-    let mut len = [0u8; 2];
-    timeout(ASK, conn.read_exact(&mut len)).await.map_err(|_| std::io::ErrorKind::TimedOut)??;
-    let mut buf = vec![0u8; u16::from_be_bytes(len) as usize];
-    timeout(ASK, conn.read_exact(&mut buf)).await.map_err(|_| std::io::ErrorKind::TimedOut)??;
-    Ok(buf)
+/// A record as the checks read it: a text's strings joined, names without their final dot.
+fn text(data: &RData) -> String {
+    match data {
+        RData::TXT(txt) => txt.txt_data.iter().map(|s| String::from_utf8_lossy(s)).collect(),
+        other => other.to_string().trim_end_matches('.').to_string(),
+    }
 }
 
 #[async_trait]
 impl Resolve for System {
     async fn lookup(&self, name: &str, kind: &str) -> std::result::Result<Vec<String>, String> {
-        let code = type_code(kind).ok_or_else(|| format!("{kind} records are not checked here"))?;
-        let servers = nameservers(&std::fs::read_to_string("/etc/resolv.conf").unwrap_or_default());
-        if servers.is_empty() {
-            return Err("this server has no DNS server set up".into());
+        let wanted = kind.parse::<RecordType>().ok().filter(|_| TYPES.contains(&kind)).ok_or_else(|| format!("{kind} records are not checked here"))?;
+        let name = Name::from_ascii(format!("{}.", name.trim_end_matches('.'))).map_err(|_| format!("{name:?} is not a DNS name"))?;
+        let mut builder = TokioResolver::builder_tokio().map_err(|e| format!("this server has no DNS server set up: {e}"))?;
+        let opts = builder.options_mut();
+        (opts.timeout, opts.attempts, opts.cache_size) = (ASK, 1, 0);
+        let resolver = builder.build().map_err(|e| e.to_string())?;
+        match resolver.lookup(name, wanted).await {
+            Ok(found) => Ok(found.answers().iter().filter(|r| r.data.record_type() == wanted).map(|r| text(&r.data)).collect()),
+            // The name does not exist, or holds no records of the kind: both say what is there (nothing). A server that
+            // failed or refused says nothing of it: an error.
+            Err(NetError::Dns(DnsError::NoRecordsFound(_))) => Ok(vec![]),
+            Err(e) => Err(e.to_string()),
         }
-        let id = rand::random::<u16>();
-        let query = question(id, name, code).map_err(|e| e.to_string())?;
-        let mut last = String::from("no DNS server answered");
-        for server in servers {
-            let mut reply = over_udp(server, &query).await;
-            if let Ok(r) = &reply
-                && answer(r, id, code).is_ok_and(|a| a.truncated)
-            {
-                reply = over_tcp(server, &query).await;
-            }
-            match reply.map_err(|e| e.to_string()).and_then(|r| answer(&r, id, code)) {
-                // 0: answered, 3: the name does not exist: both say what is there (nothing, for 3).
-                Ok(a) if a.rcode == 0 || a.rcode == 3 => return Ok(a.records),
-                Ok(a) => last = format!("{server} answered with error {}", a.rcode),
-                Err(e) => last = format!("{server}: {e}"),
-            }
-        }
-        Err(last)
     }
 }
 
@@ -296,7 +138,7 @@ pub(crate) fn parse_zone(text: &str, domain: &str) -> Vec<Want> {
         while w.get(at).is_some_and(|x| x.bytes().all(|b| b.is_ascii_digit()) || x.eq_ignore_ascii_case("IN")) {
             at += 1;
         }
-        let Some(kind) = w.get(at).map(|k| k.to_ascii_uppercase()).filter(|k| type_code(k).is_some() && k.as_str() != "NS") else { continue };
+        let Some(kind) = w.get(at).map(|k| k.to_ascii_uppercase()).filter(|k| TYPES.contains(&k.as_str()) && k.as_str() != "NS") else { continue };
         let rest = &w[at + 1..];
         let value = if kind == "TXT" { rest.concat() } else { rest.join(" ") };
         if !value.is_empty() {
@@ -641,65 +483,6 @@ async fn lookups(dns: &dyn Resolve, wanted: &[Want]) -> HashMap<(String, String)
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A DNS answer to a question for `name`: the question, then these records (type, data), their
-    /// names pointing back at the question's.
-    fn reply(id: u16, flags: u16, name: &str, records: &[(u16, Vec<u8>)]) -> Vec<u8> {
-        let mut p = id.to_be_bytes().to_vec();
-        p.extend_from_slice(&flags.to_be_bytes());
-        p.extend_from_slice(&[0, 1]);
-        p.extend_from_slice(&(records.len() as u16).to_be_bytes());
-        p.extend_from_slice(&[0, 0, 0, 0]);
-        for l in name.split('.') {
-            p.push(l.len() as u8);
-            p.extend_from_slice(l.as_bytes());
-        }
-        p.extend_from_slice(&[0, 0, 1, 0, 1]); // the end of the name, then the type and class asked
-        for (kind, data) in records {
-            p.extend_from_slice(&[0xC0, 12]);
-            p.extend_from_slice(&kind.to_be_bytes());
-            p.extend_from_slice(&[0, 1, 0, 0, 0, 60]);
-            p.extend_from_slice(&(data.len() as u16).to_be_bytes());
-            p.extend_from_slice(data);
-        }
-        p
-    }
-
-    #[test]
-    fn a_question_is_built_and_an_answer_read() {
-        let q = question(0x1234, "_dmarc.acme.test.", 16).unwrap();
-        assert_eq!(&q[..12], &[0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1]);
-        assert_eq!(&q[12..19], b"\x06_dmarc");
-        assert!(q.ends_with(&[0, 0, 41, 0x04, 0xD0, 0, 0, 0, 0, 0, 0]) && q[12..].windows(4).any(|w| w == [4, b'a', b'c', b'm']));
-        assert!(question(1, "bad..name", 1).is_err() && question(1, &"a".repeat(64), 1).is_err() && question(1, "", 1).is_err());
-
-        // A TXT of two strings joins them; an MX points back into the packet for its host.
-        let txt = reply(7, 0x8180, "acme.test", &[(16, [&[9u8][..], b"v=spf1 mx", &[4], b" ~al"].concat()), (5, vec![0])]);
-        assert_eq!(answer(&txt, 7, 16).unwrap(), Answer { truncated: false, rcode: 0, records: vec!["v=spf1 mx ~al".into()] });
-        let mut mx = vec![0, 10, 4];
-        mx.extend_from_slice(b"mail");
-        mx.extend_from_slice(&[0xC0, 12]);
-        let mail = reply(8, 0x8180, "acme.test", &[(15, mx)]);
-        assert_eq!(answer(&mail, 8, 15).unwrap().records, vec!["10 mail.acme.test".to_string()]);
-        assert_eq!(answer(&reply(9, 0x8183, "acme.test", &[]), 9, 16).unwrap(), Answer { truncated: false, rcode: 3, records: vec![] });
-        assert!(answer(&reply(9, 0x8382, "acme.test", &[]), 9, 16).unwrap().truncated);
-        assert_eq!(answer(&reply(1, 0x8180, "acme.test", &[(1, vec![192, 0, 2, 1])]), 1, 1).unwrap().records, vec!["192.0.2.1".to_string()]);
-        // Not ours, cut short, or a pointer in a circle: an error, not a panic.
-        assert!(answer(&txt, 99, 16).is_err() && answer(&txt[..20], 7, 16).is_err() && answer(&[], 7, 16).is_err());
-        let mut circle = reply(5, 0x8180, "acme.test", &[(16, vec![0])]);
-        circle[12] = 0xC0;
-        circle[13] = 12;
-        assert!(answer(&circle, 5, 16).is_err());
-    }
-
-    #[test]
-    fn the_systems_dns_servers_are_read() {
-        assert_eq!(
-            nameservers("# generated\nsearch lan\nnameserver 10.0.0.2\nnameserver fd00::1 # v6\nnameserver nope\n"),
-            vec!["10.0.0.2:53".parse().unwrap(), "[fd00::1]:53".parse().unwrap()]
-        );
-        assert!(nameservers("search lan\n").is_empty());
-    }
 
     const ZONE: &str = r#"; zone for acme.test
 $ORIGIN acme.test.
