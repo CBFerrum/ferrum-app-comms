@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use ferrum_app_comms::{Account, Mailbox, MailboxConnector};
 use ferrum_kernel::tenant::NewTenant;
+use ferrum_kernel::vault::{New, Rule, Scope, Zeroizing};
 use ferrum_kernel::{Ctx, Db, DbConfig, Doc, Error, HookRegistry, Kernel, KernelSettings, Mailer, SiteRequest, SiteResponse};
 use ferrum_meta::Catalog;
 use serde_json::{Map, Value, json};
@@ -510,7 +511,7 @@ async fn scenario() {
         users.insert(email.split('@').next().unwrap().to_string(), k.load_ctx(tenant, id, None, "it".into()).await.unwrap());
     }
     let (mgr, alice, bob, carol, dave) = (&users["mgr"], &users["alice"], &users["bob"], &users["carol"], &users["dave"]);
-    let t = T { k: k.clone(), tenant, comms };
+    let t = T { k: k.clone(), tenant, comms: comms.clone() };
     let smtp = Smtp::default();
     let port = smtp.start().await;
     let imap = FakeImap::default();
@@ -1295,7 +1296,20 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
         std::env::set_var("FERRUM_MEET_KEY", "APIacme");
         std::env::set_var("FERRUM_MEET_SECRET", "a-secret-only-livekit-and-ferrum-know");
     }
-    assert_eq!(t.ok(carol, "GET", "/meet", &[], Value::Null).await, json!({"available": true, "recordings": false}));
+    // Replicas asking at once keep the environment's key and secret in Comms' vault once, bound to the meeting server's
+    // host; the secret is never revealed.
+    let (a, b, c, d) = tokio::join!(
+        t.ok(carol, "GET", "/meet", &[], Value::Null),
+        t.ok(bob, "GET", "/meet", &[], Value::Null),
+        t.ok(alice, "GET", "/meet", &[], Value::Null),
+        t.ok(carol, "GET", "/meet", &[], Value::Null)
+    );
+    assert!([a, b, c].iter().all(|x| *x == d) && d == json!({"available": true, "recordings": false}));
+    for name in ["meet.key", "meet.secret"] {
+        let kept = comms.describe(&k, Scope::Installation, name).await.unwrap().expect("adopted");
+        assert_eq!((kept.version, kept.rule.hosts.clone()), (1, vec!["meet.acme.test".to_string()]), "{name}: once, for the meeting server's host");
+    }
+    assert!(comms.reveal(&k, Scope::Installation, "meet.secret").await.is_err(), "the secret signs; nobody reads it");
     let pass = join(bob, "channel", deals_id).await.unwrap();
     assert_eq!((pass["url"].clone(), pass["title"].clone()), (json!("wss://meet.acme.test"), json!("#deals")));
     let claims = |pass: &Value| -> Value {
@@ -1552,11 +1566,50 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     refused(join(bob, "event", event_id).await, "invalid");
     livekit.refuse.store(false, std::sync::atomic::Ordering::SeqCst);
     app_meetings(&t, &users, &livekit).await;
+    // ───────────── LiveKit's key and secret from Comms' vault ─────────────
+    let signed_with = |token: &str, secret: &str| {
+        use hmac::Mac;
+        let (unsigned, signature) = token.rsplit_once('.').unwrap();
+        let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(unsigned.as_bytes());
+        mac.verify_slice(&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(signature).unwrap()).is_ok()
+    };
+    // The vault holds another secret: the environment's, while it is set, still signs.
+    comms.rotate(&k, Scope::Installation, "meet.secret", New::Value(Zeroizing::new(b"another-secret-of-the-vault".to_vec()))).await.unwrap();
+    let pass = join(bob, "channel", deals_id).await.unwrap();
+    assert!(signed_with(pass["token"].as_str().unwrap(), "a-secret-only-livekit-and-ferrum-know"), "the environment wins");
     // SAFETY: as above.
     unsafe {
         for var in ["FERRUM_MEET_URL", "FERRUM_MEET_KEY", "FERRUM_MEET_SECRET"] {
             std::env::remove_var(var);
         }
+    }
+    // The address as the settings table gives it, nothing in the environment. The secret was kept for the browsers' host
+    // only: the server API's (set after) is not one it signs for until the operator says so.
+    let stored = |url: &str| ferrum_kernel::env::set([("FERRUM_MEET_URL".to_string(), Some(url.to_string()))].into());
+    stored("wss://meet.acme.test/");
+    let r = join(bob, "channel", deals_id).await;
+    assert!(format!("{r:?}").contains("may not sign for 127.0.0.1"), "{r:?}");
+    let both = Rule { hosts: vec!["meet.acme.test".into(), "127.0.0.1".into()], ..Default::default() };
+    comms.set(&k, Scope::Installation, "meet.secret", New::Value(Zeroizing::new(b"another-secret-of-the-vault".to_vec())), both).await.unwrap();
+    let pass = join(bob, "channel", deals_id).await.unwrap();
+    assert_eq!(pass["url"], "wss://meet.acme.test", "the stored address reaches Comms");
+    assert!(signed_with(pass["token"].as_str().unwrap(), "another-secret-of-the-vault"), "signed by the vault");
+    let claims: Value =
+        serde_json::from_slice(&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(pass["token"].as_str().unwrap().split('.').nth(1).unwrap()).unwrap())
+            .unwrap();
+    assert_eq!(claims["iss"], "APIacme", "the vault's key names it");
+    // A changed row, seen at once: nothing is signed for a host the secret was not given for.
+    stored("wss://elsewhere.test");
+    let r = join(bob, "channel", deals_id).await;
+    assert!(format!("{r:?}").contains("may not sign for elsewhere.test"), "{r:?}");
+    ferrum_kernel::env::set(HashMap::new());
+    // Nothing plain in any table, the vault's included.
+    for secret in ["a-secret-only-livekit-and-ferrum-know", "another-secret-of-the-vault"] {
+        assert_eq!(plain_anywhere(&k, secret).await, Vec::<String>::new(), "a secret is plain in a table");
+    }
+    for name in ["meet.key", "meet.secret"] {
+        comms.remove(&k, Scope::Installation, name).await.unwrap();
     }
     let none = |r: Result<ferrum_app_comms::meetings::Meeting, ferrum_app_comms::meetings::MeetingError>| {
         assert!(matches!(r, Err(ferrum_app_comms::meetings::MeetingError::NotConfigured)), "{r:?}");
@@ -3450,4 +3503,26 @@ async fn app_meetings(t: &T, users: &HashMap<String, Ctx>, livekit: &Egress) {
     assert!(matches!(m::guest_link(k, tenant, quick, "Gus", "gus@mail.test").await, Err(MeetingError::NotFound)));
     // The next meeting of the record is on within a quarter of an hour, so later upkeep reads its room too: Bob's
     // second row is what his erasure, further on, finds beside the first.
+}
+
+/// The tables, the vault's included, any of whose rows holds `secret` as plain text.
+async fn plain_anywhere(k: &Kernel, secret: &str) -> Vec<String> {
+    let mut tx = k.db.pool.begin().await.unwrap();
+    sqlx::query("select set_config('ferrum.vault', 'on', true)").execute(&mut *tx).await.unwrap();
+    let tables: Vec<(String, String)> =
+        sqlx::query_as("select schemaname::text, tablename::text from pg_tables where schemaname not in ('pg_catalog', 'information_schema')")
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+    assert!(tables.iter().any(|(s, _)| s == "vault"), "the vault's tables are among them");
+    let mut found = vec![];
+    for (schema, table) in tables {
+        let sql = format!("select count(*) from \"{schema}\".\"{table}\" t where t::text like '%' || $1 || '%'");
+        let n: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql)).bind(secret).fetch_one(&mut *tx).await.unwrap();
+        if n > 0 {
+            found.push(format!("{schema}.{table}"));
+        }
+    }
+    tx.rollback().await.unwrap();
+    found
 }

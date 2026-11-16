@@ -165,7 +165,7 @@ struct Mailbox {
 }
 
 async fn mailbox(k: &Kernel, ctx: &Ctx) -> Result<Mailbox> {
-    let url = hosted::server_url().ok_or_else(|| Error::NotFound("mailbox".into()))?;
+    let url = hosted::mailbox_url(k).await?.ok_or_else(|| Error::NotFound("mailbox".into()))?;
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let row: Option<(Uuid, String, Option<String>)> = sqlx::query_as("select id, email, status from e_hosted_mailbox where tenant_id = $1 and user_id = $2")
         .bind(ctx.tenant)

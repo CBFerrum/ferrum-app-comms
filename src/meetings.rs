@@ -18,9 +18,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Duration, Utc};
 use ferrum_kernel::{Error, Kernel, Tx};
-use hmac::{Hmac, Mac};
 use serde_json::{Value, json};
-use sha2::Sha256;
 use std::time::Duration as Wait;
 use uuid::Uuid;
 
@@ -135,7 +133,7 @@ pub async fn available(k: &Kernel, tenant: Uuid) -> Result<()> {
     if !k.registry.schema(tenant).await?.packages.iter().any(|p| p == "comms") {
         return Err(MeetingError::NotInstalled);
     }
-    meet::server().map(|_| ()).ok_or(MeetingError::NotConfigured)
+    meet::server(k).await.map(|_| ()).map_err(|_| MeetingError::NotConfigured)
 }
 
 /// A meeting for a record of the caller's. The record's open meeting is returned if it has one.
@@ -296,7 +294,7 @@ pub async fn end(k: &Kernel, tenant: Uuid, id: Uuid) -> Result<Meeting> {
     if m.ended_at.is_some() {
         return Ok(m);
     }
-    if let Some(server) = meet::server() {
+    if let Ok(server) = meet::server(k).await {
         if let Err(e) = record(k, tenant, &server, id).await {
             tracing::warn!(%tenant, meeting = %id, "attendance of an ended meeting was not read: {e}");
         }
@@ -365,7 +363,7 @@ pub async fn attendance(k: &Kernel, tenant: Uuid, id: Uuid) -> Result<Vec<Attend
 pub async fn record_attendance(k: &Kernel, tenant: Uuid, id: Uuid) -> Result<()> {
     available(k, tenant).await?;
     get(k, tenant, id).await?;
-    let server = meet::server().ok_or(MeetingError::NotConfigured)?;
+    let server = meet::server(k).await.map_err(|_| MeetingError::NotConfigured)?;
     record(k, tenant, &server, id).await.map_err(MeetingError::Failed)
 }
 
@@ -417,13 +415,10 @@ async fn record(k: &Kernel, tenant: Uuid, server: &Server, id: Uuid) -> ferrum_k
 }
 
 /// A short-lived token for LiveKit's room service, for one room.
-fn admin_token(server: &Server, room: &str, now: i64) -> String {
+async fn admin_token(k: &Kernel, server: &Server, room: &str, now: i64) -> ferrum_kernel::Result<String> {
     let claims =
         json!({"iss": server.key, "sub": "ferrum-comms", "nbf": now - 10, "exp": now + 600, "video": {"roomAdmin": true, "roomCreate": true, "room": room}});
-    let unsigned = format!("{}.{}", URL_SAFE_NO_PAD.encode(r#"{"alg":"HS256","typ":"JWT"}"#), URL_SAFE_NO_PAD.encode(claims.to_string()));
-    let mut mac = Hmac::<Sha256>::new_from_slice(server.secret.as_bytes()).expect("HMAC accepts any key length");
-    mac.update(unsigned.as_bytes());
-    format!("{unsigned}.{}", URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
+    meet::signed(k, server, &claims).await
 }
 
 /// One call to LiveKit's server API (Twirp, JSON).
@@ -434,7 +429,7 @@ async fn twirp(k: &Kernel, server: &Server, service: &str, method: &str, body: V
     let unavailable = |e: String| Error::Unavailable(format!("the meeting server: {e}"));
     let res = client
         .post(parsed)
-        .header("authorization", format!("Bearer {}", admin_token(server, room, Utc::now().timestamp())))
+        .header("authorization", format!("Bearer {}", admin_token(k, server, room, Utc::now().timestamp()).await?))
         .header("content-type", "application/json")
         .body(body.to_string())
         .send()
@@ -451,7 +446,7 @@ async fn twirp(k: &Kernel, server: &Server, service: &str, method: &str, body: V
 
 /// Reads the rooms of meetings that are on now, for [`crate::maintenance`].
 pub(crate) async fn upkeep(k: &Kernel, tenant: Uuid) -> ferrum_kernel::Result<usize> {
-    let Some(server) = meet::server() else { return Ok(0) };
+    let Ok(server) = meet::server(k).await else { return Ok(0) };
     let now = Utc::now();
     let mut tx = k.db.tenant_tx(tenant).await?;
     let on: Vec<Uuid> = sqlx::query_scalar(

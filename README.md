@@ -457,10 +457,10 @@ Everything Comms adds is ordinary Ferrum metadata and Rust, so its records get l
 
 | With | How | Needs |
 |---|---|---|
-| Stalwart mail server | Hosted mailboxes, shared mailboxes, lists, Sieve filters, JMAP | A Stalwart server; `FERRUM_MAIL_URL`, `FERRUM_MAIL_ADMIN`, `FERRUM_MAIL_ADMIN_SECRET`; a Mail Domain |
+| Stalwart mail server | Hosted mailboxes, shared mailboxes, lists, Sieve filters, JMAP | A Stalwart server; the settings `comms.mail_url` and `comms.mail_admin` and the secret `mail.admin_secret` (below); a Mail Domain |
 | SMTP and IMAP | Email accounts for sending, receiving and polling | Account credentials |
 | Inbound webhook | Raw MIME up to 32 MB posted to a secret URL | A public URL in Communication Settings |
-| LiveKit | Video meetings, captions, recordings (Egress) | `FERRUM_MEET_URL`, `FERRUM_MEET_KEY`, `FERRUM_MEET_SECRET`; for recordings `FERRUM_MEET_RECORDINGS` and optionally `FERRUM_MEET_API_URL` |
+| LiveKit | Video meetings, captions, recordings (Egress) | the setting `comms.meet_url` and the secrets `meet.key` and `meet.secret` (below); for recordings `comms.meet_recordings` and optionally `comms.meet_api_url` |
 | CalDAV and CardDAV | Apple Calendar, Thunderbird, DAVx⁵, Outlook | An app password (an API key of scope `dav`) |
 | iCalendar | Invitations, `.ics` import and export, a secret feed, `webcal://` subscriptions | Nothing |
 | Drive | Attach files to mail and events; save attachments | The Drive app |
@@ -687,14 +687,16 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 
 ## 🚀 Install
 
-Ferrum Comms is a native app. It is compiled into the official Ferrum server image; a workspace administrator installs it from **Apps** (`/store/`). Self-hosters who build their own image enable the `comms` feature of the server. It needs Ferrum platform `>=0.3.8, <0.4`.
+Ferrum Comms is a native app. It is compiled into the official Ferrum server image; a workspace administrator installs it from **Apps** (`/store/`). Self-hosters who build their own image enable the `comms` feature of the server. It needs Ferrum platform `>=0.3.9, <0.4`.
 
 **First steps**
 
 1. In **Communication Settings** set the public URL (used for unsubscribe links, the inbound webhook and feed addresses), the hourly newsletter limit and the number of send attempts.
-2. For hosted mailboxes, run a Stalwart server, set `FERRUM_MAIL_URL`, `FERRUM_MAIL_ADMIN` and `FERRUM_MAIL_ADMIN_SECRET` on the Ferrum server, then set the **Mail Domain**. Everyone whose address is in the domain gets a mailbox. Publish the DNS records Mail's domain health screen lists.
+2. For hosted mailboxes, run a Stalwart server, set the settings `comms.mail_url` and `comms.mail_admin` and the administrator's password as Comms' secret `mail.admin_secret` (below), then set the **Mail Domain**. Everyone whose address is in the domain gets a mailbox. Publish the DNS records Mail's domain health screen lists.
 3. For mail about records, add an **Email Account** (SMTP and IMAP or the inbound webhook) and mark a default outgoing account per company.
-4. For meetings, run a LiveKit server and set `FERRUM_MEET_URL`, `FERRUM_MEET_KEY` and `FERRUM_MEET_SECRET`. For recordings also run LiveKit Egress and set `FERRUM_MEET_RECORDINGS=true`.
+4. For meetings, run a LiveKit server, set `comms.meet_url` and give LiveKit's API key and secret as Comms' secrets `meet.key` and `meet.secret`. For recordings also run LiveKit Egress and set `comms.meet_recordings` to `true`.
+
+   Settings are set with `ferrum task settings set`, a settings document or the Operations screen; every replica takes a change within seconds. Secrets go in the installation's vault: `PUT /api/operator/secrets/comms/<name>` with `{"value": "…", "rule": {"hosts": ["<the server's host>"]}}` (`"reveal": true` for `meet.key`, which goes in each token). Each is used only for the hosts its rule names: after moving LiveKit or Stalwart to another host, change the rule too (`PUT /api/operator/secrets/comms/<name>/rule`). The variables used until now (`FERRUM_MEET_URL`, `FERRUM_MEET_API_URL`, `FERRUM_MEET_RECORDINGS`, `FERRUM_MEET_KEY`, `FERRUM_MEET_SECRET`, `FERRUM_MAIL_URL`, `FERRUM_MAIL_ADMIN`, `FERRUM_MAIL_ADMIN_SECRET`, `FERRUM_MAIL_HOST`) still work and win through this release; a secret given that way is kept in the vault once, for the hosts of the addresses then.
 5. Give people the **Comms User** role, and the people who manage accounts, rooms and mailboxes **Comms Manager**. Give moderators **Chat Admin**.
 6. Passwords and tokens are sealed secrets, kept as Comms' in the platform's vault and read only by Comms, so the server needs its vault open.
 

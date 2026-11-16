@@ -183,4 +183,26 @@ mod tests {
         let ui = ferrum_apps::ui::prepare("comms", files).expect("ui/dist is an interface release");
         assert!(super::UI.iter().any(|(p, _)| *p == "index.html") && !super::UI.iter().any(|(p, _)| p.starts_with('.')), "{}", ui.digest);
     }
+
+    /// Comms declares the settings the platform's registry moves to it (`app: comms`), each read at each use, and an
+    /// address given a secret says which; the secrets themselves are no settings.
+    #[test]
+    fn its_settings_are_declared() {
+        let m = ferrum_apps::AppManifest::parse(super::MANIFEST).expect("app.yaml");
+        let s: Vec<_> = m.operator_settings.iter().map(|s| (s.env.as_str(), s.applies.as_str(), s.sends.as_deref())).collect();
+        let (meet, mail) = (Some("FERRUM_MEET_SECRET"), Some("FERRUM_MAIL_ADMIN_SECRET"));
+        assert_eq!(
+            s,
+            [
+                ("FERRUM_MEET_URL", "live", meet),
+                ("FERRUM_MEET_API_URL", "live", meet),
+                ("FERRUM_MEET_RECORDINGS", "live", None),
+                ("FERRUM_MAIL_URL", "live", mail),
+                ("FERRUM_MAIL_ADMIN", "live", mail),
+                ("FERRUM_MAIL_HOST", "live", None),
+            ]
+        );
+        assert_eq!(super::keys::host("wss://Meet.Example.com:7880/rtc").as_deref(), Some("meet.example.com"));
+        assert_eq!(super::keys::host("http://admin@[::1]:8080").as_deref(), Some("::1"));
+    }
 }

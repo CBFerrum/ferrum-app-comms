@@ -5,8 +5,12 @@
 //! out of the domain, unlocked when they come back. Ferrum keeps each account's password sealed
 //! (`HostedMailbox.secret`) to reach the mailbox for its owner.
 //!
-//! The operator turns it on with `FERRUM_MAIL_URL` (Stalwart's HTTP address as this server reaches
-//! it) and `FERRUM_MAIL_ADMIN` / `FERRUM_MAIL_ADMIN_SECRET` (one of its administrators). Stalwart
+//! The operator turns it on with the settings `comms.mail_url` (`FERRUM_MAIL_URL`: Stalwart's HTTP address as this
+//! server reaches it) and `comms.mail_admin` (`FERRUM_MAIL_ADMIN`: one of its administrators), and that administrator's
+//! password as Comms' secret `mail.admin_secret` in the installation's vault (or `FERRUM_MAIL_ADMIN_SECRET`, which wins
+//! while set; keys.rs). The vault puts the password only on requests to the hosts its rule names, and people's own
+//! mailbox passwords go to the mail server's address only while it is one of those hosts, so a changed address takes
+//! no password elsewhere. Stalwart
 //! 1.0 is administered over JMAP (`urn:stalwart:jmap`). Its open-source edition has no tenants:
 //! workspaces sharing a server are kept apart by their domains, and each account carries
 //! `externalId = ferrum:<workspace>:<person>`.
@@ -14,11 +18,12 @@
 // ponytail: each reconcile pages through every account on the server; filter on the server once a
 // shared server holds enough workspaces for that to matter.
 
-use crate::groups;
 use crate::util::{self, obj};
+use crate::{groups, keys};
 use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use ferrum_kernel::vault::{Carry, Scope};
 use ferrum_kernel::{Ctx, Doc, DocHook, Error, HookCtx, Kernel, Result};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -35,19 +40,41 @@ fn setting(name: &str) -> Option<String> {
     ferrum_kernel::env::var(name).map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
-/// A secret: in the environment until the platform's own secrets move into the vault.
-fn secret(name: &str) -> Option<String> {
-    std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
-}
-
 /// The mail server's address, when the operator set one.
 pub(crate) fn server_url() -> Option<String> {
     setting("FERRUM_MAIL_URL").map(|u| u.trim_end_matches('/').to_string())
 }
 
-/// The mail server's address and an administrator's Basic credentials, when the operator set them.
-fn configured() -> Option<(String, String)> {
-    Some((server_url()?, basic(&setting("FERRUM_MAIL_ADMIN")?, &secret("FERRUM_MAIL_ADMIN_SECRET")?)))
+/// The mail server's address, for people's own mailbox passwords: while the administrator's password is the vault's, only
+/// when its rule names the address's host (the environment's address goes with the environment's password; with no
+/// administrator's password anywhere, the address as it is, as before).
+pub(crate) async fn mailbox_url(k: &Kernel) -> Result<Option<String>> {
+    let Some(url) = server_url() else { return Ok(None) };
+    if keys::MAIL_ADMIN.in_environment().is_some() {
+        return Ok(Some(url));
+    }
+    let host = keys::host(&url).unwrap_or_default();
+    match keys::MAIL_ADMIN.hosts(k).await? {
+        Some(hosts) if keys::names(&hosts, &host) => Ok(Some(url)),
+        Some(_) => Err(moved(&host)),
+        // ponytail: nothing to tie it to without the administrator's secret in the vault; as before.
+        None => Ok(Some(url)),
+    }
+}
+
+fn moved(host: &str) -> Error {
+    tracing::warn!(host, "Comms' secret mail.admin_secret does not name the mail server's host: hosted mail is off until its rule does");
+    Error::Unavailable(format!(
+        "the mail server's passwords may not be sent to {host}: its address moved, so change the hosts of Comms' secret mail.admin_secret to match"
+    ))
+}
+
+/// Whether hosted mail is set up: an address, an administrator, and that administrator's password somewhere.
+async fn configured(k: &Kernel) -> Result<bool> {
+    if server_url().is_none() || setting("FERRUM_MAIL_ADMIN").is_none() {
+        return Ok(false);
+    }
+    Ok(keys::MAIL_ADMIN.in_environment().is_some() || keys::MAIL_ADMIN.hosts(k).await?.is_some())
 }
 
 pub(crate) fn basic(user: &str, password: &str) -> String {
@@ -90,9 +117,28 @@ pub(crate) struct Admin {
 
 impl Admin {
     pub(crate) async fn connect(k: &Kernel) -> Result<Admin> {
-        let (url, auth) = configured().ok_or_else(|| {
-            Error::Unavailable("hosted mail is not set up on this server (FERRUM_MAIL_URL, FERRUM_MAIL_ADMIN, FERRUM_MAIL_ADMIN_SECRET)".into())
-        })?;
+        let not_set_up = || {
+            Error::Unavailable(
+                "hosted mail is not set up on this server (comms.mail_url, comms.mail_admin, and the secret mail.admin_secret or FERRUM_MAIL_ADMIN_SECRET)"
+                    .into(),
+            )
+        };
+        let (url, user) = server_url().zip(setting("FERRUM_MAIL_ADMIN")).ok_or_else(not_set_up)?;
+        let host = keys::host(&url).unwrap_or_default();
+        let auth = match keys::MAIL_ADMIN.environment(k, std::slice::from_ref(&host)).await {
+            Some(password) => basic(&user, &password),
+            None => {
+                // The vault puts the password on a request to this host, or refuses: one for the whole session.
+                let (_, parsed) = k.vetted_client(&url, true, Duration::from_secs(30), "Ferrum Comms").await?;
+                let carried = keys::vault()?.carry(k, Scope::Installation, keys::MAIL_ADMIN.name, &parsed, &Carry::Basic(user)).await;
+                match carried {
+                    Ok((_, header)) => header.to_string(),
+                    Err(Error::NotFound(_)) => return Err(not_set_up()),
+                    Err(Error::Forbidden(_)) => return Err(moved(&host)),
+                    Err(e) => return Err(keys::operator_unavailable(e)),
+                }
+            }
+        };
         let mut admin = Admin { url, auth, account: String::new() };
         let session = admin.request(k, "/jmap/session", None).await?;
         admin.account =
@@ -382,7 +428,7 @@ fn usage_rows(list: &[Value], tenant: Uuid) -> Vec<Value> {
 }
 
 pub(crate) async fn zone_file(k: &Kernel, domain: &str) -> Result<Option<String>> {
-    if configured().is_none() {
+    if !configured(k).await? {
         return Ok(None);
     }
     let admin = Admin::connect(k).await?;
@@ -493,7 +539,7 @@ static LAST: Mutex<Option<HashMap<Uuid, Instant>>> = Mutex::new(None);
 
 /// From maintenance: [`reconcile`] at most every ten minutes, for workspaces with hosted mail.
 pub async fn reconcile_due(k: &Kernel, tenant: Uuid) -> Result<()> {
-    if configured().is_none() || mail_domain(k, tenant).await?.is_none() {
+    if !configured(k).await? || mail_domain(k, tenant).await?.is_none() {
         return Ok(());
     }
     {
