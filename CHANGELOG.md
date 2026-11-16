@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.23.0
+
+Needs the platform's companion calls (Ferrum `9a9bd8f0` or later; its app API still says 0.3.9). No database or
+interface change.
+
+**LiveKit and the mail server take their files from the vault as they start.** Comms declares two services (Ferrum
+docs/app-contract.md, *Declaring a service*): `meet` writes `livekit.yaml` (ports, `comms.meet_node_ip`,
+`comms.meet_external_ip`, and `meet.secret` under the API key `ferrum.<version>`, the version before too while a
+rotation's overlap of a day lasts); `mail` writes `admin-secret`, the mail server's fallback administrator's password
+alone. `ferrum task render service:meet to:<dir>` makes the secret at the first render where the vault holds none (once,
+however many render at once); where Comms 0.22 copied it from the environment it is kept as it is. From then on it is the
+service's: `ferrum task vault_rotate level:service service:meet` (or `mail`) rotates it. Comms signs LiveKit's tokens
+with the version LiveKit knows (the one before while the overlap lasts); for the mail server, set `comms.mail_admin` to
+`admin`, the fallback administrator. The variables still win while they are set.
+
+**Two settings for LiveKit's file**: `comms.meet_node_ip` (`FERRUM_MEET_NODE_IP`) and `comms.meet_external_ip`
+(`FERRUM_MEET_EXTERNAL_IP`, default `true`).
+
+**The environment's secrets are copied into the vault only where it holds none**, under the secret's own lock
+(`Vault::adopt`), so a render making the secret at the same moment is never overwritten.
+
 ## 0.22.0
 
 Needs platform 0.3.9 (Ferrum `22d082f7` or later), which reads apps' operator settings. No database or interface change.

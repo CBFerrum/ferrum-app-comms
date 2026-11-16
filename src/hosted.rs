@@ -6,9 +6,11 @@
 //! (`HostedMailbox.secret`) to reach the mailbox for its owner.
 //!
 //! The operator turns it on with the settings `comms.mail_url` (`FERRUM_MAIL_URL`: Stalwart's HTTP address as this
-//! server reaches it) and `comms.mail_admin` (`FERRUM_MAIL_ADMIN`: one of its administrators), and that administrator's
-//! password as Comms' secret `mail.admin_secret` in the installation's vault (or `FERRUM_MAIL_ADMIN_SECRET`, which wins
-//! while set; keys.rs). The vault puts the password only on requests to the hosts its rule names, and people's own
+//! server reaches it) and `comms.mail_admin` (`FERRUM_MAIL_ADMIN`: one of its administrators), and
+//! that administrator's password as Comms' secret `mail.admin_secret` in the installation's vault (or
+//! `FERRUM_MAIL_ADMIN_SECRET`, which wins while set; keys.rs). The service `mail` ([`Service`]) writes that password into
+//! the file Stalwart takes its fallback administrator's from as it starts, made by the vault at the first render. The
+//! vault puts the password only on requests to the hosts its rule names, and people's own
 //! mailbox passwords go to the mail server's address only while it is one of those hosts, so a changed address takes
 //! no password elsewhere. Stalwart
 //! 1.0 is administered over JMAP (`urn:stalwart:jmap`). Its open-source edition has no tenants:
@@ -161,7 +163,7 @@ impl Admin {
     pub(crate) async fn connect(k: &Kernel) -> Result<Admin> {
         let not_set_up = || {
             Error::Unavailable(
-                "hosted mail is not set up on this server (comms.mail_url, comms.mail_admin, and the secret mail.admin_secret or FERRUM_MAIL_ADMIN_SECRET)"
+                "hosted mail is not set up on this server (comms.mail_url, comms.mail_admin, and the secret mail.admin_secret, which the service mail makes, or FERRUM_MAIL_ADMIN_SECRET)"
                     .into(),
             )
         };
@@ -172,7 +174,7 @@ impl Admin {
             None => {
                 // The vault puts the password on a request to this host, or refuses: one for the whole session.
                 let (_, parsed) = k.vetted_client(&url, true, Duration::from_secs(30), "Ferrum Comms").await?;
-                let carried = keys::vault()?.carry(k, Scope::Installation, keys::MAIL_ADMIN.name, &parsed, &Carry::Basic(user)).await;
+                let carried = keys::vault(k)?.carry(k, Scope::Installation, keys::MAIL_ADMIN.name, &parsed, &Carry::Basic(user)).await;
                 match carried {
                     Ok((_, header)) => header.to_string(),
                     Err(Error::NotFound(_)) => return Err(not_set_up()),
@@ -636,6 +638,45 @@ impl DocHook for MailboxHook {
             return Ok(());
         };
         record_host(hc.tx, hc.ctx.tenant, id, &host).await
+    }
+}
+
+/// Signs in to the mail server's administration as hosted mail does: the administration's account there.
+pub(crate) async fn admin_account(k: &Kernel) -> Result<String> {
+    Ok(Admin::connect(k).await?.account)
+}
+
+// ───────────────────────────── the service mail ─────────────────────────────
+
+/// The mail server's fallback administrator's password, written as Stalwart starts (`ferrum task render service:mail
+/// to:<dir>`): the file `admin-secret`, the password alone, which Stalwart's configuration names
+/// (`authentication.fallback-admin.user = "admin"`, `authentication.fallback-admin.secret =
+/// "%{file:/run/mail-files/admin-secret}%"`; `comms.mail_admin` is then `admin`). `mail.admin_secret` is made by the vault at the first render where it holds
+/// none, bound to the host of `comms.mail_url`, or, where it holds one that is no service's yet (Comms 0.22 copied it from
+/// `FERRUM_MAIL_ADMIN_SECRET`, or a person set it: the password the mail server already takes), kept as it is with the
+/// hosts it had (keys.rs, `made_or_kept`). One value: after a rotation the mail server takes the new one at its next
+/// start, so it is restarted at once.
+pub(crate) struct Service;
+
+#[async_trait]
+impl ferrum_kernel::companion::Companion for Service {
+    fn files(&self) -> &'static [&'static str] {
+        &["admin-secret"]
+    }
+
+    fn made(&self) -> &'static [&'static str] {
+        &[keys::MAIL_ADMIN.name]
+    }
+
+    async fn render(&self, r: &ferrum_kernel::companion::Rendering<'_>) -> Result<Vec<ferrum_kernel::companion::File>> {
+        let hosts = || {
+            let url = r.needs("comms.mail_url")?;
+            keys::host(&url).map(|h| vec![h]).ok_or_else(|| Error::invalid("comms.mail_url is the mail server's address, such as http://mail:8080"))
+        };
+        let rule = ferrum_kernel::vault::Rule { reveal: true, ..Default::default() };
+        keys::made_or_kept(r, keys::MAIL_ADMIN.name, rule, hosts).await?;
+        let bytes = r.secret(keys::MAIL_ADMIN.name).await?;
+        Ok(vec![ferrum_kernel::companion::File { name: "admin-secret".into(), bytes, secret: true }])
     }
 }
 

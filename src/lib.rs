@@ -56,7 +56,8 @@ const SUBSCRIBE_BUDGET: Duration = Duration::from_secs(30);
 /// Registers this package's document hooks, its mail sender and its endpoints. Call it inside the platform's
 /// registration of the app, `hooks.app("comms", …)`: Comms takes its own vault handle there (`keys.rs`).
 pub fn register(hooks: &mut HookRegistry) {
-    keys::remember(hooks.vault());
+    let site: Arc<dyn ferrum_kernel::Site> = Arc::new(site::CommsSite);
+    keys::remember(&site, hooks.vault());
     hooks
         .register("EmailAccount", Arc::new(account::AccountHook))
         .register("Communication", Arc::new(mail::CommunicationHook))
@@ -71,9 +72,12 @@ pub fn register(hooks: &mut HookRegistry) {
         .register("EmailGroup", Arc::new(groups::EmailGroupHook))
         .register("EmailGroupMember", Arc::new(groups::GroupMemberHook))
         .add_event_sink(Arc::new(mail::MailSink))
-        .add_site("comms", Arc::new(site::CommsSite));
+        .add_site("comms", site);
     hooks.add_personal_held(Arc::new(meet::Transcripts));
     hooks.add_personal_held(Arc::new(meetings::Attendance));
+    // The programs beside the server whose files Comms renders as they start (`ferrum task render service:<name>`).
+    hooks.add_companion("meet", Arc::new(meet::Service));
+    hooks.add_companion("mail", Arc::new(hosted::Service));
 }
 
 /// This package's reports.
@@ -148,6 +152,13 @@ pub async fn apply_calendar_mail(k: &Kernel, tenant: Uuid, me: &str, from: &str,
     itip::apply(k, tenant, me, from, text).await.map(|a| a.word())
 }
 
+/// Signs in to the mail server's administration as hosted mail does (the administrator's password from the environment,
+/// else carried by the vault): the administration's account there. For tests, which run a stand-in for the mail server.
+#[doc(hidden)]
+pub async fn mail_admin_account(k: &Kernel) -> Result<String> {
+    hosted::admin_account(k).await
+}
+
 include!(concat!(env!("OUT_DIR"), "/packages.rs"));
 include!(concat!(env!("OUT_DIR"), "/ui.rs"));
 
@@ -197,11 +208,15 @@ mod tests {
                 ("FERRUM_MEET_URL", "live", meet),
                 ("FERRUM_MEET_API_URL", "live", meet),
                 ("FERRUM_MEET_RECORDINGS", "live", None),
+                ("FERRUM_MEET_NODE_IP", "live", None),
+                ("FERRUM_MEET_EXTERNAL_IP", "live", None),
                 ("FERRUM_MAIL_URL", "live", mail),
                 ("FERRUM_MAIL_ADMIN", "live", mail),
                 ("FERRUM_MAIL_HOST", "live", None),
             ]
         );
+        let defaults: Vec<_> = m.operator_settings.iter().filter(|s| !s.default.is_empty()).map(|s| (s.key.as_str(), s.default.as_str())).collect();
+        assert_eq!(defaults, [("meet_recordings", "false"), ("meet_external_ip", "true")]);
         assert_eq!(super::keys::host("wss://Meet.Example.com:7880/rtc").as_deref(), Some("meet.example.com"));
         assert_eq!(super::keys::host("http://admin@[::1]:8080").as_deref(), Some("::1"));
     }

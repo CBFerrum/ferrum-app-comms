@@ -5,30 +5,38 @@
 //! whose links are its own), and the release after this one seals what is left in place. A sealed value always holds a
 //! dot and a key never does, so the build before this one reads a sealed value as a key nobody can present.
 
-use ferrum_kernel::vault::{Carry, New, Rule, Scope, Vault, Zeroizing};
-use ferrum_kernel::{Error, Kernel, Result, Tx};
-use std::sync::RwLock;
+use ferrum_kernel::companion::Rendering;
+use ferrum_kernel::vault::{Carry, Described, New, Rule, Scope, Vault, Zeroizing};
+use ferrum_kernel::{Error, Kernel, Result, Site, Tx};
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
-/// Comms' handle on the vault, from its registration.
-static VAULT: RwLock<Option<Vault>> = RwLock::new(None);
+/// Each registration's handle, by the site it registered: one process may hold kernels of several registries (a test's
+/// replicas, `ferrum start`'s two set-ups), and each kernel accepts only the handle its own registry gave.
+static HANDLES: Mutex<Vec<(usize, Vault)>> = Mutex::new(Vec::new());
 
-/// Keeps the handle the registration gave Comms.
-// ponytail: the last registration's handle serves the whole process (`ferrum start` sets the server up twice and serves
-// with the second); keep it in what is registered if one process ever serves two kernels at once.
-pub(crate) fn remember(v: Vault) {
-    *VAULT.write().unwrap_or_else(|e| e.into_inner()) = Some(v);
+fn address(site: &Arc<dyn Site>) -> usize {
+    Arc::as_ptr(site) as *const () as usize
 }
 
-fn handle() -> Result<Vault> {
-    VAULT.read().unwrap_or_else(|e| e.into_inner()).clone().ok_or_else(|| Error::Unavailable("Comms was registered without its vault handle".into()))
+/// Keeps the handle Comms' registration was given, beside the site it registered with it.
+pub(crate) fn remember(site: &Arc<dyn Site>, v: Vault) {
+    HANDLES.lock().unwrap_or_else(|e| e.into_inner()).push((address(site), v));
+}
+
+/// Comms' handle on the vault, as `k`'s registry gave it.
+fn handle(k: &Kernel) -> Result<Vault> {
+    let missing = || Error::Unavailable("Comms was registered without its vault handle: register it as the server does, hooks.app(\"comms\", …)".into());
+    let at = address(k.hooks.site("comms").ok_or_else(missing)?);
+    let held = HANDLES.lock().unwrap_or_else(|e| e.into_inner());
+    held.iter().rev().find(|(a, _)| *a == at).map(|(_, v)| v.clone()).ok_or_else(missing)
 }
 
 /// The value of one of Comms' own secret fields (an account's passwords and inbound token, a mailbox's password, a
 /// calendar's or a feed's address, its signing key), read in `tx` with its handle: none when it is not set. Another
 /// app's field is refused, set or not; a closed vault refuses, and says why.
 pub(crate) async fn field(k: &Kernel, tx: &mut Tx, tenant: Uuid, entity: &str, record: Uuid, field: &str) -> Result<Option<Zeroizing<String>>> {
-    handle()?.field(k, tx, tenant, entity, record, field).await
+    handle(k)?.field(k, tx, tenant, entity, record, field).await
 }
 
 /// What a person or a caller is told when the vault cannot be used; why goes to the log.
@@ -50,7 +58,7 @@ fn context(room: Uuid) -> String {
 
 /// A room's guest key as the room keeps it: sealed.
 pub(crate) async fn seal_guest_key(k: &Kernel, tenant: Uuid, room: Uuid, key: &str) -> Result<String> {
-    handle()?.seal(k, Scope::Workspace(tenant), &context(room), key.as_bytes()).await.map_err(unavailable)
+    handle(k).map_err(unavailable)?.seal(k, Scope::Workspace(tenant), &context(room), key.as_bytes()).await.map_err(unavailable)
 }
 
 /// The guest key a room keeps (`kept`): opened when sealed; as it is when a build before 0.21 kept it so, except in a
@@ -59,7 +67,7 @@ pub(crate) async fn guest_key(k: &Kernel, tenant: Uuid, room: Uuid, kept: &str) 
     if !kept.contains('.') {
         return Ok(k.outward(tenant).await.is_ok().then(|| kept.to_string()));
     }
-    match handle()?.open(k, Scope::Workspace(tenant), &context(room), kept).await {
+    match handle(k).map_err(unavailable)?.open(k, Scope::Workspace(tenant), &context(room), kept).await {
         Ok(key) => Ok(String::from_utf8(key.to_vec()).ok()),
         Err(Error::Invalid(_)) => Ok(None),
         Err(e) => Err(unavailable(e)),
@@ -69,11 +77,16 @@ pub(crate) async fn guest_key(k: &Kernel, tenant: Uuid, room: Uuid, kept: &str) 
 // ───────────────────────────── the operator's secrets ─────────────────────────────
 //
 // LiveKit's API key and secret and the mail server administrator's password live in the installation's scope of Comms'
-// vault: `meet.key` (a name, revealed: it goes in each token), `meet.secret` (never revealed: the vault signs tokens with
-// it) and `mail.admin_secret` (never revealed: the vault puts it on requests to the mail server). Each is bound to the
+// vault: `meet.key` (a name, revealed: it goes in each token), `meet.secret` (the vault signs tokens with it) and
+// `mail.admin_secret` (the vault puts it on requests to the mail server). Each copied from the environment is bound to the
 // hosts of the addresses it serves (its rule's `hosts`), so a changed address does not take it elsewhere. The environment's
 // variable, while it is set, still wins (through this release) and is kept in the vault once, bound to the hosts of the
-// addresses then: under an advisory lock held while it looks and sets, so that replicas doing it together set it once.
+// addresses then: only where the vault holds none, under the secret's own lock, so that replicas doing it together, or a
+// render making it at that moment, write it once.
+//
+// The services `meet` and `mail` (meet.rs, hosted.rs) write `meet.secret` and `mail.admin_secret` into the files LiveKit
+// and the mail server read as they start; a render makes each where the vault holds none, or keeps the one there
+// ([`made_or_kept`]), and from then on it is the service's: revealed to its render, rotated by the operator through it.
 
 /// LiveKit's API key.
 pub(crate) const MEET_KEY: Operator = Operator { name: "meet.key", var: "FERRUM_MEET_KEY", reveal: true };
@@ -113,45 +126,53 @@ impl Operator {
         if ADOPTED.lock().unwrap_or_else(|e| e.into_inner()).contains(&self.name) || hosts.is_empty() {
             return Ok(false);
         }
-        let v = handle()?;
-        let mut lock = k.db.system_tx().await?;
-        sqlx::query("select pg_advisory_xact_lock(hashtext($1))").bind(format!("comms: adopt {}", self.name)).execute(&mut *lock).await?;
-        let adopted = match v.describe(k, Scope::Installation, self.name).await? {
-            Some(_) => false,
-            None => {
-                let rule = Rule { reveal: self.reveal, hosts: hosts.to_vec(), ..Default::default() };
-                v.set(k, Scope::Installation, self.name, New::Value(Zeroizing::new(value.as_bytes().to_vec())), rule).await?;
-                true
-            }
-        };
-        lock.commit().await?;
+        let rule = Rule { reveal: self.reveal, hosts: hosts.to_vec(), ..Default::default() };
+        let value = New::Value(Zeroizing::new(value.as_bytes().to_vec()));
+        let adopted = handle(k)?.adopt(k, Scope::Installation, self.name, value, rule, "environment").await?;
         ADOPTED.lock().unwrap_or_else(|e| e.into_inner()).push(self.name);
         Ok(adopted)
     }
 
+    /// What the vault holds of it (never its value); none when it holds none.
+    pub(crate) async fn describe(self, k: &Kernel) -> Result<Option<Described>> {
+        handle(k)?.describe(k, Scope::Installation, self.name).await.map_err(operator_unavailable)
+    }
+
     /// The hosts the vault's copy may serve; none when the vault holds none.
     pub(crate) async fn hosts(self, k: &Kernel) -> Result<Option<Vec<String>>> {
-        Ok(handle()?.describe(k, Scope::Installation, self.name).await.map_err(operator_unavailable)?.map(|d| d.rule.hosts))
+        Ok(self.describe(k).await?.map(|d| d.rule.hosts))
     }
 
     /// The vault's value, where its rule lets Comms read it; none when the vault holds none.
     pub(crate) async fn reveal(self, k: &Kernel) -> Result<Option<Zeroizing<String>>> {
-        match handle()?.reveal(k, Scope::Installation, self.name).await {
+        match handle(k)?.reveal(k, Scope::Installation, self.name).await {
             Ok(v) => Ok(String::from_utf8(v.to_vec()).ok().map(Zeroizing::new)),
             Err(Error::NotFound(_)) => Ok(None),
             Err(e) => Err(operator_unavailable(e)),
         }
     }
 
-    /// `message` signed with the vault's copy (HMAC-SHA256).
-    pub(crate) async fn sign(self, k: &Kernel, message: &[u8]) -> Result<Vec<u8>> {
-        handle()?.sign(k, Scope::Installation, self.name, message).await.map_err(operator_unavailable)
+    /// `message` signed with the vault's copy (HMAC-SHA256): its version `version`, one still kept, or the current one.
+    pub(crate) async fn sign_at(self, k: &Kernel, message: &[u8], version: Option<i32>) -> Result<Vec<u8>> {
+        handle(k)?.sign_at(k, Scope::Installation, self.name, message, version).await.map(|(_, s)| s).map_err(operator_unavailable)
+    }
+}
+
+/// For a render: makes `name` under `rule` where the vault holds none (`hosts`, asked only then, are the hosts it is bound
+/// to), or keeps the one there that is no service's yet (what Comms 0.22 copied from the environment, or a person set:
+/// the value the program already runs with) under `rule` and the hosts it had, from then on the service's to rotate. One
+/// a render made or kept before is left as it is.
+pub(crate) async fn made_or_kept(r: &Rendering<'_>, name: &str, rule: Rule, hosts: impl FnOnce() -> Result<Vec<String>>) -> Result<()> {
+    match r.vault().describe(r.kernel(), Scope::Installation, name).await? {
+        None => r.made(name, Rule { hosts: hosts()?, ..rule }).await,
+        Some(d) if d.managed_by.is_none() => r.keep(name, Rule { hosts: d.rule.hosts, ..rule }).await,
+        Some(_) => Ok(()),
     }
 }
 
 /// Comms' handle, to carry a secret on a request with.
-pub(crate) fn vault() -> Result<Vault> {
-    handle()
+pub(crate) fn vault(k: &Kernel) -> Result<Vault> {
+    handle(k)
 }
 
 /// Whether `hosts` (a secret's rule) names `host`, as the vault decides it for a request.

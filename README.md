@@ -41,7 +41,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 | | |
 |---|---|
-| 📦 **Version** | 0.21.0 |
+| 📦 **Version** | 0.23.0 |
 | 🖥️ **Kind** | Its own interface: four shell apps at `/mail/`, `/chat/`, `/calendar/` and `/meet/` |
 | ➕ **What it adds** | 21 entities in one package, 3 roles, 3 reports, 4 launcher apps, 3 intents, a side panel, bar search, 10 kinds of notification, 2 public pages |
 | 🧱 **Depends on** | The platform's `core` and `contacts` packages. Nothing else is required |
@@ -695,6 +695,8 @@ Ferrum Comms is a native app. It is compiled into the official Ferrum server ima
 2. For hosted mailboxes, run a Stalwart server, set the settings `comms.mail_url` and `comms.mail_admin` and the administrator's password as Comms' secret `mail.admin_secret` (below), then set the **Mail Domain**. Everyone whose address is in the domain gets a mailbox. Publish the DNS records Mail's domain health screen lists.
 3. For mail about records, add an **Email Account** (SMTP and IMAP or the inbound webhook) and mark a default outgoing account per company.
 4. For meetings, run a LiveKit server, set `comms.meet_url` and give LiveKit's API key and secret as Comms' secrets `meet.key` and `meet.secret`. For recordings also run LiveKit Egress and set `comms.meet_recordings` to `true`.
+
+   Or let LiveKit and the mail server take their files from the vault as they start (Ferrum docs/operations.md, *Files for the programs beside the server*): `ferrum task render service:meet to:<dir>` writes `livekit.yaml` (start LiveKit with `--config <dir>/livekit.yaml`; `comms.meet_node_ip` and `comms.meet_external_ip` set its address), and `ferrum task render service:mail to:<dir>` writes `admin-secret`, which Stalwart's configuration names as its fallback administrator's password (`authentication.fallback-admin.user = "admin"`, `authentication.fallback-admin.secret = "%{file:<dir>/admin-secret}%"`; set `comms.mail_admin` to `admin`). The first render makes `meet.secret` and `mail.admin_secret` where the vault holds none (`mail` needs `comms.mail_url` then) and keeps the ones there. Rotate with `ferrum task vault_rotate level:service service:meet`, then render and restart LiveKit within a day (Comms signs with the secret before until then); for `mail`, render and restart the mail server at once. Remove `FERRUM_MEET_KEY`, `FERRUM_MEET_SECRET` and `FERRUM_MAIL_ADMIN_SECRET` from the servers first: while set they win.
 
    Settings are set with `ferrum task settings set`, a settings document or the Operations screen; every replica takes a change within seconds. Secrets go in the installation's vault: `PUT /api/operator/secrets/comms/<name>` with `{"value": "…", "rule": {"hosts": ["<the server's host>"]}}` (`"reveal": true` for `meet.key`, which goes in each token). Each is used only for the hosts its rule names: after moving LiveKit or Stalwart to another host, change the rule too (`PUT /api/operator/secrets/comms/<name>/rule`). The variables used until now (`FERRUM_MEET_URL`, `FERRUM_MEET_API_URL`, `FERRUM_MEET_RECORDINGS`, `FERRUM_MEET_KEY`, `FERRUM_MEET_SECRET`, `FERRUM_MAIL_URL`, `FERRUM_MAIL_ADMIN`, `FERRUM_MAIL_ADMIN_SECRET`, `FERRUM_MAIL_HOST`) still work and win through this release; a secret given that way is kept in the vault once, for the hosts of the addresses then.
 5. Give people the **Comms User** role, and the people who manage accounts, rooms and mailboxes **Comms Manager**. Give moderators **Chat Admin**.
