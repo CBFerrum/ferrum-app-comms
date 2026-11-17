@@ -541,7 +541,7 @@ async fn scenario() {
     assert_eq!((account["smtp_password"].clone(), account["imap_password"].clone()), (json!(true), json!(true)), "secrets read as set, never as values");
     assert_eq!(t.secret("EmailAccount", account_id, "smtp_password").await.as_deref(), Some(" s3cret pass "), "kept exactly as typed");
     let leaks: i64 = t
-        .scalar("select (select count(*) from audit_event where tenant_id = $1 and diff::text like '%s3cret%') + (select count(*) from outbox where tenant_id = $1 and payload::text like '%s3cret%') + (select count(*) from e_email_account where tenant_id = $1 and to_jsonb(e_email_account)::text like '%s3cret%' and id = $2) + (select count(*) from record_secret where tenant_id = $1 and sealed like '%s3cret%')", Some(account_id))
+        .scalar("select (select count(*) from audit_event where tenant_id = $1 and diff::text like '%s3cret%') + (select count(*) from outbox where tenant_id = $1 and payload::text like '%s3cret%') + (select count(*) from e_email_account where tenant_id = $1 and to_jsonb(e_email_account)::text like '%s3cret%' and id = $2) + (select count(*) from record_secret where tenant_id = $1 and to_jsonb(record_secret)::text like '%s3cret%')", Some(account_id))
         .await;
     assert_eq!(leaks, 0, "the password never reaches the record, the audit trail or the outbox");
     let reread = k.get(mgr, "EmailAccount", account_id, false).await.unwrap();
@@ -1402,16 +1402,13 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     let kept: String = t.scalar("select guest_key from comms_meeting where tenant_id = $1 and id = $2", Some(shared)).await;
     assert!(kept.starts_with("fv1.") && !kept.contains(&renewed_key), "{kept}");
     refused(guest(json!({"token": format!("r.{}.{kept}", shared.simple()), "name": "Sam"})).await, "not found");
-    // Nothing anyone reads in the database signs a guest's link either: no value of Comms' rooms, nor any secret field as it
-    // is kept (the key that signs event guests' links is one), signs Pat's.
+    // Nothing anyone reads in the database signs a guest's link either: no value of Comms' rooms signs Pat's. (A secret
+    // field's value, such as the key that signs event guests' links, is the vault's: its table keeps no copy.)
     let readable: Vec<String> = {
         let mut tx = k.db.system_tx().await.unwrap();
-        sqlx::query_scalar("select guest_key from comms_meeting where guest_key is not null union all select sealed from record_secret")
-            .fetch_all(&mut *tx)
-            .await
-            .unwrap()
+        sqlx::query_scalar("select guest_key from comms_meeting where guest_key is not null").fetch_all(&mut *tx).await.unwrap()
     };
-    assert!(readable.len() > 1, "{readable:?}");
+    assert!(!readable.is_empty(), "{readable:?}");
     let pat_claim = format!("meet-guest|{review}|pat@partner.test");
     for key in readable.iter().flat_map(|v| [Some(v.as_bytes().to_vec()), hex::decode(v).ok()]).flatten() {
         use hmac::Mac;
