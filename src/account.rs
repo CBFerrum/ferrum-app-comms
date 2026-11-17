@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use ferrum_kernel::{Doc, DocHook, Error, FieldError, HookCtx, Kernel, Result, Tx};
 use ferrum_meta::{EntityKind, FieldType};
 use serde_json::{Map, Value, json};
+use std::net::SocketAddr;
 use uuid::Uuid;
 
 /// Where inbound mail values come from when it creates a record.
@@ -26,6 +27,30 @@ pub struct Server {
     pub security: Security,
     pub username: Option<String>,
     pub password: Option<String>,
+    /// The operator lets this host be reached on a private address: `FERRUM_CONNECTION_HOSTS` names it (or private
+    /// addresses are allowed, in development), as for the platform's connections.
+    pub named: bool,
+}
+
+impl Server {
+    /// Where a socket to this server connects: its host resolved once and, unless the operator named the host, refused
+    /// before any connection when an address is private, loopback or link-local (the cloud's metadata address among
+    /// them), as the platform's `outbox::is_private` says. The socket connects to these addresses and never asks for
+    /// the name again, so an answer that changes after the check reaches nothing new.
+    pub async fn addresses(&self) -> Result<Vec<SocketAddr>> {
+        let unresolved = |why: String| Error::Unavailable(format!("{} does not resolve{why}", self.host));
+        let addrs: Vec<SocketAddr> = tokio::net::lookup_host((self.host.as_str(), self.port)).await.map_err(|e| unresolved(format!(": {e}")))?.collect();
+        if addrs.is_empty() {
+            return Err(unresolved(String::new()));
+        }
+        if !self.named && addrs.iter().any(|a| ferrum_kernel::outbox::is_private(a.ip())) {
+            return Err(Error::invalid(format!(
+                "{} is a private, loopback or link-local address; mail goes there only when the operator names the host",
+                self.host
+            )));
+        }
+        Ok(addrs)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +98,8 @@ pub async fn load(k: &Kernel, tx: &mut Tx, tenant: Uuid, account: Uuid) -> Resul
     let Some(d) = row.map(util::obj) else { return Ok(None) };
     let smtp_password = crate::keys::field(k, tx, tenant, "EmailAccount", account, "smtp_password").await?.map(|p| p.to_string());
     let imap_password = crate::keys::field(k, tx, tenant, "EmailAccount", account, "imap_password").await?.map(|p| p.to_string());
+    let live = k.live();
+    let named = |h: &str| k.settings.webhooks_allow_private || live.connection_hosts.iter().any(|n| n.eq_ignore_ascii_case(h));
     let server = |host: &str, port: &str, sec: &str, user: &str, password: Option<String>, default_port: i64, default_sec: Security| {
         s(&d, host).map(|h| Server {
             host: h.to_string(),
@@ -80,6 +107,7 @@ pub async fn load(k: &Kernel, tx: &mut Tx, tenant: Uuid, account: Uuid) -> Resul
             security: security(s(&d, sec), default_sec),
             username: s(&d, user).map(str::to_string),
             password,
+            named: named(h),
         })
     };
     Ok(Some(Account {

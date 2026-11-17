@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.25.1-2563eb?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.25.2-2563eb?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 [![CI](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml/badge.svg)](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml)
@@ -41,7 +41,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 | | |
 |---|---|
-| 📦 **Version** | 0.25.1 |
+| 📦 **Version** | 0.25.2 |
 | 🖥️ **Kind** | Its own interface: four shell apps at `/mail/`, `/chat/`, `/calendar/` and `/meet/` |
 | ➕ **What it adds** | 19 entities in one package, 3 roles, 2 reports, 4 launcher apps, 3 intents, a side panel, bar search, 10 kinds of notification, 2 public pages |
 | 🧱 **Depends on** | The platform's `core` and `contacts` packages. Nothing else is required |
@@ -269,7 +269,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 ### 🧾 Mail on business records
 
-- **Email accounts.** Add SMTP accounts for sending and IMAP polling or an inbound webhook for receiving, per company, with one default account per company and one shared. Passwords are sealed secret fields that never reach lists, exports or the audit trail.
+- **Email accounts.** Add SMTP accounts for sending and IMAP polling or an inbound webhook for receiving, per company, with one default account per company and one shared. Passwords are sealed secret fields that never reach lists, exports or the audit trail. Their mail servers are reached on public addresses only; one on a private, loopback or link-local address is refused before any connection unless the operator names its host in `FERRUM_CONNECTION_HOSTS`.
 - **Communication log.** Every email sent or received about a record is a Communication threaded on that record: status (Queued, Sending, Sent, Failed, Received), sender, recipients, HTML cleaned for display, attachments, and thread. Calls, meetings and notes sit in the same timeline.
 - **Reliable sending.** Retries back off from 1, 4, 16 and 64 minutes up to six hours until a limit; permanent failures (a 5xx reply, an invalid address) fail at once. The author is notified when an email fails and can retry it.
 - **Templates with fields.** An Email Template fills `{{ doc.field }}` from the record the mail is sent from, with a preview. Values are escaped.
@@ -456,7 +456,7 @@ Everything Comms adds is ordinary Ferrum metadata and Rust, so its records get l
 | With | How | Needs |
 |---|---|---|
 | Stalwart mail server | Hosted mailboxes, shared mailboxes, lists, Sieve filters, JMAP | A Stalwart server; the settings `comms.mail_url` and `comms.mail_admin` and the secret `mail.admin_secret` (below); a Mail Domain |
-| SMTP and IMAP | Email accounts for sending, receiving and polling | Account credentials |
+| SMTP and IMAP | Email accounts for sending, receiving and polling | Account credentials; a server on a private address needs its host in `FERRUM_CONNECTION_HOSTS` |
 | Inbound webhook | Raw MIME up to 32 MB posted to a secret URL | A public URL in Communication Settings |
 | LiveKit | Video meetings, captions, recordings (Egress) | the setting `comms.meet_url` and the secrets `meet.key` and `meet.secret` (below); for recordings `comms.meet_recordings` and optionally `comms.meet_api_url` |
 | CalDAV and CardDAV | Apple Calendar, Thunderbird, DAVx⁵, Outlook | An app password (an API key of scope `dav`) |
@@ -615,6 +615,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 
 ### ✅ Recently shipped
 
+- [x] **0.25.2**: Mail's SMTP and IMAP connections refuse private, loopback and link-local addresses unless the operator names the host; each route reads only the body it needs.
 - [x] **0.25.0**: Mail keeps no `x-ferrum-` header a sender wrote; hosted mailboxes are brought in step on time whichever replica runs the upkeep; Comms' meeting and mail secrets live in its vault only; every table enforces row-level security.
 - [x] **0.24.0**: Newsletters moved to Campaigns, which sends to the same email groups with consent, topics, the suppression list and one-click unsubscribe.
 - [x] **0.23.0**: LiveKit and the mail server take their files from the vault as they start (`ferrum task render service:meet` and `service:mail`).
@@ -776,7 +777,7 @@ CHANGELOG.md          what changed in each version
 
 ## 📜 Changelog
 
-Every release is described in [CHANGELOG.md](CHANGELOG.md). The latest is **0.25.1**.
+Every release is described in [CHANGELOG.md](CHANGELOG.md). The latest is **0.25.2**.
 
 ## 🤝 Contributing
 

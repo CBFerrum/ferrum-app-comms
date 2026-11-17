@@ -33,6 +33,9 @@ the generic API on `ChatChannel`/`ChatMessage` is for chat administrators only.
    workspace's main host, which serves it. `max_send_attempts` (default 5).
 2. **Email Account**: SMTP (`smtp_security`: `STARTTLS` | `TLS` | `None`) and/or IMAP
    (`imap_security`: `TLS` | `STARTTLS` | `None`, `imap_folder`, `poll_interval_minutes`).
+   Each host is resolved once and connected to at the addresses found; a private, loopback or
+   link-local address is refused before any connection unless the operator names the host in
+   `FERRUM_CONNECTION_HOSTS` (the send fails for good, the poll records the error).
    `smtp_password` / `imap_password` are **secret fields** (the server's vault must be open):
    send text to set one, `null` to clear it, `true` to keep it; reads only return `true` when one is
    set. The values are sealed outside the record and never reach documents, lists, events, the
@@ -311,6 +314,10 @@ What apps send:
 | `POST /inbound/{token}` | A provider forwards one received message (up to 32 MB): the raw MIME as the body (`message/rfc822`), or a `multipart/form-data` form with a `body-mime` (Mailgun), `email` (SendGrid) or `raw` field → `202 {status: "created" \| "duplicate", id}`. Unknown token → 404 |
 | `GET /calendar/{token}.ics` | The token owner's calendar as iCalendar (events since 180 days ago, recurrences as RRULE, reminders as VALARM) |
 | `POST /meet/guest` | A guest joins a meeting by their link (see Meetings) |
+
+A request body is read up to its route's limit and refused past it: 32 MB for `POST /inbound/{token}`,
+`POST /mail/upload/{account}` and `POST /calendar/import`, 16 MB for `POST /mail/jmap` (a message's text, with
+the original a reply quotes), 16 KB for `/rsvp` and `/meet/guest`, 1 MB for every other route.
 
 ## Live pushes (`/ws/live`)
 

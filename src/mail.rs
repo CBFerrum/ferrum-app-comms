@@ -16,10 +16,12 @@ use async_trait::async_trait;
 use ferrum_kernel::outbox::Event;
 use ferrum_kernel::retention::Purpose;
 use ferrum_kernel::{Access, Action, Ctx, Doc, DocHook, Error, EventSink, FieldError, HookCtx, Kernel, Result, Tx, notify};
+use lettre::Message;
 use lettre::message::header::{ContentType, HeaderName, HeaderValue};
 use lettre::message::{Attachment, Mailbox, MultiPart, SinglePart};
-use lettre::transport::smtp::authentication::Credentials;
-use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+use lettre::transport::smtp::authentication::{Credentials, DEFAULT_MECHANISMS};
+use lettre::transport::smtp::client::{AsyncSmtpConnection, TlsParameters};
+use lettre::transport::smtp::extension::ClientId;
 use serde_json::{Map, Value, json};
 use sqlx::{Postgres, QueryBuilder};
 use std::sync::LazyLock;
@@ -216,24 +218,43 @@ impl SendError {
     }
 }
 
-/// Hands a message to an SMTP server.
+/// Hands a message to an SMTP server, connecting only to the addresses its host was vetted to
+/// ([`Server::addresses`]) and checking its certificate against the host's name.
 pub async fn smtp_send(server: &Server, message: &Message) -> std::result::Result<(), SendError> {
-    let builder = match server.security {
-        Security::Tls => AsyncSmtpTransport::<Tokio1Executor>::relay(&server.host),
-        Security::StartTls => AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&server.host),
-        Security::None => Ok(AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&server.host)),
+    let smtp = |e: lettre::transport::smtp::Error| SendError { permanent: e.is_permanent(), message: format!("SMTP: {e}") };
+    let send = async {
+        // A refused address stays refused; a name that does not resolve now may later.
+        let addrs = server.addresses().await.map_err(|e| SendError { permanent: matches!(e, Error::Invalid(_)), message: format!("SMTP: {e}") })?;
+        let tls = match server.security {
+            Security::None => None,
+            Security::Tls | Security::StartTls => Some(TlsParameters::new(server.host.clone()).map_err(|e| SendError::permanent(format!("SMTP: {e}")))?),
+        };
+        let hello = ClientId::default();
+        let wrapped = tls.clone().filter(|_| server.security == Security::Tls);
+        let mut conn = AsyncSmtpConnection::connect_tokio1(&addrs[..], Some(SMTP_TIMEOUT), &hello, wrapped, None).await.map_err(smtp)?;
+        let session = async {
+            if let (Security::StartTls, Some(tls)) = (server.security, tls) {
+                conn.starttls(tls, &hello).await?;
+            }
+            if let Some(user) = &server.username {
+                conn.auth(DEFAULT_MECHANISMS, &Credentials::new(user.clone(), server.password.clone().unwrap_or_default())).await?;
+            }
+            conn.send(message.envelope(), &message.formatted()).await
+        }
+        .await;
+        match session {
+            // Accepted: QUIT ends the session, whatever the server answers to it.
+            Ok(_) => {
+                let _ = conn.quit().await;
+                Ok(())
+            }
+            Err(e) => {
+                conn.abort().await;
+                Err(smtp(e))
+            }
+        }
     };
-    let mut builder = builder.map_err(|e| SendError::permanent(format!("SMTP: {e}")))?.port(server.port).timeout(Some(SMTP_TIMEOUT));
-    if let Some(user) = &server.username {
-        builder = builder.credentials(Credentials::new(user.clone(), server.password.clone().unwrap_or_default()));
-    }
-    let transport = builder.build();
-    match tokio::time::timeout(SMTP_TIMEOUT * 2, transport.send(message.clone())).await {
-        Err(_) => Err(SendError::transient("the SMTP server did not answer in time")),
-        Ok(Err(e)) if e.is_permanent() => Err(SendError::permanent(format!("SMTP: {e}"))),
-        Ok(Err(e)) => Err(SendError::transient(format!("SMTP: {e}"))),
-        Ok(Ok(_)) => Ok(()),
-    }
+    tokio::time::timeout(SMTP_TIMEOUT * 2, send).await.unwrap_or_else(|_| Err(SendError::transient("the SMTP server did not answer in time")))
 }
 
 /// The From mailbox of an account.

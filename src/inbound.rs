@@ -575,7 +575,8 @@ pub struct ImapConnector;
 impl MailboxConnector for ImapConnector {
     async fn connect(&self, account: &Account) -> Result<Box<dyn Mailbox>> {
         let server = account.imap.as_ref().ok_or_else(|| Error::invalid("the account has no IMAP host"))?;
-        let tcp = timed(async { tokio::net::TcpStream::connect((server.host.as_str(), server.port)).await.map_err(imap_err) }).await?;
+        // Only to the addresses its host was vetted to, never by name again (account.rs, `Server::addresses`).
+        let tcp = timed(async { tokio::net::TcpStream::connect(&server.addresses().await?[..]).await.map_err(imap_err) }).await?;
         let name = || rustls::pki_types::ServerName::try_from(server.host.clone()).map_err(imap_err);
         match server.security {
             Security::Tls => {

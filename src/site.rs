@@ -13,13 +13,32 @@ use uuid::Uuid;
 const ACTIVE_TYPES: &[&str] =
     &["text/html", "application/xhtml+xml", "image/svg+xml", "application/javascript", "text/javascript", "text/xml", "application/xml"];
 
+/// What anyone with a link sends: an answer to an invitation, a guest's name for a meeting.
+const PUBLIC_BODY: usize = 16 << 10;
+/// Webmail's own calls carry a message's text, twice (its HTML and the plain text made from it), and a reply's or
+/// forward's quoted original, which the composer reads up to 4,000,000 bytes (`maxBodyValueBytes`,
+/// ui/src/MailCompose.tsx): 2 × 4 MB, doubled for JSON's escaping. Pictures and files go up first (`mail/upload`).
+const JMAP_BODY: usize = 16 << 20;
+
 pub struct CommsSite;
 
 #[async_trait]
 impl Site for CommsSite {
-    /// Raw messages forwarded to the inbound webhook can be large.
+    /// JSON: an event's notes or a message's text at most.
     fn max_body(&self) -> usize {
-        inbound::MAX_MESSAGE
+        1 << 20
+    }
+
+    /// A whole message or file only where one comes (the raw message a provider forwards, a file for a hosted mail
+    /// message, a calendar file to import), and less still from anyone with a link.
+    fn max_body_for(&self, method: &str, path: &str) -> usize {
+        let p: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        match (method, p.as_slice()) {
+            ("POST", ["inbound", _] | ["mail", "upload", _] | ["calendar", "import"]) => inbound::MAX_MESSAGE,
+            ("POST", ["mail", "jmap"]) => JMAP_BODY,
+            (_, ["rsvp"] | ["meet", "guest"]) => PUBLIC_BODY,
+            _ => self.max_body(),
+        }
     }
 
     async fn handle(&self, k: &Kernel, req: SiteRequest) -> Result<SiteResponse> {
@@ -143,5 +162,27 @@ pub(crate) fn attachment(name: &str, ctype: &str, data: Vec<u8>) -> SiteResponse
             ("cache-control".into(), "private, max-age=3600".into()),
         ],
         body: data,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_whole_message_or_file_may_be_large() {
+        // What anyone with a link sends: a 1 MB answer to an invitation is refused on its length, before it is read.
+        for (method, path) in [("POST", "rsvp"), ("GET", "rsvp"), ("POST", "/meet/guest")] {
+            assert!(CommsSite.max_body_for(method, path) < 1 << 20, "{method} {path}");
+        }
+        for (method, path) in [("POST", "inbound/a.b"), ("POST", "mail/upload/a1"), ("POST", "calendar/import")] {
+            assert_eq!(CommsSite.max_body_for(method, path), inbound::MAX_MESSAGE, "{method} {path}");
+        }
+        // A reply quoting the largest original webmail reads (4,000,000 bytes of HTML), as HTML and as text, escaped.
+        assert_eq!(CommsSite.max_body_for("POST", "mail/jmap"), 16 << 20);
+        // A calendar app's event is at most what CalDAV's max-resource-size says (dav.rs, 1 MB).
+        for (method, path) in [("POST", "send"), ("PUT", "dav/calendars/a/b.ics"), ("POST", "calendar/events"), ("POST", "inbound")] {
+            assert_eq!(CommsSite.max_body_for(method, path), 1 << 20, "{method} {path}");
+        }
     }
 }
