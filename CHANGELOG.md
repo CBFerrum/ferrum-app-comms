@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.25.3
+
+Needs the same platform as 0.25.0. No database change, no interface change.
+
+**The email report counts the workspace's days.** Email Activity ended its default period on the UTC day, ran each
+period from UTC midnight to UTC midnight and put each mail on its UTC date; Chat Activity used the same bounds. A
+workspace east or west of UTC saw a day's mail split over two rows and the last hours of its day left out. The period
+now defaults to the workspace's today and runs from its midnight to its midnight, and each mail is on its day there.
+
 ## 0.25.2
 
 Needs the same platform as 0.25.0. No database change, no interface change.
