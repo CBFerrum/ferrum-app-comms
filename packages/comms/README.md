@@ -315,6 +315,10 @@ What apps send:
 | `GET /calendar/{token}.ics` | The token owner's calendar as iCalendar (events since 180 days ago, recurrences as RRULE, reminders as VALARM) |
 | `POST /meet/guest` | A guest joins a meeting by their link (see Meetings) |
 
+A request body is read up to its route's limit and refused past it: 32 MB for `POST /inbound/{token}`,
+`POST /mail/upload/{account}` and `POST /calendar/import`, 16 MB for `POST /mail/jmap` (a message's text, with
+the original a reply quotes), 16 KB for `/rsvp` and `/meet/guest`, 1 MB for every other route.
+
 ## Live pushes (`/ws/live`)
 
 Package messages arrive on the live socket (see `server/src/live.rs`) as
