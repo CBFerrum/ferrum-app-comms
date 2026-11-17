@@ -154,6 +154,9 @@ struct SmtpState {
     mode: Mode,
     mails: Vec<Received>,
     logins: Vec<String>,
+    /// Sessions opened, and those the client ended with QUIT.
+    sessions: usize,
+    quits: usize,
 }
 
 #[derive(Clone, Default)]
@@ -188,6 +191,7 @@ impl Smtp {
     async fn session(&self, sock: tokio::net::TcpStream) -> std::io::Result<()> {
         let (r, mut w) = sock.into_split();
         let mut r = BufReader::new(r);
+        self.0.lock().unwrap().sessions += 1;
         w.write_all(b"220 sink.test ESMTP\r\n").await?;
         let mut to = Vec::new();
         let mut from = String::new();
@@ -231,6 +235,7 @@ impl Smtp {
                 self.0.lock().unwrap().mails.push(Received { from: std::mem::take(&mut from), to: std::mem::take(&mut to), data });
                 b"250 2.0.0 Queued\r\n"
             } else if up == "QUIT" {
+                self.0.lock().unwrap().quits += 1;
                 w.write_all(b"221 Bye\r\n").await?;
                 return Ok(());
             } else if up == "RSET" {
@@ -335,7 +340,10 @@ async fn fresh_kernel(mailer: TestMailer) -> (Arc<Kernel>, ferrum_kernel::vault:
     for source in ferrum_app_comms::reports() {
         ferrum_domain::reports::add_source(source);
     }
-    let k = Kernel::boot(db, catalog(), hooks, KernelSettings::default(), Some(Arc::new(mailer))).await.expect("boot");
+    // The operator names the host of the test's own mail servers (`FERRUM_CONNECTION_HOSTS`): a private address is
+    // reached only at a host named there.
+    let settings = KernelSettings { connection_hosts: vec!["127.0.0.1".into()], ..Default::default() };
+    let k = Kernel::boot(db, catalog(), hooks, settings, Some(Arc::new(mailer))).await.expect("boot");
     k.set_file_store(Arc::new(MemStore::default()));
     (k, comms.expect("Comms' handle"))
 }
@@ -1590,6 +1598,60 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     let names: Vec<&str> = heard.as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
     assert_eq!(names, ["Alice Rao"], "the meeting keeps the others' words");
     app_inbound(&t, &admin, &users, &smtp).await;
+    mail_sockets(&t, mgr, &smtp, port).await;
+}
+
+/// Mail's sockets go where the platform's guard lets outbound calls go: an account whose SMTP or IMAP host is
+/// loopback, or link-local as the cloud's metadata address is, or a name for one, is refused before any connection;
+/// the private host the operator names (127.0.0.1 here) is reached.
+async fn mail_sockets(t: &T, mgr: &Ctx, smtp: &Smtp, smtp_port: u16) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    smtp.set_mode(Mode::Accept);
+    // An IMAP server that only counts who reaches it.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let imap_port = listener.local_addr().unwrap().port();
+    let reached = Arc::new(AtomicUsize::new(0));
+    let counted = reached.clone();
+    tokio::spawn(async move {
+        while let Ok((sock, _)) = listener.accept().await {
+            counted.fetch_add(1, Ordering::SeqCst);
+            drop(sock);
+        }
+    });
+    let account = |n: usize, host: &str| {
+        obj(json!({
+            "account_name": format!("Socket {n}"), "email_address": format!("socket{n}@acme.test"), "enable_outgoing": true,
+            "smtp_host": host, "smtp_port": smtp_port, "smtp_security": "None",
+            "enable_incoming": true, "imap_host": host, "imap_port": imap_port, "imap_security": "None",
+            "imap_username": "socket", "imap_password": "imap-pass", "imap_folder": "INBOX",
+        }))
+    };
+    let send = async |acc: Uuid| {
+        let sent = t.ok(mgr, "POST", "/send", &[], json!({"to": "x@y.test", "subject": "Socket", "content": "Hi", "email_account": acc})).await;
+        t.drain().await;
+        t.comm(uid(&sent)).await
+    };
+    let before = smtp.count();
+    for (n, host) in ["localhost", "::1", "169.254.169.254"].into_iter().enumerate() {
+        let acc = uid(&Value::Object(t.k.insert(mgr, "EmailAccount", account(n, host)).await.expect("an account")));
+        let doc = send(acc).await;
+        assert_eq!(doc["status"], json!("Failed"), "{host}: refused for good, not retried: {doc:?}");
+        assert!(doc.get("error").and_then(Value::as_str).is_some_and(|e| e.contains("private")), "{host}: {doc:?}");
+        let polled = ferrum_app_comms::inbound::poll_account(&t.k, t.tenant, acc, &ferrum_app_comms::ImapConnector).await;
+        assert!(format!("{polled:?}").contains("private"), "{host}: {polled:?}");
+    }
+    assert_eq!(smtp.count(), before, "no mail reached the server behind a refused address");
+    assert_eq!(reached.load(Ordering::SeqCst), 0, "no IMAP connection was opened");
+    // The operator named 127.0.0.1: the same servers are reached there.
+    let named = uid(&Value::Object(t.k.insert(mgr, "EmailAccount", account(9, "127.0.0.1")).await.expect("an account")));
+    assert_eq!(send(named).await["status"], json!("Sent"));
+    assert_eq!(smtp.count(), before + 1);
+    let polled = ferrum_app_comms::inbound::poll_account(&t.k, t.tenant, named, &ferrum_app_comms::ImapConnector).await;
+    assert!(polled.is_err(), "the stand-in answers nothing");
+    assert_eq!(reached.load(Ordering::SeqCst), 1, "the named host is reached");
+    // Every session the SMTP stand-in saw in the whole scenario, delivered or refused, ended with QUIT.
+    let st = smtp.0.lock().unwrap();
+    assert!(st.sessions > 0 && st.quits == st.sessions, "{} sessions, {} ended with QUIT", st.sessions, st.quits);
 }
 
 /// A calendar and contacts app's session (CalDAV and CardDAV under `/dav`): discovery, an event

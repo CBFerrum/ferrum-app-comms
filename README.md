@@ -269,7 +269,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 ### 🧾 Mail on business records
 
-- **Email accounts.** Add SMTP accounts for sending and IMAP polling or an inbound webhook for receiving, per company, with one default account per company and one shared. Passwords are sealed secret fields that never reach lists, exports or the audit trail.
+- **Email accounts.** Add SMTP accounts for sending and IMAP polling or an inbound webhook for receiving, per company, with one default account per company and one shared. Passwords are sealed secret fields that never reach lists, exports or the audit trail. Their mail servers are reached on public addresses only; one on a private, loopback or link-local address is refused before any connection unless the operator names its host in `FERRUM_CONNECTION_HOSTS`.
 - **Communication log.** Every email sent or received about a record is a Communication threaded on that record: status (Queued, Sending, Sent, Failed, Received), sender, recipients, HTML cleaned for display, attachments, and thread. Calls, meetings and notes sit in the same timeline.
 - **Reliable sending.** Retries back off from 1, 4, 16 and 64 minutes up to six hours until a limit; permanent failures (a 5xx reply, an invalid address) fail at once. The author is notified when an email fails and can retry it.
 - **Templates with fields.** An Email Template fills `{{ doc.field }}` from the record the mail is sent from, with a preview. Values are escaped.
@@ -456,7 +456,7 @@ Everything Comms adds is ordinary Ferrum metadata and Rust, so its records get l
 | With | How | Needs |
 |---|---|---|
 | Stalwart mail server | Hosted mailboxes, shared mailboxes, lists, Sieve filters, JMAP | A Stalwart server; the settings `comms.mail_url` and `comms.mail_admin` and the secret `mail.admin_secret` (below); a Mail Domain |
-| SMTP and IMAP | Email accounts for sending, receiving and polling | Account credentials |
+| SMTP and IMAP | Email accounts for sending, receiving and polling | Account credentials; a server on a private address needs its host in `FERRUM_CONNECTION_HOSTS` |
 | Inbound webhook | Raw MIME up to 32 MB posted to a secret URL | A public URL in Communication Settings |
 | LiveKit | Video meetings, captions, recordings (Egress) | the setting `comms.meet_url` and the secrets `meet.key` and `meet.secret` (below); for recordings `comms.meet_recordings` and optionally `comms.meet_api_url` |
 | CalDAV and CardDAV | Apple Calendar, Thunderbird, DAVx⁵, Outlook | An app password (an API key of scope `dav`) |

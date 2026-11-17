@@ -33,6 +33,9 @@ the generic API on `ChatChannel`/`ChatMessage` is for chat administrators only.
    workspace's main host, which serves it. `max_send_attempts` (default 5).
 2. **Email Account**: SMTP (`smtp_security`: `STARTTLS` | `TLS` | `None`) and/or IMAP
    (`imap_security`: `TLS` | `STARTTLS` | `None`, `imap_folder`, `poll_interval_minutes`).
+   Each host is resolved once and connected to at the addresses found; a private, loopback or
+   link-local address is refused before any connection unless the operator names the host in
+   `FERRUM_CONNECTION_HOSTS` (the send fails for good, the poll records the error).
    `smtp_password` / `imap_password` are **secret fields** (the server's vault must be open):
    send text to set one, `null` to clear it, `true` to keep it; reads only return `true` when one is
    set. The values are sealed outside the record and never reach documents, lists, events, the
