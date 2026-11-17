@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.25.3-2563eb?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.26.0-2563eb?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 [![CI](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml/badge.svg)](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml)
@@ -41,7 +41,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 | | |
 |---|---|
-| 📦 **Version** | 0.25.3 |
+| 📦 **Version** | 0.26.0 |
 | 🖥️ **Kind** | Its own interface: four shell apps at `/mail/`, `/chat/`, `/calendar/` and `/meet/` |
 | ➕ **What it adds** | 19 entities in one package, 3 roles, 2 reports, 4 launcher apps, 3 intents, a side panel, bar search, 10 kinds of notification, 2 public pages |
 | 🧱 **Depends on** | The platform's `core` and `contacts` packages. Nothing else is required |
@@ -217,7 +217,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 ### ✉️ Mail: reading and organising
 
-- **Real mailboxes.** With a Stalwart mail server and a Mail Domain set in Communication Settings, every active person whose address is in the domain gets a mailbox. New people get one, a changed address moves it, and a person who leaves the domain is locked out while their mail stays.
+- **Real mailboxes.** With a Stalwart mail server and a Mail Domain set in Communication Settings, every active person whose address is in the domain gets a mailbox. The domain must be proven to be the workspace's: claimed under Administration → Addresses as a domain for mail, with the DNS record shown there; while it is not, or no longer, nothing is made or changed in it and its mail stays. New people get one, a changed address moves it, and a person who leaves the domain is locked out while their mail stays.
 - **Folders people know.** Inbox, Starred, Drafts, Sent, Archive, All mail, Spam and Trash each have an icon and the usual name, whatever the server calls them. Archive exists for everyone. Starred, All mail, Scheduled and Snoozed are virtual folders.
 - **Your own folders.** Create, rename, nest, colour and delete folders (mail in a deleted folder goes to Archive). A conversation can also be filed under a second folder, shown as chips.
 - **Conversations.** A folder lists conversations with how many messages each holds. Opening one shows its messages one under another, with the newest and unread ones open. Archive, delete, spam and unread act on the whole conversation.
@@ -455,7 +455,7 @@ Everything Comms adds is ordinary Ferrum metadata and Rust, so its records get l
 
 | With | How | Needs |
 |---|---|---|
-| Stalwart mail server | Hosted mailboxes, shared mailboxes, lists, Sieve filters, JMAP | A Stalwart server; the settings `comms.mail_url` and `comms.mail_admin` and the secret `mail.admin_secret` (below); a Mail Domain |
+| Stalwart mail server | Hosted mailboxes, shared mailboxes, lists, Sieve filters, JMAP | A Stalwart server; the settings `comms.mail_url` and `comms.mail_admin` and the secret `mail.admin_secret` (below); a Mail Domain the workspace proved (Administration → Addresses) |
 | SMTP and IMAP | Email accounts for sending, receiving and polling | Account credentials; a server on a private address needs its host in `FERRUM_CONNECTION_HOSTS` |
 | Inbound webhook | Raw MIME up to 32 MB posted to a secret URL | A public URL in Communication Settings |
 | LiveKit | Video meetings, captions, recordings (Egress) | the setting `comms.meet_url` and the secrets `meet.key` and `meet.secret` (below); for recordings `comms.meet_recordings` and optionally `comms.meet_api_url` |
@@ -615,6 +615,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 
 ### ✅ Recently shipped
 
+- [x] **0.26.0**: The Mail Domain is a claim the workspace proved under Administration → Addresses; unproven, nothing is made or changed in it.
 - [x] **0.25.3**: the Email Activity report counts the workspace's days, not UTC's.
 - [x] **0.25.2**: Mail's SMTP and IMAP connections refuse private, loopback and link-local addresses unless the operator names the host; each route reads only the body it needs.
 - [x] **0.25.0**: Mail keeps no `x-ferrum-` header a sender wrote; hosted mailboxes are brought in step on time whichever replica runs the upkeep; Comms' meeting and mail secrets live in its vault only; every table enforces row-level security.
@@ -699,7 +700,7 @@ Ferrum Comms is a native app. It is compiled into the official Ferrum server ima
 **First steps**
 
 1. In **Communication Settings** set the public URL (used for invitation answers, meeting links, the inbound webhook and feed addresses) and the number of send attempts.
-2. For hosted mailboxes, run a Stalwart server, set the settings `comms.mail_url` and `comms.mail_admin` and the administrator's password as Comms' secret `mail.admin_secret` (below), then set the **Mail Domain**. Everyone whose address is in the domain gets a mailbox. Publish the DNS records Mail's domain health screen lists.
+2. For hosted mailboxes, run a Stalwart server, set the settings `comms.mail_url` and `comms.mail_admin` and the administrator's password as Comms' secret `mail.admin_secret` (below), then claim the domain under Administration → Addresses as a domain for mail, add the DNS record shown there, and set the **Mail Domain**. Everyone whose address is in the domain gets a mailbox. Publish the DNS records Mail's domain health screen lists.
 3. For mail about records, add an **Email Account** (SMTP and IMAP or the inbound webhook) and mark a default outgoing account per company.
 4. For meetings, run a LiveKit server, set `comms.meet_url` and give LiveKit's API key and secret as Comms' secrets `meet.key` and `meet.secret`. For recordings also run LiveKit Egress and set `comms.meet_recordings` to `true`.
 
@@ -778,7 +779,7 @@ CHANGELOG.md          what changed in each version
 
 ## 📜 Changelog
 
-Every release is described in [CHANGELOG.md](CHANGELOG.md). The latest is **0.25.3**.
+Every release is described in [CHANGELOG.md](CHANGELOG.md). The latest is **0.26.0**.
 
 ## 🤝 Contributing
 

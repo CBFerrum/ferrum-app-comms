@@ -58,10 +58,10 @@ pub fn message_id(v: &str) -> Result<String> {
 }
 
 /// The domain of `address` (lower case) when it is on, or under, a domain of the workspace.
-async fn on_workspace_domain(tx: &mut Tx, tenant: Uuid, address: &str) -> Result<bool> {
+async fn on_workspace_domain(k: &Kernel, tx: &mut Tx, tenant: Uuid, address: &str) -> Result<bool> {
     let Some((_, domain)) = address.rsplit_once('@') else { return Ok(false) };
     let domain = domain.to_ascii_lowercase();
-    Ok(crate::routes::domains(tx, tenant).await?.iter().any(|d| domain == *d || domain.ends_with(&format!(".{d}"))))
+    Ok(crate::routes::domains(k, tx, tenant).await?.iter().any(|d| domain == *d || domain.ends_with(&format!(".{d}"))))
 }
 
 /// Queues `m` as the system (the caller needs the right to create communications unless it is one), and returns
@@ -86,8 +86,11 @@ pub async fn send(k: &Kernel, ctx: &Ctx, tx: &mut Tx, m: &Message) -> Result<Sen
         Some(v) => {
             let bare =
                 v.trim().parse::<lettre::Address>().map_err(|_| Error::field("envelope_sender", "must be one plain address"))?.to_string().to_ascii_lowercase();
-            if !on_workspace_domain(tx, ctx.tenant, &bare).await? {
-                return Err(Error::field("envelope_sender", "must be on a domain of the workspace (its mail domain or an outgoing email account's)"));
+            if !on_workspace_domain(k, tx, ctx.tenant, &bare).await? {
+                return Err(Error::field(
+                    "envelope_sender",
+                    "must be on a domain of the workspace (its mail domain while it is proven, or an outgoing email account's)",
+                ));
             }
             Some(bare)
         }

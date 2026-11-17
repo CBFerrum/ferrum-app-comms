@@ -4,6 +4,8 @@
 //! maintenance rounds at once see the same new message, and the cursor's compare-and-set lets only
 //! one of them store the notification; a later round finds nothing new.
 
+mod common;
+
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Ctx, Db, DbConfig, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::Catalog;
@@ -167,6 +169,7 @@ async fn scenario() {
     let admin = k.load_ctx(tenant, session.user, Some(session.token_version), "it".into()).await.expect("ctx");
     let ann = k.create_user(&admin, "ann@acme.test", "Ann Rao", Some(PASSWORD), &["Comms User".to_string()], false).await.expect("user");
     let sys = Ctx::system(tenant, k.registry.schema(tenant).await.unwrap());
+    common::prove(&k, &admin, "acme.test").await;
     k.insert(&sys, "CommsSettings", ferrum_app_comms_test_obj(json!({"mail_domain": "acme.test"}))).await.expect("settings");
     let mailbox = k
         .insert(
