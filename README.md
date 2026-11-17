@@ -217,7 +217,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 ### ✉️ Mail: reading and organising
 
-- **Real mailboxes.** With a Stalwart mail server and a Mail Domain set in Communication Settings, every active person whose address is in the domain gets a mailbox. New people get one, a changed address moves it, and a person who leaves the domain is locked out while their mail stays.
+- **Real mailboxes.** With a Stalwart mail server and a Mail Domain set in Communication Settings, every active person whose address is in the domain gets a mailbox. The domain must be proven to be the workspace's: claimed under Administration → Addresses as a domain for mail, with the DNS record shown there; while it is not, or no longer, nothing is made or changed in it and its mail stays. New people get one, a changed address moves it, and a person who leaves the domain is locked out while their mail stays.
 - **Folders people know.** Inbox, Starred, Drafts, Sent, Archive, All mail, Spam and Trash each have an icon and the usual name, whatever the server calls them. Archive exists for everyone. Starred, All mail, Scheduled and Snoozed are virtual folders.
 - **Your own folders.** Create, rename, nest, colour and delete folders (mail in a deleted folder goes to Archive). A conversation can also be filed under a second folder, shown as chips.
 - **Conversations.** A folder lists conversations with how many messages each holds. Opening one shows its messages one under another, with the newest and unread ones open. Archive, delete, spam and unread act on the whole conversation.
@@ -455,7 +455,7 @@ Everything Comms adds is ordinary Ferrum metadata and Rust, so its records get l
 
 | With | How | Needs |
 |---|---|---|
-| Stalwart mail server | Hosted mailboxes, shared mailboxes, lists, Sieve filters, JMAP | A Stalwart server; the settings `comms.mail_url` and `comms.mail_admin` and the secret `mail.admin_secret` (below); a Mail Domain |
+| Stalwart mail server | Hosted mailboxes, shared mailboxes, lists, Sieve filters, JMAP | A Stalwart server; the settings `comms.mail_url` and `comms.mail_admin` and the secret `mail.admin_secret` (below); a Mail Domain the workspace proved (Administration → Addresses) |
 | SMTP and IMAP | Email accounts for sending, receiving and polling | Account credentials; a server on a private address needs its host in `FERRUM_CONNECTION_HOSTS` |
 | Inbound webhook | Raw MIME up to 32 MB posted to a secret URL | A public URL in Communication Settings |
 | LiveKit | Video meetings, captions, recordings (Egress) | the setting `comms.meet_url` and the secrets `meet.key` and `meet.secret` (below); for recordings `comms.meet_recordings` and optionally `comms.meet_api_url` |
@@ -699,7 +699,7 @@ Ferrum Comms is a native app. It is compiled into the official Ferrum server ima
 **First steps**
 
 1. In **Communication Settings** set the public URL (used for invitation answers, meeting links, the inbound webhook and feed addresses) and the number of send attempts.
-2. For hosted mailboxes, run a Stalwart server, set the settings `comms.mail_url` and `comms.mail_admin` and the administrator's password as Comms' secret `mail.admin_secret` (below), then set the **Mail Domain**. Everyone whose address is in the domain gets a mailbox. Publish the DNS records Mail's domain health screen lists.
+2. For hosted mailboxes, run a Stalwart server, set the settings `comms.mail_url` and `comms.mail_admin` and the administrator's password as Comms' secret `mail.admin_secret` (below), then claim the domain under Administration → Addresses as a domain for mail, add the DNS record shown there, and set the **Mail Domain**. Everyone whose address is in the domain gets a mailbox. Publish the DNS records Mail's domain health screen lists.
 3. For mail about records, add an **Email Account** (SMTP and IMAP or the inbound webhook) and mark a default outgoing account per company.
 4. For meetings, run a LiveKit server, set `comms.meet_url` and give LiveKit's API key and secret as Comms' secrets `meet.key` and `meet.secret`. For recordings also run LiveKit Egress and set `comms.meet_recordings` to `true`.
 

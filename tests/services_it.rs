@@ -12,6 +12,10 @@
 //!   the operator set before the first render, kept; a rotation taken at the mail server's next start.
 //! * Nothing set up: plain refusals, nothing made. A closed vault: nothing written. No secret in a log, an error, the
 //!   vault's record or a table.
+//! * A mail domain is a claim the workspace proved (Ferrum docs/operations.md, "Domains for mail"): another workspace
+//!   cannot take it, nor one nobody proved; once its claim is removed the rounds make and change nothing there.
+
+mod common;
 
 use ferrum_kernel::companion::{self, Rendered};
 use ferrum_kernel::tenant::NewTenant;
@@ -323,8 +327,9 @@ async fn scenario(logs: Logs) {
     assert_eq!(ferrum_app_comms::mail_admin_account(&k).await.expect("nothing restarted"), "admin-account");
 
     // ── someone who leaves keeps no mailbox for long, whichever replica runs the upkeep ──
-    // The workspace has hosted mail; each round that brings its mailboxes in step signs in to the mail server first (the
-    // stand-in knows nothing more, so the round stops there).
+    // The workspace has hosted mail, in a domain it claimed for mail and proved; each round that brings its mailboxes in
+    // step signs in to the mail server first (the stand-in knows nothing more, so the round stops there).
+    common::prove(&k, &admin, "acme.test").await;
     let sys = Ctx::system(tenant, k.registry.schema(tenant).await.unwrap());
     let mut tx = k.db.tenant_tx(tenant).await.unwrap();
     let row: Option<uuid::Uuid> =
@@ -354,6 +359,68 @@ async fn scenario(logs: Logs) {
     assert_eq!(signed_in(), before + 2, "at the next round, whichever replica runs it");
     round(k2.clone()).await;
     assert_eq!(signed_in(), before + 2, "and then not again within ten minutes");
+
+    // ── a mail domain is a claim: another workspace takes neither acme.test nor a domain nobody proved, and the mail
+    // server is never asked about either ──
+    let rival = k
+        .create_tenant(NewTenant {
+            slug: "rival".into(),
+            name: "Rival Ltd".into(),
+            admin_email: "admin@rival.test".into(),
+            admin_password: "Correct-Horse-9".into(),
+            admin_name: None,
+            packages: vec!["core".into(), "comms".into()],
+            settings: None,
+        })
+        .await
+        .expect("another workspace");
+    let session = k.login("rival", "admin@rival.test", "Correct-Horse-9").await.expect("login");
+    let rival_admin = k.load_ctx(rival, session.user, Some(session.token_version), "it".into()).await.expect("ctx");
+    // Communication Settings as an administrator saves them, the row made the first time; its id.
+    let settings = async |who: &Ctx, doc: Value| {
+        let mut tx = k.db.tenant_tx(who.tenant).await.unwrap();
+        let row: Option<uuid::Uuid> =
+            sqlx::query_scalar("select id from e_comms_settings where tenant_id = $1").bind(who.tenant).fetch_optional(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        let doc = doc.as_object().cloned().unwrap();
+        match row {
+            Some(id) => k.update(who, "CommsSettings", id, doc, None).await.map(|_| id),
+            None => k.insert(who, "CommsSettings", doc).await.map(|d| d["id"].as_str().unwrap().parse().unwrap()),
+        }
+    };
+    let before = signed_in();
+    let mut saved = Vec::new();
+    for domain in ["acme.test", "nobody.test"] {
+        let set = settings(&rival_admin, json!({"mail_domain": domain})).await;
+        assert!(set.as_ref().err().is_none_or(|e| e.to_string().contains("claim it under Administration → Addresses")), "{set:?}");
+        saved.push(set.is_ok());
+        round(k.clone()).await;
+    }
+    assert_eq!((saved, signed_in() - before), (vec![false, false], 0), "neither is saved, and the mail server is not asked about either");
+    // While acme.test is its own, mail an app sends may bounce to it (its envelope sender); its claim removed, the domain
+    // is no longer the workspace's: no bounce address there, its rounds make and change nothing (nobody is left to lock),
+    // so the mail server is not asked, and Sync Mailboxes says why. Its other settings still save.
+    let bounce = ferrum_app_comms::outbound::Message {
+        to: vec!["x@y.test".into()],
+        subject: "Hi".into(),
+        html: "<p>Hi</p>".into(),
+        envelope_sender: Some("bounces@acme.test".into()),
+        ..Default::default()
+    };
+    let bounces = async || {
+        let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+        let sent = ferrum_app_comms::outbound::send(&k, &sys, &mut tx, &bounce).await;
+        tx.rollback().await.unwrap();
+        sent.is_ok()
+    };
+    assert!(bounces().await, "its own proven domain");
+    k.remove_host(&admin, "acme.test").await.expect("its claim removed");
+    let acme_settings = settings(&admin, json!({"max_send_attempts": 4})).await.expect("other settings still save");
+    let before = signed_in();
+    round(k.clone()).await;
+    let why = k.run_action(&admin, "CommsSettings", acme_settings, "sync_mail", json!({})).await.map(|_| String::new()).unwrap_or_else(|e| e.to_string());
+    assert_eq!((bounces().await, signed_in() - before), (false, 0), "Sync Mailboxes: {why}");
+    assert!(why.contains("acme.test") && why.contains("claim it under Administration → Addresses"), "{why}");
 
     // ── nothing secret anywhere it should not be ──
     let record = serde_json::to_string(&vault::events(&k.db, None, 1000).await.unwrap()).unwrap();

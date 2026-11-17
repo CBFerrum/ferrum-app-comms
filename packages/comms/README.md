@@ -61,7 +61,14 @@ Ferrum reaches it, e.g. `http://mail:8080`) and `comms.mail_admin` (`FERRUM_MAIL
 administrators), read as the platform's settings, and that administrator's password as Comms' secret
 `mail.admin_secret` in the vault (made by the service `mail`, or set by the operator), which goes, as
 people's mailbox passwords do, only to the hosts its rule names; a Comms Manager sets `mail_domain`
-in Communication Settings (e.g. `acme.com`).
+in Communication Settings (e.g. `acme.com`). Only a domain proven to be the workspace's is taken: an administrator
+claims it under Administration → Addresses as a domain for mail (`POST /api/admin/domains {host, target: "mail"}`) and
+adds the DNS record shown there (`_ferrum.{domain}` TXT), or it is an address of the workspace's own proven by that
+record (Ferrum docs/operations.md, "Domains for mail"). Otherwise saving it is refused, saying so; clearing it always
+goes. Each round asks again before it reaches the mail server: while the domain is not, or no longer, proven (its
+claim removed) the round makes no domain and makes, moves or unlocks no mailbox, shared mailbox or list there, and fails
+saying why (what Sync Mailboxes answers); mail is never deleted, and only the mailboxes of people who left or moved out of
+the domain are still locked.
 Then every active person whose email is in that domain has a mailbox, kept in step every ten
 minutes or at once with the action `POST /api/v1/CommsSettings/{id}/actions/sync_mail`
 (`{domain, created, updated, locked, failed: [{email, step, error}]}`):
@@ -360,13 +367,13 @@ a person by their address as sender empties `headers` with the rest of their mes
 **Sending** (`ferrum_app_comms::outbound::send(k, ctx, tx, &Message)` → `Sent {communication, message_id}`): the
 Message-ID the mail goes out with is returned and stored, so an answer is found by it. `reply_to` is one address,
 `in_reply_to` and `references` are message ids (with or without `<>`), `envelope_sender` is one plain address on the
-workspace's mail domain or an outgoing email account's domain (or below one): each is checked, none is header text, and
+workspace's mail domain while it is proven or an outgoing email account's domain (or below one): each is checked, none is header text, and
 a refused one queues nothing. Where `in_reply_to` names a message Mail has, the new one takes its thread and its record.
 Without an email account the server's own mailer carries none of Reply-To, envelope sender or extra headers (logged).
 
 **Registering for inbound mail** (`ferrum_app_comms::routes`): at startup `add_handler("app", Arc<dyn Handler>)`; per
-workspace `register(tx, tenant, &Registration {app, address, keep_in_mailbox})`, `unregister`, `registered`.
-`address` is `local@domain` on a domain of the workspace (its mail domain, or an email account's), the local part
+workspace `register(k, tx, tenant, &Registration {app, address, keep_in_mailbox})`, `unregister`, `registered`.
+`address` is `local@domain` on a domain of the workspace (its mail domain while it is proven, or an email account's), the local part
 holding at most one `*`: `support@acme.test` also takes `support+anything@`, `ticket-*@acme.test` takes
 `ticket-0042-x7@`; `Received.token` is what follows the `+` or what the `*` matched. A message is matched on To, Cc and
 the recipient the server delivered it to (so a Bcc is found) and goes to each matching app once, as the system, in the

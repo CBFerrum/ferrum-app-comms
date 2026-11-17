@@ -6,6 +6,8 @@
 //! private, direct and public channels, and plans a recurring meeting with a colleague and an
 //! outside guest — with the refusal paths along the way.
 
+mod common;
+
 use async_trait::async_trait;
 use base64::Engine as _;
 use ferrum_app_comms::{Account, Mailbox, MailboxConnector};
@@ -2808,6 +2810,7 @@ async fn hosted_mail(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>, imap: &Fa
     let in_step = json!({"domain": "acme.test", "created": 0, "updated": 0, "locked": 0, "shared": 0, "lists": 0, "failed": []});
 
     refused(sync().await, "invalid");
+    common::prove(k, admin, "acme.test").await;
     k.update(mgr, "CommsSettings", settings, obj(json!({"mail_domain": "ACME.test"})), None).await.unwrap();
     let people: i64 =
         t.scalar("select count(*) from app_user where tenant_id = $1 and is_active and email like '%@acme.test' and $2::uuid is null", None).await;
@@ -3080,7 +3083,7 @@ async fn app_inbound(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>, smtp: &Sm
     };
     let register = |app: &'static str, address: &'static str, keep: bool| async move {
         let mut tx = k.db.tenant_tx(tenant).await.unwrap();
-        let r = routes::register(&mut tx, tenant, &routes::Registration { app, address, keep_in_mailbox: keep }).await;
+        let r = routes::register(k, &mut tx, tenant, &routes::Registration { app, address, keep_in_mailbox: keep }).await;
         match &r {
             Ok(_) => tx.commit().await.unwrap(),
             Err(_) => tx.rollback().await.unwrap(),

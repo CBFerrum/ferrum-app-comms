@@ -326,8 +326,9 @@ impl Step {
 }
 
 /// What brings the server in step with the people (emails lowercase): an active person in the
-/// domain has an unlocked account at their address; anyone else's account is locked.
-fn plan(people: &[Person], domain: &str, accounts: &BTreeMap<Uuid, String>, kept: &HashMap<Uuid, Kept>) -> Vec<Step> {
+/// domain has an unlocked account at their address; anyone else's account is locked. In a domain not
+/// `proven` to be the workspace's, only the locks.
+fn plan(people: &[Person], domain: &str, accounts: &BTreeMap<Uuid, String>, kept: &HashMap<Uuid, Kept>, proven: bool) -> Vec<Step> {
     let domain = domain.to_ascii_lowercase();
     people
         .iter()
@@ -335,14 +336,27 @@ fn plan(people: &[Person], domain: &str, accounts: &BTreeMap<Uuid, String>, kept
             let kept = kept.get(&p.id);
             let active = kept.is_some_and(|k| k.status == "Active" && k.secret);
             match (p.hosted(&domain), accounts.get(&p.id)) {
-                (true, None) => Some(Step::Create(p.id)),
-                (true, Some(a)) if !active => Some(Step::Update { person: p.id, account: a.clone(), password: true }),
-                (true, Some(a)) if kept.is_some_and(|k| k.email != p.email) => Some(Step::Update { person: p.id, account: a.clone(), password: false }),
+                (true, None) if proven => Some(Step::Create(p.id)),
+                (true, Some(a)) if proven && !active => Some(Step::Update { person: p.id, account: a.clone(), password: true }),
+                (true, Some(a)) if proven && kept.is_some_and(|k| k.email != p.email) => {
+                    Some(Step::Update { person: p.id, account: a.clone(), password: false })
+                }
                 (false, Some(a)) if kept.is_none_or(|k| k.status != "Locked") => Some(Step::Lock(p.id, a.clone())),
                 _ => None,
             }
         })
         .collect()
+}
+
+/// A Mail Domain as typed → as it is used (lower case, without `@`); nothing when empty.
+pub(crate) fn domain_of(typed: &str) -> Option<String> {
+    Some(typed.trim().trim_start_matches('@').to_ascii_lowercase()).filter(|d| !d.is_empty())
+}
+
+/// Why a Mail Domain takes nothing: it is not proven to be the workspace's (Ferrum docs/app-contract.md, "A domain the
+/// workspace owns").
+pub(crate) fn unproven(domain: &str) -> String {
+    format!("{domain} is not proven to be this workspace's: claim it under Administration → Addresses as a domain for mail and add the DNS record shown there")
 }
 
 /// The workspace's mail domain, when hosted mail is on for it.
@@ -351,7 +365,7 @@ pub(crate) async fn mail_domain(k: &Kernel, tenant: Uuid) -> Result<Option<Strin
     let d: Option<Option<String>> =
         sqlx::query_scalar("select mail_domain from e_comms_settings where tenant_id = $1 limit 1").bind(tenant).fetch_optional(&mut *tx).await?;
     tx.commit().await?;
-    Ok(d.flatten().map(|d| d.trim().trim_start_matches('@').to_ascii_lowercase()).filter(|d| !d.is_empty()))
+    Ok(d.flatten().as_deref().and_then(domain_of))
 }
 
 /// The DNS records the mail server wants published for `domain`, as the zone file it keeps for it
@@ -427,9 +441,14 @@ pub(crate) async fn zone_file(k: &Kernel, domain: &str) -> Result<Option<String>
 /// Brings the mail server in step with the workspace's people, shared mailboxes and distribution
 /// lists (`groups.rs`): `{domain, created, updated, locked, shared, lists, failed: [{email, step,
 /// error}]}`. A step that fails does not stop the others.
+///
+/// Asked again each round, before the mail server: a domain that is not, or no longer, proven to be the workspace's
+/// takes nothing there (no domain made, no mailbox made, moved or unlocked, no shared mailbox or list changed), and the
+/// round fails saying why. Its mail stays; only the workspace's own mailboxes of people who left or moved out of the
+/// domain are still locked, so that nobody keeps a way in.
 pub async fn reconcile(k: &Kernel, tenant: Uuid) -> Result<Value> {
     let domain = mail_domain(k, tenant).await?.ok_or_else(|| Error::invalid("set the Mail Domain in Communication Settings first"))?;
-    let admin = Admin::connect(k).await?;
+    let proven = k.domain_proven(tenant, &domain).await?;
     let mut tx = k.db.tenant_tx(tenant).await?;
     let people: Vec<(Uuid, String, String, bool)> =
         sqlx::query_as("select id, lower(email::text), full_name, is_active from app_user where tenant_id = $1").bind(tenant).fetch_all(&mut *tx).await?;
@@ -450,13 +469,17 @@ pub async fn reconcile(k: &Kernel, tenant: Uuid) -> Result<Value> {
             kept.insert(user, Kept { email, status: status.unwrap_or_default(), secret });
         }
     }
+    if !proven && !people.iter().any(|p| !p.hosted(&domain) && kept.get(&p.id).is_some_and(|k| k.status != "Locked")) {
+        return Err(Error::invalid(unproven(&domain)));
+    }
 
-    let domain_id = admin.domain(k, &domain).await?;
+    let admin = Admin::connect(k).await?;
+    let domain_id = if proven { admin.domain(k, &domain).await? } else { String::new() };
     let mut accounts = admin.accounts(k, tenant).await?;
     let ctx = Ctx::system(tenant, k.registry.schema(tenant).await?);
     let mut report = json!({"domain": domain, "created": 0, "updated": 0, "locked": 0, "shared": 0, "lists": 0, "failed": []});
     let ids: BTreeMap<Uuid, String> = accounts.people.iter().map(|(p, a)| (*p, a.id.clone())).collect();
-    for step in plan(&people, &domain, &ids, &kept) {
+    for step in plan(&people, &domain, &ids, &kept, proven) {
         let Some(p) = people.iter().find(|p| p.id == step.person()) else { continue };
         let done = async {
             let (account, status, secret) = match &step {
@@ -493,6 +516,10 @@ pub async fn reconcile(k: &Kernel, tenant: Uuid) -> Result<Value> {
                 report["failed"].as_array_mut().into_iter().for_each(|f| f.push(json!({"email": p.email, "step": step.name(), "error": e.to_string()})));
             }
         }
+    }
+    if !proven {
+        tracing::warn!(%tenant, %report, "hosted mail: only locked, the domain is not proven");
+        return Err(Error::invalid(unproven(&domain)));
     }
     // New people's accounts take part in the shared mailboxes too.
     if report["created"].as_i64().unwrap_or(0) > 0 {
@@ -551,6 +578,16 @@ pub struct SettingsHook;
 
 #[async_trait]
 impl DocHook for SettingsHook {
+    /// A Mail Domain is taken only while it is proven to be this workspace's; clearing it, or saving the other settings
+    /// with it as it was, always goes.
+    async fn validate_change(&self, hc: &mut HookCtx<'_>, old: Option<&Doc>, doc: &Doc) -> Result<()> {
+        let Some(domain) = util::s(doc, "mail_domain").and_then(domain_of) else { return Ok(()) };
+        if old.and_then(|o| util::s(o, "mail_domain")).and_then(domain_of).as_ref() == Some(&domain) || hc.kernel.domain_proven(hc.ctx.tenant, &domain).await? {
+            return Ok(());
+        }
+        Err(Error::field("mail_domain", unproven(&domain)))
+    }
+
     async fn after_save(&self, hc: &mut HookCtx<'_>, _doc: &Doc, _old: Option<&Doc>) -> Result<()> {
         soon(hc.tx, hc.ctx.tenant).await
     }
@@ -665,7 +702,7 @@ mod tests {
             .collect();
         let update = |p: &Person, password| Step::Update { person: p.id, account: format!("a-{}", p.local()), password };
         assert_eq!(
-            plan(&people, "ACME.com", &accounts, &kept),
+            plan(&people, "ACME.com", &accounts, &kept, true),
             [
                 Step::Create(new.id),
                 Step::Lock(gone.id, "a-gone".into()),
@@ -676,6 +713,11 @@ mod tests {
                 update(forgotten, true),
             ],
             "the guest and the people already in step need nothing; a password Ferrum does not keep is replaced"
+        );
+        assert_eq!(
+            plan(&people, "ACME.com", &accounts, &kept, false),
+            [Step::Lock(gone.id, "a-gone".into()), Step::Lock(moved.id, "a-moved".into())],
+            "in a domain not proven to be the workspace's, nothing is made, moved or unlocked: only those who left are locked"
         );
         assert!(new_secret().len() == 32 && new_secret() != new_secret());
     }

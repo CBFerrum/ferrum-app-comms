@@ -146,8 +146,9 @@ fn overlap(a: &str, b: &str) -> bool {
     }
 }
 
-/// The domains addresses may be registered on: the workspace's mail domain and those of its outgoing email accounts.
-pub async fn domains(tx: &mut Tx, tenant: Uuid) -> Result<Vec<String>> {
+/// The domains addresses may be registered on: the workspace's mail domain while it is proven to be the workspace's
+/// (asked each time: its claim may have been removed), and those of its outgoing email accounts.
+pub async fn domains(k: &Kernel, tx: &mut Tx, tenant: Uuid) -> Result<Vec<String>> {
     let mut out: Vec<String> = sqlx::query_scalar(
         "select lower(split_part(email_address, '@', 2)) from e_email_account where tenant_id = $1 and enable_outgoing and email_address like '%@%'",
     )
@@ -156,7 +157,11 @@ pub async fn domains(tx: &mut Tx, tenant: Uuid) -> Result<Vec<String>> {
     .await?;
     let hosted: Option<Option<String>> =
         sqlx::query_scalar("select mail_domain from e_comms_settings where tenant_id = $1 limit 1").bind(tenant).fetch_optional(&mut **tx).await?;
-    out.extend(hosted.flatten().map(|d| d.trim().trim_start_matches('@').to_ascii_lowercase()).filter(|d| !d.is_empty()));
+    if let Some(domain) = hosted.flatten().as_deref().and_then(crate::hosted::domain_of)
+        && k.domain_proven(tenant, &domain).await?
+    {
+        out.push(domain);
+    }
     out.sort();
     out.dedup();
     Ok(out)
@@ -178,7 +183,7 @@ async fn owned(tx: &mut Tx, tenant: Uuid) -> Result<Vec<String>> {
 /// Registers `reg.address` for `reg.app` in the caller's transaction; registering the same address again
 /// changes `keep_in_mailbox`. Refused (`Invalid`) when the address is malformed or not on one of the workspace's
 /// domains, `Conflict` when another app or a person's mailbox has it.
-pub async fn register(tx: &mut Tx, tenant: Uuid, reg: &Registration<'_>) -> Result<Uuid> {
+pub async fn register(k: &Kernel, tx: &mut Tx, tenant: Uuid, reg: &Registration<'_>) -> Result<Uuid> {
     let (local, domain) = parse(reg.address)?;
     let pattern = format!("{local}@{domain}");
     if reg.app.trim().is_empty() || reg.app.len() > 64 {
@@ -186,8 +191,10 @@ pub async fn register(tx: &mut Tx, tenant: Uuid, reg: &Registration<'_>) -> Resu
     }
     // One registration at a time per workspace, so two apps cannot both pass the overlap check.
     sqlx::query("select pg_advisory_xact_lock(hashtext($1))").bind(format!("comms-routes|{tenant}")).execute(&mut **tx).await?;
-    if !domains(tx, tenant).await?.contains(&domain) {
-        return Err(Error::invalid(format!("{domain} is not one of the workspace's mail domains (its mail domain, or an outgoing email account's)")));
+    if !domains(k, tx, tenant).await?.contains(&domain) {
+        return Err(Error::invalid(format!(
+            "{domain} is not one of the workspace's mail domains (its mail domain while it is proven, or an outgoing email account's)"
+        )));
     }
     for other in sqlx::query_as::<_, (String, String)>("select app, pattern from comms_mail_route where tenant_id = $1 and app <> $2")
         .bind(tenant)
