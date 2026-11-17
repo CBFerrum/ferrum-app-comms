@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.25.2
+
+Needs the same platform as 0.25.0. No database change, no interface change.
+
+**Mail's connections go only where the platform lets outbound calls go.** An email account's SMTP and IMAP hosts were
+connected to as typed, so a workspace administrator could have the server open connections to loopback, to link-local
+addresses (the cloud's metadata address among them) or into the private network, and read what came back in the
+account's errors. The host is now resolved once and refused before any connection when one of its addresses is
+private, loopback or link-local, unless the operator names the host in `FERRUM_CONNECTION_HOSTS`, as for the
+platform's connections; the connection goes to the addresses checked, and the name is not asked again. A refused send
+fails at once. Another app's test that sends through Comms to a stand-in mail server on 127.0.0.1 names that host in its
+kernel's settings (`connection_hosts: vec!["127.0.0.1".into()]`).
+
+**Each route reads only the body it needs.** Every route took up to 32 MB, the public ones too. The inbound webhook, a
+file for a hosted mail message and a calendar file to import still take up to 32 MB; webmail's own calls, which carry a
+message's text with the original a reply quotes, 16 MB; an answer to an invitation and a guest's way into a meeting
+16 KB; every other route 1 MB, a calendar app's event included (the size CalDAV already advertised).
+
 ## 0.25.1
 
 Needs the same platform as 0.25.0. No database change. Interface only, `ui/dist` rebuilt with Ferrum-Frontend `06bd1a2`.
