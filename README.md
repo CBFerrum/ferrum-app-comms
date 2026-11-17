@@ -7,14 +7,14 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.21.0-2563eb?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.25.1-2563eb?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 [![CI](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml/badge.svg)](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml)
 ![Rust](https://img.shields.io/badge/Rust-server-b7410e?style=flat-square&logo=rust)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-data-336791?style=flat-square&logo=postgresql&logoColor=white)
 ![React](https://img.shields.io/badge/React%20%2B%20TypeScript-interface-0ea5e9?style=flat-square&logo=react&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-80%20Rust%20%C2%B7%20188%20interface-16a34a?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-83%20Rust%20%C2%B7%20188%20interface-16a34a?style=flat-square)
 
 ### Mail, team chat, calendars and video meetings, on the same data as the rest of your business.
 
@@ -47,7 +47,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 | 🧱 **Depends on** | The platform's `core` and `contacts` packages. Nothing else is required |
 | 🤝 **Works with** | Drive (attach files, save attachments), CRM and Helpdesk (inbound mail routing), Campaigns (marketing mail), Bookings and Live (meetings for records), every app with a record timeline |
 | 🌍 **Languages** | English, Arabic, Hindi |
-| 🧪 **Tests** | 80 Rust test functions (unit and database) and 188 interface tests, counted from the source |
+| 🧪 **Tests** | 83 Rust test functions (unit and database) and 188 interface tests, counted from the source |
 | 📄 **Licence** | AGPL-3.0-only |
 
 ## 📸 Screenshots
@@ -276,7 +276,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 - **Inbound mail creates records.** An account can map a new inbound thread to a new record (a Lead or Ticket, for example). Auto-replies and bounces never create records. Received mail is de-duplicated by Message-ID.
 - **Consent respected.** A communication has a Purpose, Transactional or Marketing. As mail goes out, each recipient is checked as they stand: marketing skips anyone who withdrew consent in any app, and nothing goes to anyone whose processing is restricted. If no one is left the email is Withheld, saying who and why.
 - **Extra headers for bulk senders.** Apps that queue mail can set `List-Unsubscribe`, `List-Id`, `Precedence`, `Auto-Submitted`, `Feedback-ID` and `X-` headers from an allow-list.
-- **Received mail keeps its headers.** Message-ID, In-Reply-To, References, Reply-To, delivered-to, Auto-Submitted, List-Id, Return-Path, the auto-reply and bounce markers, and the sender check result are stored with each received message and erased with the sender.
+- **Received mail keeps its headers.** Message-ID, In-Reply-To, References, Reply-To, delivered-to, Auto-Submitted, List-Id, Return-Path, the auto-reply and bounce markers, and the sender check result are stored with each received message and erased with the sender. No `x-ferrum-` header a sender wrote is kept; Mail's own verdict `x-ferrum-auth` is always written.
 - **Mail for other apps.** An app can send with Reply-To, threading headers and an envelope sender on a workspace domain, and get the Message-ID back. It can register an address or pattern (`ticket-*@`, plus-addressing) to take inbound mail once, behind a savepoint, so a failing handler loses nothing. Hosted mail can raise `MailMessage.received` and `MailMessage.sent` events (ids, addresses, thread, subject, never the body) once per message, off until the owner turns it on and never for a mailbox a manager marks private.
 
 ### 📅 Calendar: views and events
@@ -407,7 +407,7 @@ flowchart LR
     subgraph Server["Ferrum server"]
         API["REST, MCP, live"]
         K["Kernel - permissions, RLS, audit"]
-        APP["Comms - 21 entities, 3 roles"]
+        APP["Comms - 19 entities, 3 roles"]
     end
     DB[("PostgreSQL")]
     UI --> API --> K --> DB
@@ -465,6 +465,8 @@ Everything Comms adds is ordinary Ferrum metadata and Rust, so its records get l
 | CRM, Helpdesk and other apps | Register inbound addresses; send with threading; file mail to records | The app itself |
 | Campaigns | Marketing mail marked with a Purpose and consent checked | Campaigns |
 | Webhooks and automations | Outbox events such as `Communication.created` and `MailMessage.received` | Platform webhooks |
+
+**What the tests exercise.** This repository's workflow starts a real Stalwart (`tests/stalwart.sh`) for the hosted-mail tests; run without `FERRUM_MAIL_URL` they print "hosted mail skipped" and return. The mail server's `admin-secret` file is checked with a stand-in that reads it as Stalwart would. LiveKit's own server is used only where `livekit-server` is installed (`FERRUM_TEST_LIVEKIT`, else on the PATH), which the workflow does not do. Recording calls are tested against a stand-in for LiveKit Egress, so recording has not been run against a real Egress. SMTP sending and IMAP polling are tested against a fake SMTP server and a fake IMAP mailbox written in the tests, not a real mail server.
 
 ## 📊 How it compares
 
@@ -613,6 +615,10 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 
 ### ✅ Recently shipped
 
+- [x] **0.25.0**: Mail keeps no `x-ferrum-` header a sender wrote; hosted mailboxes are brought in step on time whichever replica runs the upkeep; Comms' meeting and mail secrets live in its vault only; every table enforces row-level security.
+- [x] **0.24.0**: Newsletters moved to Campaigns, which sends to the same email groups with consent, topics, the suppression list and one-click unsubscribe.
+- [x] **0.23.0**: LiveKit and the mail server take their files from the vault as they start (`ferrum task render service:meet` and `service:mail`).
+- [x] **0.22.0**: Comms' settings live in the database, and a person's mailbox password goes only to the host it was set for.
 - [x] **0.25.1**: Rebuilt on Ferrum-Frontend 06bd1a2: its start through `mountApp`; the web app's `/app/meet/event/` links are no longer opened.
 - [x] **0.21.0**: A room's guest link is kept sealed in the platform's vault; mail and meeting addresses are settings.
 - [x] **0.20.1**: Calendar apps' reads recorded where a workspace records reads, and links through the operator's link host without an address of Comms' own.
@@ -763,14 +769,14 @@ src/                  Rust: mail sending and receiving, hosted mail, calendars, 
                       iCalendar, CalDAV and CardDAV, chat, meetings, upkeep jobs
 ui/src/               React interface: Mail*, Calendar*, Chat*, Meet, shared libraries in lib/
 ui/src/locales/       Arabic and Hindi words
-tests/                integration tests against PostgreSQL and a real Stalwart
+tests/                integration tests against PostgreSQL, a real Stalwart and stand-ins (see Integrations)
 docs/                 banner and screenshots
 CHANGELOG.md          what changed in each version
 ```
 
 ## 📜 Changelog
 
-Every release is described in [CHANGELOG.md](CHANGELOG.md). The latest is **0.21.0**, which keeps a room's guest link sealed in the platform's vault and reads the mail and meeting addresses as settings.
+Every release is described in [CHANGELOG.md](CHANGELOG.md). The latest is **0.25.1**.
 
 ## 🤝 Contributing
 

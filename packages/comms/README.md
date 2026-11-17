@@ -1,6 +1,6 @@
 # comms — mail, team chat and calendar
 
-Package `comms` (depends on `core`, logic in `crates/pkg-comms`): email accounts (SMTP sending,
+Package `comms` (depends on `core` and `contacts`, logic in the crate's `src/`): email accounts (SMTP sending,
 IMAP polling, inbound webhook), a threaded **Communication** log on any record, email templates,
 mailing lists, team chat with live pushes, and calendars with recurrence,
 reminders, free/busy, RSVP and iCalendar (invitations, feeds, import), and video meetings
@@ -33,7 +33,7 @@ the generic API on `ChatChannel`/`ChatMessage` is for chat administrators only.
    workspace's main host, which serves it. `max_send_attempts` (default 5).
 2. **Email Account**: SMTP (`smtp_security`: `STARTTLS` | `TLS` | `None`) and/or IMAP
    (`imap_security`: `TLS` | `STARTTLS` | `None`, `imap_folder`, `poll_interval_minutes`).
-   `smtp_password` / `imap_password` are **secret fields** (the server needs `FERRUM_SECRET_KEY`):
+   `smtp_password` / `imap_password` are **secret fields** (the server's vault must be open):
    send text to set one, `null` to clear it, `true` to keep it; reads only return `true` when one is
    set. The values are sealed outside the record and never reach documents, lists, events, the
    audit trail or exports. One `default_outgoing` account per
@@ -370,14 +370,14 @@ app took it (`hidden_from_inbox`); the default keeps it where it was addressed. 
 addresses (`Conflict`); an address a hosted or shared mailbox owns cannot be taken (`Conflict`); other domains or
 malformed addresses are `Invalid`. An account's `append_to` makes no record of a message an app took. Mail that stays on
 the hosted mail server is not stored here and is not routed: have the server forward the address to the account's
-inbound webhook. The older hook on `Communication` keeps working beside it.
+inbound webhook.
 
 **Filing mail** (hosted mailboxes): for each message that arrives in a mailbox's Inbox, and each one sent from it (not
 drafts, not junk), Mail raises the outbox event `MailMessage.received` or `MailMessage.sent` (entity `MailMessage`; the
 record id stands for the message). Payload: `{kind, mailbox, mailbox_address, owner, account, email, thread, message_id,
 in_reply_to, from, to, cc, subject, at}`: never the body or the files. Raised once, in the transaction that moves the
 look forward, only from the time the owner allows it and never for a mailbox marked private. Mail kept as
-`Communication` raises `Communication.created` as before.
+`Communication` raises `Communication.created`.
 
 ## Email groups
 
