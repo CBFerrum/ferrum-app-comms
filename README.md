@@ -448,7 +448,7 @@ Everything Comms adds is ordinary Ferrum metadata and Rust, so its records get l
 
 ### 📊 Reports and jobs
 
-- **Reports:** Email Activity (sent, received, failed and waiting per account and day) and Chat Activity (messages and active members per channel).
+- **Reports:** Email Activity (sent, received, failed and waiting per account and day, the days being the workspace's) and Chat Activity (messages and active members per channel).
 - **Background work, every minute:** retry due mail, poll IMAP accounts, announce reminders, look at new hosted mail for notifications and snoozes, refresh subscribed calendars, keep hosted mailboxes in step (every ten minutes), poll meeting attendance, and remove rooms and old reminder bookkeeping.
 
 ## 🔌 Integrations

@@ -2,7 +2,7 @@
 //! read-only transaction and sees only the records the caller may read.
 
 use async_trait::async_trait;
-use chrono::{Duration, NaiveDate};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use ferrum_domain::reports::{Params, ReportSource, col, read_tx};
 use ferrum_kernel::{Action, Ctx, Error, Kernel, Result, row_scope};
 use serde_json::{Value, json};
@@ -16,10 +16,9 @@ fn date(name: &str, label: &str) -> Value {
     json!({"name": name, "label": label, "type": "date"})
 }
 
-/// The period asked for; the last 30 days by default. `to` is inclusive.
-fn period(p: &Params<'_>) -> Result<(NaiveDate, NaiveDate)> {
-    let today = chrono::Utc::now().date_naive();
-    let to = p.date("to_date")?.unwrap_or(today);
+/// The period asked for, in the workspace's days; the last 30 days by default. `to` is inclusive.
+fn period(ctx: &Ctx, p: &Params<'_>) -> Result<(NaiveDate, NaiveDate)> {
+    let to = p.date("to_date")?.unwrap_or_else(|| ctx.today());
     let from = p.date("from_date")?.unwrap_or(to - Duration::days(29));
     if from > to {
         return Err(Error::field("from_date", "is after the end date"));
@@ -41,14 +40,22 @@ impl ReportSource for CommsReports {
 
     async fn run(&self, k: &Kernel, ctx: &Ctx, name: &str, params: &HashMap<String, String>) -> Result<Value> {
         let p = Params { raw: params };
-        let (from, to) = period(&p)?;
-        let (start, end) = (from.and_time(chrono::NaiveTime::MIN).and_utc(), (to + Duration::days(1)).and_time(chrono::NaiveTime::MIN).and_utc());
+        let (from, to) = period(ctx, &p)?;
         let mut tx = read_tx(k, ctx).await?;
+        // The workspace's days: the period runs from its midnight to its midnight, and a mail is on the day it was there.
+        let zone = ctx.schema.timezone.parse().unwrap_or(chrono_tz::Tz::UTC).name();
+        let (start, end): (DateTime<Utc>, DateTime<Utc>) = sqlx::query_as("select $1::timestamp at time zone $3, $2::timestamp at time zone $3")
+            .bind(from)
+            .bind(to + Duration::days(1))
+            .bind(zone)
+            .fetch_one(&mut *tx)
+            .await?;
         let out = match name {
             "email_activity" => {
-                let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
-                    "select coalesce(a.account_name, '(server mailer)'), (c.communication_date at time zone 'UTC')::date, \
-                     count(*) filter (where c.direction = 'Sent' and c.status = 'Sent'), count(*) filter (where c.direction = 'Received'), \
+                let mut qb: QueryBuilder<Postgres> =
+                    QueryBuilder::new("select coalesce(a.account_name, '(server mailer)'), (c.communication_date at time zone ");
+                qb.push_bind(zone).push(
+                    ")::date, count(*) filter (where c.direction = 'Sent' and c.status = 'Sent'), count(*) filter (where c.direction = 'Received'), \
                      count(*) filter (where c.status = 'Failed'), count(*) filter (where c.status in ('Queued', 'Sending')) \
                      from e_communication c left join e_email_account a on a.tenant_id = c.tenant_id and a.id = c.email_account \
                      where c.channel = 'Email' and c.tenant_id = ",
