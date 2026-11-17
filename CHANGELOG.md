@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.26.0
+
+Needs Ferrum `98d2f7d0` or later (`Kernel::domain_proven`: domains claimed for mail). No database change, no interface
+change.
+
+**A Mail Domain is a claim the workspace proved.** The Mail Domain was free text: a workspace could name a domain it does
+not own, another workspace's included, and hosted mail made mailboxes, shared mailboxes and lists in it on the shared mail
+server, so one workspace could take addresses in another's domain and send as it. The domain must now be proven to be
+the workspace's: an administrator claims it under Administration → Addresses as a domain for mail and adds the DNS record
+shown there (or it is an address of the workspace's own proven by that record). Saving a Mail Domain that is not proven
+is refused, saying so; clearing it always goes. Each round asks again before it reaches the mail server: while the
+domain is not, or no longer, proven (its claim removed), nothing is made, moved or unlocked there and Sync Mailboxes says
+why; mail is never deleted, and the mailboxes of people who left are still locked. Apps' inbound registrations and
+envelope senders count the mail domain only while it is proven.
+
+**For other apps.** `routes::register` and `routes::domains` take the kernel first
+(`register(k, tx, tenant, &Registration {…})`): Helpdesk's registrations pass theirs. A test that sets a Mail Domain
+proves it first, as Comms' own suites do (`tests/common/mod.rs`: the domain claimed for mail, its `_ferrum` TXT record
+answered by a DNS server of the test's own).
+
 ## 0.25.3
 
 Needs the same platform as 0.25.0. No database change, no interface change.
