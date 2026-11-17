@@ -1599,6 +1599,21 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     assert_eq!(names, ["Alice Rao"], "the meeting keeps the others' words");
     app_inbound(&t, &admin, &users, &smtp).await;
     mail_sockets(&t, mgr, &smtp, port).await;
+
+    // ───────────── the email report's days are the workspace's ─────────────
+    // No clock is set: the workspace moves to a zone whose day is not UTC's now (Pago Pago before 10:00 UTC, Kiritimati
+    // after, as the platform's own suites do). Every mail of this scenario is of today: the default period ends on the
+    // workspace's today and shows them all on that day.
+    let before = report(mgr, "email_activity").await.unwrap()["totals"].clone();
+    use chrono::Timelike;
+    let zone = if chrono::Utc::now().hour() < 10 { "Pacific/Pago_Pago" } else { "Pacific/Kiritimati" };
+    k.update_tenant_settings(&admin, &obj(json!({"timezone": zone}))).await.expect("the workspace's zone");
+    let mgr = k.load_ctx(tenant, mgr.user, None, "it".into()).await.expect("ctx");
+    assert_ne!(mgr.today(), chrono::Utc::now().date_naive(), "{zone}'s day is not UTC's");
+    let today = json!(mgr.today().to_string());
+    let activity = report(&mgr, "email_activity").await.unwrap();
+    assert_eq!((&activity["meta"]["to_date"], &activity["totals"]), (&today, &before), "{activity}");
+    assert!(activity["rows"].as_array().unwrap().iter().all(|r| r["day"] == today), "each on the workspace's day: {activity}");
 }
 
 /// Mail's sockets go where the platform's guard lets outbound calls go: an account whose SMTP or IMAP host is
