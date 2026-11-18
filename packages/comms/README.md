@@ -406,8 +406,9 @@ and active members per channel; chat administrators). Parameters `from_date` / `
 
 ## Background work
 
-Every minute (`maintenance`, one replica at a time): retry due mail and requeue mail stuck in
-Sending for 10 minutes; poll IMAP accounts whose interval passed (only UIDs above the last one; a
+Every minute (`maintenance`, one replica at a time): retry due mail; mail stuck in Sending for 10
+minutes (its sender stopped mid-send, and the server may have taken it) is marked Failed, saying it
+may have been delivered, and its author told, rather than sent again; poll IMAP accounts whose interval passed (only UIDs above the last one; a
 new UIDVALIDITY rereads the folder; the first poll takes the newest 50; at most 50 per poll);
 announce due reminders; keep hosted mailboxes in
 step (every ten minutes); purge old reminder bookkeeping and meeting rooms nobody joined for 90 days. While an account's SMTP server is failing, newly queued mail waits for these retries

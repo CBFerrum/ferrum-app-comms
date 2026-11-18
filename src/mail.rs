@@ -4,9 +4,10 @@
 //! headers from the message it answers, the sending account. After commit [`MailSink`] sends it.
 //! Each send first claims the row (Queued → Sending) in a transaction of its own, so redelivered
 //! events and concurrent workers never send twice, and records the outcome afterwards. A crash
-//! between the SMTP handover and that record leaves the row in Sending; maintenance queues it
-//! again after ten minutes, so a crash at that exact point can send a message twice — at most
-//! once more per crash. Transient failures (timeouts, 4xx replies) retry with backoff until the
+//! between the claim and that record leaves the row in Sending, and SMTP cannot be asked whether
+//! the server took the message: after ten minutes maintenance marks it Failed, saying it may have
+//! been delivered, and tells its author, who can send it again (Retry Sending); it is never sent
+//! again on its own. Transient failures (timeouts, 4xx replies) retry with backoff until the
 //! tenant's `max_send_attempts`; permanent ones (5xx replies, bad addresses) fail at once.
 
 use crate::account::{self, Account, Security, Server};
@@ -879,18 +880,30 @@ async fn record(
     Ok(status.to_string())
 }
 
-/// Retries due mail (within `budget`) and requeues mail stuck in Sending (a worker died mid-send).
+/// Why mail stuck in Sending is not sent again on its own.
+const INTERRUPTED: &str = "interrupted while sending: it may have been delivered, so it is not sent again on its own; \
+                           send it again (Retry Sending) if it did not arrive";
+
+/// Retries due mail (within `budget`), and fails mail stuck in Sending (a worker died mid-send): the server may have
+/// taken it, so it is not sent again; its author is told, as of mail that failed.
 pub async fn retry_due(k: &Kernel, tenant: Uuid, budget: Duration) -> Result<usize> {
     let started = std::time::Instant::now();
     let mut tx = k.db.tenant_tx(tenant).await?;
-    sqlx::query(
-        "update e_communication set status = 'Queued', next_attempt_at = now(), version = version + 1, updated_at = now(), \
-         error = coalesce(error, 'interrupted while sending; queued again') \
-         where tenant_id = $1 and status = 'Sending' and updated_at < now() - interval '10 minutes'",
+    let stuck: Vec<(Uuid, Option<Uuid>, Option<String>)> = sqlx::query_as(
+        "update e_communication set status = 'Failed', next_attempt_at = null, version = version + 1, updated_at = now(), error = $2 \
+         where tenant_id = $1 and status = 'Sending' and updated_at < now() - interval '10 minutes' returning id, created_by, subject",
     )
     .bind(tenant)
-    .execute(&mut *tx)
+    .bind(INTERRUPTED)
+    .fetch_all(&mut *tx)
     .await?;
+    for (comm, creator, subject) in stuck {
+        let Some(user) = creator else { continue };
+        let title = format!("Email not delivered: {}", subject.as_deref().unwrap_or("(no subject)"));
+        notify::send_kind(&mut tx, tenant, user, "comms.undelivered", "inapp", &util::cut(&title, 200), Some(INTERRUPTED), Some("Communication"), Some(comm))
+            .await?;
+        notify::push(&mut tx, tenant, user, "mail", json!({"communication": comm, "status": "Failed"})).await?;
+    }
     // Rows without a retry time were missed by the event sink (it runs right after commit).
     let due: Vec<Uuid> = sqlx::query_scalar(
         "select id from e_communication where tenant_id = $1 and status = 'Queued' and channel = 'Email' and direction = 'Sent' \

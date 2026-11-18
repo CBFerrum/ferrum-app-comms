@@ -141,6 +141,8 @@ enum Mode {
     Transient,
     /// 550 on RCPT TO.
     Permanent,
+    /// Takes the message, then never answers its end of data: the replica sending it dies before it hears back.
+    Hang,
 }
 
 #[derive(Clone, Debug)]
@@ -159,6 +161,9 @@ struct SmtpState {
     /// Sessions opened, and those the client ended with QUIT.
     sessions: usize,
     quits: usize,
+    /// Told when a message is taken in mode Hang, and the sessions whose sender died there (they never QUIT).
+    taken: Arc<tokio::sync::Notify>,
+    died: usize,
 }
 
 #[derive(Clone, Default)]
@@ -234,7 +239,16 @@ impl Smtp {
                     }
                     data.push_str(l.strip_prefix('.').filter(|_| l.starts_with("..")).unwrap_or(&l));
                 }
-                self.0.lock().unwrap().mails.push(Received { from: std::mem::take(&mut from), to: std::mem::take(&mut to), data });
+                let taken = {
+                    let mut st = self.0.lock().unwrap();
+                    st.mails.push(Received { from: std::mem::take(&mut from), to: std::mem::take(&mut to), data });
+                    st.died += usize::from(mode == Mode::Hang);
+                    (mode == Mode::Hang).then(|| st.taken.clone())
+                };
+                if let Some(taken) = taken {
+                    taken.notify_one();
+                    std::future::pending::<()>().await;
+                }
                 b"250 2.0.0 Queued\r\n"
             } else if up == "QUIT" {
                 self.0.lock().unwrap().quits += 1;
@@ -780,6 +794,24 @@ async fn scenario() {
     t.maintenance(&imap).await;
     assert_eq!(t.comm(waiting).await["status"], json!("Sent"));
     assert_eq!(smtp.count(), mails_before + 2);
+    // The server takes a message and the replica sending it dies before it hears back (the outbox worker's future is
+    // dropped there): the row stays Sending. Ten minutes on, maintenance does not send it again; it says it may have
+    // been delivered, and tells its author, who can send it again.
+    smtp.set_mode(Mode::Hang);
+    let taken = smtp.0.lock().unwrap().taken.clone();
+    let interrupted = uid(&t.ok(alice, "POST", "/send", &[], json!({"to": "buyer@globex.test", "subject": "Interrupted", "content": "x"})).await);
+    tokio::select! {
+        () = t.drain() => panic!("the server never answers this one"),
+        () = taken.notified() => {}
+    }
+    smtp.set_mode(Mode::Accept);
+    assert_eq!((t.comm(interrupted).await["status"].clone(), smtp.count()), (json!("Sending"), mails_before + 3));
+    t.exec("update e_communication set updated_at = now() - interval '11 minutes' where tenant_id = $1 and id = $2", Some(interrupted)).await;
+    t.maintenance(&imap).await;
+    let d = t.comm(interrupted).await;
+    assert_eq!((d["status"].clone(), smtp.count()), (json!("Failed"), mails_before + 3), "{d:?}");
+    assert!(d["error"].as_str().unwrap_or_default().contains("may have been delivered"), "{d:?}");
+    assert_eq!(t.notifications(alice, "Email not delivered: Interrupted").await, 1);
     // ───────────── extra headers: the unsubscribe pair goes out; nothing that could rewrite the mail ─────────────
     let sys = Ctx::system(tenant, k.registry.schema(tenant).await.unwrap());
     let bulk = |headers: Value| {
@@ -1565,9 +1597,9 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     // her meeting link and her cancellation, and with consent: the summer offer to Bo, the notice to Pat
     // and the offer retried once Pat consented again; received: the reply, Jane, the auto-reply and two
     // polled mails, and the two bulk mails with headers (one through the account, one the server's mailer);
-    // failed: the bounce and the two bulk mails the header checks left queued when the server refused them
-    // (a withheld email is neither).
-    assert_eq!((totals["sent"].clone(), totals["received"].clone(), totals["failed"].clone()), (json!(15), json!(5), json!(3)), "{activity}");
+    // failed: the bounce, the two bulk mails the header checks left queued when the server refused them, and the one
+    // interrupted while sending (a withheld email is neither).
+    assert_eq!((totals["sent"].clone(), totals["received"].clone(), totals["failed"].clone()), (json!(15), json!(5), json!(4)), "{activity}");
     let chats = report(&admin, "chat_activity").await.unwrap();
     assert!(chats["rows"].as_array().unwrap().iter().any(|r| r["channel"] == json!("#general") && r["messages"] == json!(6)), "{chats}");
     refused(report(alice, "chat_activity").await, "forbidden");
@@ -1666,9 +1698,10 @@ async fn mail_sockets(t: &T, mgr: &Ctx, smtp: &Smtp, smtp_port: u16) {
     let polled = ferrum_app_comms::inbound::poll_account(&t.k, t.tenant, named, &ferrum_app_comms::ImapConnector).await;
     assert!(polled.is_err(), "the stand-in answers nothing");
     assert_eq!(reached.load(Ordering::SeqCst), 1, "the named host is reached");
-    // Every session the SMTP stand-in saw in the whole scenario, delivered or refused, ended with QUIT.
+    // Every session the SMTP stand-in saw in the whole scenario, delivered or refused, ended with QUIT, but the one whose
+    // sender died.
     let st = smtp.0.lock().unwrap();
-    assert!(st.sessions > 0 && st.quits == st.sessions, "{} sessions, {} ended with QUIT", st.sessions, st.quits);
+    assert!(st.sessions > 0 && st.quits + st.died == st.sessions, "{} sessions, {} ended with QUIT, {} died", st.sessions, st.quits, st.died);
 }
 
 /// A calendar and contacts app's session (CalDAV and CardDAV under `/dav`): discovery, an event
