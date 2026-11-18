@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.27.1
+
+No database change, no interface change.
+
+**Mail is not sent twice after its sender stops mid-send.** Each email is claimed (Queued to Sending) before it goes and
+marked Sent once the server has accepted it, so an event delivered again never sends it twice. But a server that
+stopped after the mail server had taken the message, before marking it, left it in Sending, and maintenance put such a
+row back in the queue after ten minutes: the recipient got the message twice. SMTP cannot be asked afterwards whether
+the server took it, so a row stuck in Sending for ten minutes is now marked Failed, saying it may have been delivered
+and is not sent again on its own, and its author is told as of any undelivered email (the bell, and the live status);
+Retry Sending sends it again. A row whose sender stopped before reaching the server is treated the same: nothing tells
+the two apart.
+
 ## 0.27.0
 
 Needs platform 0.4.0 (Ferrum's app API with upkeep of one workspace, its `docs/app-contract.md`, *Upkeep*): the
