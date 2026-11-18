@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.31.0
+
+Database change: a new entity, Chat Status (a new table; nothing to migrate). Interface change: a status button in
+Chat's list header, and statuses beside people's names. The package `comms` is 0.9.0.
+
+**Custom status.** A person sets a short status: an emoji, up to 100 characters, and optionally a time it clears
+itself (30 minutes, an hour, four hours, today, this week). Colleagues see it beside the person's name in a channel's
+members, and in a direct conversation's header and list row, until its time (a filter when reading: nothing runs to
+clear it). It is a record of the person's own, one per person, made, changed and cleared through its own operations
+(`comms.chat_status.create`, `.update`, `.delete`), which a person's agent uses too; nobody changes another person's
+status (a Chat Admin may moderate). It is in the person's copy of their data and goes with their erasure.
+
 ## 0.30.0
 
 No database change (the meaning of `direct_key` widens; existing conversations are untouched). Interface change: the

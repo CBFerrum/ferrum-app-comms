@@ -1,5 +1,5 @@
 package: comms
-version: 0.8.0
+version: 0.9.0
 label: Communication
 description: Mail (accounts, threaded communications on any record, templates, inbound mail), team chat and calendars with ICS.
 # The people mail goes to and the address book calendar and contacts apps read (Ferrum
@@ -11,7 +11,7 @@ modules:
     label: Communication
     icon: mail
     order: 40
-    items: [Communication, CalendarEvent, EmailTemplate, EmailAccount, EmailGroup, EmailGroupMember, ChatChannel, ChatMessage,
+    items: [Communication, CalendarEvent, EmailTemplate, EmailAccount, EmailGroup, EmailGroupMember, ChatChannel, ChatMessage, ChatStatus,
             CommsSettings, HostedMailbox, SharedMailbox, report:email_activity, report:chat_activity]
 
 # What a personal-data request exports and erases for a person (their email): the messages they
@@ -19,6 +19,7 @@ modules:
 personal_data:
   - {entity: Communication, match: sender, erase: [sender, sender_name, subject, content, text_content, attachments, headers, reply_to_address]}
   - {entity: ChatMessage, match: sender, erase: [sender, body]}
+  - {entity: ChatStatus, match: person, erase: [person, emoji, text]}
   - {entity: EmailGroupMember, match: email, erase: [email, member_name]}
   - {entity: CalendarFeed, match: person, erase: [person]}
 roles:
@@ -33,6 +34,9 @@ roles:
       # The channels they are in and those channels' messages (what chat's operations act on; also their search and agent).
       - {entity: ChatChannel, read: true, create: true, via: members.member}
       - {entity: ChatMessage, read: true, via: channel.members.member}
+      # Everyone who chats sees everyone's status (its purpose); each person sets only their own.
+      - {entity: ChatStatus, read: true}
+      - {entity: ChatStatus, read: true, write: true, create: true, delete: true, if_owner: true}
       # The shared address book, for mail and contacts apps (CRM's roles edit it).
       - {entity: Contact, read: true}
       - {entity: Address, read: true}
@@ -53,4 +57,5 @@ roles:
     permissions:
       - {entity: ChatChannel, read: true, write: true, create: true, delete: true, export: true}
       - {entity: ChatMessage, read: true, write: true, create: true, delete: true, export: true}
+      - {entity: ChatStatus, read: true, write: true, delete: true}
 export_tables: [comms_reminder_log, comms_meeting, comms_mail_route, comms_mail_filing]

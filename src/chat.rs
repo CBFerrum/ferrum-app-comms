@@ -143,10 +143,83 @@ const MAX_REACTIONS: usize = 20;
 const MAX_PINS: i64 = 50;
 
 /// One emoji: 1 to 32 bytes, no letter, digit, space, control character or markup.
+pub(crate) fn emoji_ok(e: &str) -> bool {
+    let bad = |ch: char| ch.is_ascii_alphanumeric() || ch.is_whitespace() || ch.is_control() || "<>&\"'".contains(ch);
+    !e.is_empty() && e.len() <= 32 && !e.chars().any(bad)
+}
+
 fn checked_emoji(params: &Value) -> Result<String> {
     let e = params.get("emoji").and_then(Value::as_str).unwrap_or_default().trim();
-    let bad = |ch: char| ch.is_ascii_alphanumeric() || ch.is_whitespace() || ch.is_control() || "<>&\"'".contains(ch);
-    if e.is_empty() || e.len() > 32 || e.chars().any(bad) { Err(Error::field("emoji", "one emoji")) } else { Ok(e.to_string()) }
+    if emoji_ok(e) { Ok(e.to_string()) } else { Err(Error::field("emoji", "one emoji")) }
+}
+
+/// A person's status (`ChatStatus`): their own, filled from whoever sets it; an emoji or a short text, and a time
+/// still to come. It is shown while `until` has not passed (a filter when reading: nothing runs to clear it).
+pub struct StatusHook;
+
+#[async_trait]
+impl DocHook for StatusHook {
+    async fn before_validate(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
+        if !doc.contains_key("created_at") && (!hc.ctx.is_system || s(doc, "person").is_none()) {
+            doc.insert("person".into(), json!(hc.ctx.email.to_lowercase()));
+        }
+        if let Some(text) = s(doc, "text").map(|t| util::clean_line(t, 100)) {
+            doc.insert("text".into(), if text.is_empty() { Value::Null } else { json!(text) });
+        }
+        if let Some(emoji) = s(doc, "emoji").map(|e| e.trim().to_string()) {
+            doc.insert("emoji".into(), if emoji.is_empty() { Value::Null } else { json!(emoji) });
+        }
+        Ok(())
+    }
+
+    async fn validate(&self, _hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        let emoji = s(doc, "emoji");
+        if emoji.is_some_and(|e| !emoji_ok(e)) {
+            return Err(Error::field("emoji", "one emoji"));
+        }
+        if emoji.is_none() && s(doc, "text").is_none() {
+            return Err(Error::field("text", "say something or pick an emoji"));
+        }
+        if let Some(until) = s(doc, "until")
+            && util::parse_ts(until).is_none_or(|t| t <= util::now())
+        {
+            return Err(Error::field("until", "a time that has not passed"));
+        }
+        Ok(())
+    }
+}
+
+/// The status of the person whose address is `member` (an SQL expression), while it lasts: `{emoji, text, until}` or null.
+fn status_of(member: &str) -> String {
+    format!(
+        "(select jsonb_build_object('emoji', s.emoji, 'text', s.text, 'until', {until}) from e_chat_status s \
+          where s.tenant_id = c.tenant_id and s.person = {member} and (s.until is null or s.until > now()))",
+        until = iso("s.until"),
+    )
+}
+
+/// A two-person direct conversation's other person's status, for the member `me` (a bind parameter); null otherwise.
+fn other_status(me: &str) -> String {
+    format!(
+        "case when c.channel_type = 'Direct' and (select count(*) from {MEMBERS} o where o.tenant_id = c.tenant_id and o.parent_id = c.id) = 2 \
+         then (select {st} from {MEMBERS} o where o.tenant_id = c.tenant_id and o.parent_id = c.id and o.member <> {me} limit 1) end",
+        st = status_of("o.member"),
+    )
+}
+
+/// `GET /chat/status`: the caller's own status, expired or not (to change it), or `{status: null}`.
+async fn my_status(k: &Kernel, ctx: &Ctx) -> Result<Value> {
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let status: Option<Value> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "select jsonb_build_object('id', id, 'version', version, 'emoji', emoji, 'text', text, 'until', {}) from e_chat_status where tenant_id = $1 and person = $2",
+        iso("until")
+    )))
+    .bind(ctx.tenant)
+    .bind(ctx.email.to_lowercase())
+    .fetch_optional(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(json!({"status": status}))
 }
 
 /// Who reacted with what is a person's own (an address in another person's message): in their copy, and
@@ -457,9 +530,9 @@ async fn channel_json(tx: &mut Tx, ctx: &Ctx, channel: Uuid) -> Result<Value> {
         "select jsonb_build_object('id', c.id, 'name', c.channel_name, 'type', c.channel_type, 'topic', c.topic, 'archived', c.archived, \
          'post_policy', coalesce(c.post_policy, 'Members'), 'notify_level', me.notify_level, \
          'last_message_at', {last}, 'role', me.role, 'last_read_at', {read}, \
-         'title', case when c.channel_type = 'Direct' then {OTHERS3} else c.channel_name end, \
+         'title', case when c.channel_type = 'Direct' then {OTHERS3} else c.channel_name end, 'status', {OSTATUS3}, \
          'members', (select coalesce(jsonb_agg(jsonb_build_object('email', m.member, 'full_name', u.full_name, 'role', m.role, 'last_read_at', {mread}, \
-            'active', {ACTIVE}) order by m.idx), '[]') \
+            'active', {ACTIVE}, 'status', {MSTATUS}) order by m.idx), '[]') \
             from {MEMBERS} m left join app_user u on u.tenant_id = m.tenant_id and lower(u.email::text) = m.member \
             where m.tenant_id = c.tenant_id and m.parent_id = c.id)) \
          from e_chat_channel c left join {MEMBERS} me on me.tenant_id = c.tenant_id and me.parent_id = c.id and me.member = $3 \
@@ -468,6 +541,8 @@ async fn channel_json(tx: &mut Tx, ctx: &Ctx, channel: Uuid) -> Result<Value> {
         read = iso("me.last_read_at"),
         mread = iso("m.last_read_at"),
         OTHERS3 = others_title("$3"),
+        MSTATUS = status_of("m.member"),
+        OSTATUS3 = other_status("$3"),
     );
     sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
         .bind(ctx.tenant)
@@ -508,7 +583,7 @@ async fn list_channels(k: &Kernel, ctx: &Ctx, include_public: bool) -> Result<Va
         "select jsonb_build_object('id', c.id, 'name', c.channel_name, 'type', c.channel_type, 'topic', c.topic, 'archived', c.archived, \
          'post_policy', coalesce(c.post_policy, 'Members'), 'notify_level', me.notify_level, \
          'role', me.role, 'last_read_at', {read}, 'last_message_at', {last}, \
-         'title', case when c.channel_type = 'Direct' then {OTHERS2} else c.channel_name end, \
+         'title', case when c.channel_type = 'Direct' then {OTHERS2} else c.channel_name end, 'status', {OSTATUS2}, \
          'active', case when c.channel_type = 'Direct' then exists (select 1 from {MEMBERS} o join app_user u on u.tenant_id = o.tenant_id \
             and lower(u.email::text) = o.member where o.tenant_id = c.tenant_id and o.parent_id = c.id and o.member <> $2 and {ACTIVE}) end, \
          'unread', case when me.id is null then 0 else (select count(*) {UNREAD}) end, \
@@ -523,6 +598,7 @@ async fn list_channels(k: &Kernel, ctx: &Ctx, include_public: bool) -> Result<Va
         last = iso("c.last_message_at"),
         posted = iso("x.posted_at"),
         OTHERS2 = others_title("$2"),
+        OSTATUS2 = other_status("$2"),
     );
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let channels: Vec<Value> =
@@ -1277,6 +1353,7 @@ pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> 
         ("GET", ["channels"]) => list_channels(k, ctx, util::param(req, "include") == Some("public")).await?,
         ("POST", ["channels"]) => return Ok(util::created(create_channel(k, ctx, body()?).await?)),
         ("POST", ["direct"]) => direct(k, ctx, body()?).await?,
+        ("GET", ["status"]) => my_status(k, ctx).await?,
         ("GET", ["direct"]) => find_direct(k, ctx, util::param(req, "members").unwrap_or_default()).await?,
         ("POST", ["channels", c, "typing"]) => {
             typing(k, ctx, uuid(c)?, body()?).await?;

@@ -87,3 +87,17 @@
         completion: The message is no longer pinned and the channel's members were told
         compensate_with: pin
         returns: {type: object, properties: {id: {type: string, format: uuid, x-ferrum-link: ChatMessage}, pinned_at: {type: [string, "null"]}}}
+
+- name: ChatStatus
+  label: Chat Status
+  label_plural: Chat Statuses
+  kind: master
+  module: communication
+  title_field: person
+  description: "What a person says of themselves in Chat: an emoji, a short text and until when. One per person; it is shown to everyone who chats with them."
+  fields:
+    - {name: person, type: email, required: true, unique: true, read_only: true, in_list: true, description: "Filled from whoever sets it"}
+    - {name: emoji, type: data, max_length: 32}
+    - {name: text, type: data, max_length: 100, in_list: true}
+    - {name: until, type: datetime, in_list: true, description: "Shown until then; empty: until it is changed"}
+  list: {columns: [person, emoji, text, until], sort: person asc}

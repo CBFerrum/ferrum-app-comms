@@ -62,6 +62,7 @@ pub fn register(hooks: &mut HookRegistry) {
         .register("EmailTemplate", Arc::new(template::TemplateHook))
         .register("ChatChannel", Arc::new(chat::ChannelHook))
         .register("ChatMessage", Arc::new(chat::MessageHook))
+        .register("ChatStatus", Arc::new(chat::StatusHook))
         .register("CalendarEvent", Arc::new(calendar::EventHook))
         .register("CommsSettings", Arc::new(hosted::SettingsHook))
         .register("HostedMailbox", Arc::new(hosted::MailboxHook))

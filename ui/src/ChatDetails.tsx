@@ -15,6 +15,7 @@ import { useMe, usePeople } from "@ferrum/records";
 import { CHAT, LOUDNESS, SIDE_PANEL, accessText, addable, initials, keys, loudness, memberRows, type Channel, type Loud, type Member, type Message } from "./lib/chat";
 import { Base } from "./chatBase";
 import { ChatRetention } from "./ChatRetention";
+import { StatusMark } from "./ChatStatus";
 
 export type DetailsTab = "general" | "personal" | "members" | "pinned";
 
@@ -384,6 +385,7 @@ function Members({ c }: { c: Channel }) {
                 <span className="block truncate font-medium">
                   {m.full_name || m.email}
                   {you && <span className="font-normal text-muted-foreground"> {tr("(you)")}</span>}
+                  <StatusMark status={m.status} className="ms-1" />
                 </span>
                 {(m.full_name || m.active) && (
                   <span className="block truncate text-xs text-muted-foreground">{isolate([m.active && tr("Active now"), m.full_name && m.email].filter(Boolean).join(" · "))}</span>

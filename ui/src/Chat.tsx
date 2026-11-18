@@ -35,6 +35,7 @@ import { Composer, PeoplePicker } from "./ChatComposer";
 import { ChannelDetails, type DetailsTab } from "./ChatDetails";
 import { ChannelSearch, SearchDialog } from "./ChatSearch";
 import { Base } from "./chatBase";
+import { MyStatusButton, StatusMark } from "./ChatStatus";
 import {
   CHAT,
   REACTIONS,
@@ -229,6 +230,7 @@ function ChannelList({
         >
           <ChannelIcon c={c} />
           <span className="min-w-0 flex-1 truncate">{c.title || c.name}</span>
+          <StatusMark status={c.status} />
           {quiet && <BellOff className="size-3.5 shrink-0" aria-label={tr("Muted")} />}
           {b.mention && (
             <span className="grid size-5 shrink-0 place-items-center rounded-full border border-destructive bg-destructive-soft text-xs leading-none font-bold text-destructive" aria-hidden="true">
@@ -255,6 +257,7 @@ function ChannelList({
     <div className="flex h-full min-h-0 flex-col gap-2 p-2">
       <div className="flex items-center gap-1">
         <h1 className="flex-1 px-1 font-semibold">{tr("Chat")}</h1>
+        <MyStatusButton />
         <Button size="icon-sm" variant="ghost" aria-label={tr("Search messages")} onClick={() => setSearching(true)}>
           <Search />
         </Button>
@@ -470,7 +473,10 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
           </Button>
           {view ? <span className="max-sm:hidden"><ChannelIcon c={view} /></span> : null}
           <div className="min-w-0 flex-1">
-            <h2 className="truncate font-semibold">{c?.title || c?.name || summary?.title || "…"}</h2>
+            <h2 className="flex min-w-0 items-center gap-1 font-semibold">
+              <span className="truncate">{c?.title || c?.name || summary?.title || "…"}</span>
+              {direct && <StatusMark status={c?.members.length === 2 ? c.members.find((m) => m.email.toLowerCase() !== email.toLowerCase())?.status : null} />}
+            </h2>
             {c?.topic && <p className="truncate text-xs text-muted-foreground">{isolate(c.topic)}</p>}
           </div>
           {c && !direct && (

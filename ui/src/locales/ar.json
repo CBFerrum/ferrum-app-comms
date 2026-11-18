@@ -1416,5 +1416,22 @@
   "Chosen people": "الأشخاص المختارون",
   "A conversation holds at most nine people.": "تتسع المحادثة لتسعة أشخاص على الأكثر.",
   "Opening…": "جارٍ الفتح…",
-  "Start": "ابدأ"
+  "Start": "ابدأ",
+  "Status: {value}": "الحالة: {value}",
+  "Your status": "حالتك",
+  "Set a status": "تعيين حالة",
+  "Everyone who chats with you sees it beside your name.": "يراها كل من يتحدث معك بجانب اسمك.",
+  "Status set": "عُيّنت الحالة",
+  "Status cleared": "مُسحت الحالة",
+  "Your status was changed elsewhere; this is the newer one.": "تغيّرت حالتك في مكان آخر؛ هذه هي الأحدث.",
+  "Emoji": "رمز تعبيري",
+  "What you are up to": "ما تفعله الآن",
+  "In a meeting": "في اجتماع",
+  "Clear after": "امسح بعد",
+  "Clear status": "مسح الحالة",
+  "Don't clear": "لا تمسح",
+  "30 minutes": "30 دقيقة",
+  "1 hour": "ساعة واحدة",
+  "4 hours": "4 ساعات",
+  "This week": "هذا الأسبوع"
 }

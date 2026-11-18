@@ -124,4 +124,35 @@ describe("chat, mounted", { timeout: 60_000 }, () => {
     expect(made?.key).toBeTruthy();
     expect(JSON.parse(made!.body!)).toEqual({ channel_type: "Direct", members: [{ member: ME }, { member: "bob@test.test" }] });
   });
+
+  // A status: changed with PATCH (and its version) when the person has one, made with POST when not.
+  async function saveStatus(existing: unknown) {
+    answers["/api/app/comms/chat/status"] = { status: existing };
+    answers["/api/v1/ChatStatus"] = { id: "s1" };
+    answers["/api/v1/ChatStatus/s1"] = { id: "s1" };
+    const { close } = await mount("/chat/c1");
+    await act(async () => document.querySelector<HTMLButtonElement>('button[aria-label="Your status"]')!.click());
+    await settle(() => !!document.querySelector('[role="dialog"] button[aria-label="🎉"]'));
+    await act(async () => document.querySelector<HTMLButtonElement>('[role="dialog"] button[aria-label="🎉"]')!.click());
+    const save = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find((b) => b.textContent === "Save");
+    await act(async () => save!.click());
+    await settle(() => asked.some((a) => a.path.startsWith("/api/v1/ChatStatus")));
+    await close();
+  }
+
+  it("makes a status with POST when there is none", async () => {
+    await saveStatus(null);
+    const made = asked.find((a) => a.path === "/api/v1/ChatStatus");
+    expect(made?.method).toBe("POST");
+    expect(made?.key).toBeTruthy();
+    expect(JSON.parse(made!.body!)).toMatchObject({ emoji: "🎉", text: null, until: null });
+  });
+
+  it("changes the status with PATCH when there is one", async () => {
+    await saveStatus({ id: "s1", version: 3, emoji: "🌴", text: "Away" });
+    const changed = asked.find((a) => a.path === "/api/v1/ChatStatus/s1");
+    expect(changed?.method).toBe("PATCH");
+    expect(JSON.parse(changed!.body!)).toMatchObject({ emoji: "🎉", text: "Away" });
+    expect(asked.some((a) => a.path === "/api/v1/ChatStatus" && a.method === "POST")).toBe(false);
+  });
 });

@@ -1416,5 +1416,22 @@
   "Chosen people": "चुने गए लोग",
   "A conversation holds at most nine people.": "एक बातचीत में अधिकतम नौ लोग हो सकते हैं।",
   "Opening…": "खोला जा रहा है…",
-  "Start": "शुरू करें"
+  "Start": "शुरू करें",
+  "Status: {value}": "स्थिति: {value}",
+  "Your status": "आपकी स्थिति",
+  "Set a status": "स्थिति लगाएँ",
+  "Everyone who chats with you sees it beside your name.": "आपसे चैट करने वाला हर व्यक्ति इसे आपके नाम के पास देखता है।",
+  "Status set": "स्थिति लगाई गई",
+  "Status cleared": "स्थिति हटाई गई",
+  "Your status was changed elsewhere; this is the newer one.": "आपकी स्थिति कहीं और बदली गई; यह नई वाली है।",
+  "Emoji": "इमोजी",
+  "What you are up to": "आप क्या कर रहे हैं",
+  "In a meeting": "मीटिंग में",
+  "Clear after": "इसके बाद हटाएँ",
+  "Clear status": "स्थिति हटाएँ",
+  "Don't clear": "न हटाएँ",
+  "30 minutes": "30 मिनट",
+  "1 hour": "1 घंटा",
+  "4 hours": "4 घंटे",
+  "This week": "इस सप्ताह"
 }

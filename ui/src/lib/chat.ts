@@ -32,6 +32,21 @@ export interface ChannelSummary {
   last_message?: { id: string; sender: string; body: string; posted_at: string } | null;
   /** A direct conversation's other person is about (active in the last ten minutes). */
   active?: boolean | null;
+  /** A two-person direct conversation's other person's status, while it lasts. */
+  status?: Status | null;
+}
+
+/** What someone says of themselves in Chat, while it lasts. */
+export interface Status {
+  emoji?: string | null;
+  text?: string | null;
+  until?: string | null;
+}
+
+/** The caller's own status record (`GET /chat/status`), expired or not. */
+export interface MyStatus extends Status {
+  id: string;
+  version: number;
 }
 
 export interface Member {
@@ -41,6 +56,7 @@ export interface Member {
   last_read_at?: string | null;
   /** About: active in the last ten minutes. Only that is known, never when they were last seen. */
   active?: boolean;
+  status?: Status | null;
 }
 
 export interface Channel extends Omit<ChannelSummary, "unread" | "unread_mentions" | "last_message"> {
@@ -418,4 +434,29 @@ export function typingLine(names: string[]): string | null {
 /** Whether the composer tells the others it is typing now: never for an empty box, at most once every 4 seconds. */
 export function shouldSignalTyping(text: string, last: number, now: number): boolean {
   return text.trim().length > 0 && now - last >= 4000;
+}
+
+export type UntilChoice = "never" | "30m" | "1h" | "4h" | "today" | "week";
+
+/** When a status clears itself. */
+export const UNTIL_CHOICES: { value: UntilChoice; label: string }[] = [
+  { value: "never", get label() { return t("Don't clear"); } },
+  { value: "30m", get label() { return t("30 minutes"); } },
+  { value: "1h", get label() { return t("1 hour"); } },
+  { value: "4h", get label() { return t("4 hours"); } },
+  { value: "today", get label() { return t("Today"); } },
+  { value: "week", get label() { return t("This week"); } },
+];
+
+/** The time a choice clears the status, from `now` (local midnight for today, the end of Sunday for the week); null: never. */
+export function untilFor(choice: UntilChoice, now: Date): string | null {
+  const minutes = { "30m": 30, "1h": 60, "4h": 240 }[choice as "30m" | "1h" | "4h"];
+  if (minutes) return new Date(now.getTime() + minutes * 60_000).toISOString();
+  if (choice === "today" || choice === "week") {
+    const end = new Date(now);
+    end.setHours(24, 0, 0, 0);
+    if (choice === "week") end.setDate(end.getDate() + ((7 - now.getDay()) % 7));
+    return end.toISOString();
+  }
+  return null;
 }

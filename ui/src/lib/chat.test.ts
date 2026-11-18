@@ -23,6 +23,7 @@ import {
   posting,
   shouldSignalTyping,
   typingLine,
+  untilFor,
   reactionChips,
   ruleFor,
   readDraft,
@@ -287,5 +288,14 @@ describe("keeping unsent text", () => {
     clock.now += 5000;
     type("   ");
     expect(sent).toEqual([10_000, 14_000]);
+  });
+  it("works out when a status clears itself", () => {
+    const now = new Date(2026, 10, 18, 15, 10); // a Wednesday, 15:10 local
+    expect(untilFor("never", now)).toBeNull();
+    expect(untilFor("30m", now)).toBe(new Date(2026, 10, 18, 15, 40).toISOString());
+    expect(untilFor("4h", now)).toBe(new Date(2026, 10, 18, 19, 10).toISOString());
+    expect(untilFor("today", now)).toBe(new Date(2026, 10, 19, 0, 0).toISOString());
+    expect(untilFor("week", now)).toBe(new Date(2026, 10, 23, 0, 0).toISOString());
+    expect(untilFor("week", new Date(2026, 10, 22, 9, 0))).toBe(new Date(2026, 10, 23, 0, 0).toISOString());
   });
 });

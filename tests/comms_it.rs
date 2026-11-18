@@ -1632,6 +1632,7 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     chat_retention(&t, &admin, &users).await;
     chat_reactions_and_pins(&t, &admin, &users).await;
     chat_groups(&t, &users).await;
+    chat_status(&t, &admin, &users).await;
     hosted_mail(&t, &admin, &users, &imap).await;
 
     // What meetings keep of a person, in Comms' own table: in their copy, and gone with their erasure,
@@ -1922,6 +1923,72 @@ async fn chat_groups(t: &T, users: &HashMap<String, Ctx>) {
     let hall = uid(&t.ok(alice, "POST", "/chat/channels", &[], json!({"name": "typing-hall"})).await);
     refused(t.call(Some(carol), "POST", &format!("/chat/channels/{hall}/typing"), &[], json!({})).await, "forbidden");
     refused(t.call(Some(&users["mgr"]), "POST", &format!("/chat/channels/{group}/typing"), &[], json!({})).await, "not found");
+}
+
+/// A person's status is a record of their own, set, changed and cleared through its three record operations; it shows
+/// beside their name until its time and goes with their erasure.
+async fn chat_status(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>) {
+    use ferrum_kernel::capability::Invocation;
+    let (k, alice, bob, dave) = (&t.k, &users["alice"], &users["bob"], &users["dave"]);
+    async fn op(k: &Kernel, who: &Ctx, what: &str, input: Value, key: &str) -> Result<ferrum_kernel::capability::Receipt, Error> {
+        k.invoke(who, Invocation::new(format!("comms.chat_status.{what}"), input).key(key.to_string())).await
+    }
+    let mine = |who: &'static str| async move { t.ok(&users[who], "GET", "/chat/status", &[], Value::Null).await["status"].clone() };
+
+    // a_person_sets_changes_and_clears_their_status
+    assert_eq!(mine("alice").await, Value::Null);
+    refused(op(k, alice, "create", json!({"values": {"emoji": "🌴", "text": "On leave\u{7}"}}), "s0").await, "invalid");
+    let made = op(k, alice, "create", json!({"values": {"emoji": "🌴", "text": "  On leave "}}), "s1").await.expect("alice sets a status");
+    let id = uid(&made.result);
+    assert_eq!((made.result["person"].clone(), made.result["text"].clone()), (json!("alice@acme.test"), json!("On leave")), "{:?}", made.result);
+    op(k, alice, "update", json!({"id": id, "values": {"text": "Back Monday"}}), "s2").await.expect("and changes it");
+    assert_eq!(mine("alice").await["text"], json!("Back Monday"));
+
+    // a_second_status_for_the_same_person_is_a_conflict
+    refused(op(k, alice, "create", json!({"values": {"text": "again"}}), "s3").await, "conflict");
+
+    // nobody_changes_another_persons_status
+    for (what, input) in [("update", json!({"id": id, "values": {"text": "hacked"}})), ("delete", json!({"id": id}))] {
+        let r = op(k, bob, what, input, &format!("b-{what}")).await;
+        assert!(matches!(r, Err(Error::Forbidden(_) | Error::NotFound(_))), "{what}: {r:?}");
+    }
+    assert_eq!(mine("alice").await["text"], json!("Back Monday"));
+    refused(op(k, dave, "create", json!({"values": {"text": "no role"}}), "d1").await, "forbidden");
+
+    // a_status_needs_an_emoji_or_a_text_and_a_future_time
+    refused(op(k, bob, "create", json!({"values": {}}), "v1").await, "invalid");
+    refused(op(k, bob, "create", json!({"values": {"text": "late", "until": "2000-01-01T00:00:00Z"}}), "v2").await, "invalid");
+    refused(op(k, bob, "create", json!({"values": {"emoji": "abc"}}), "v3").await, "invalid");
+
+    // a_status_shows_to_channel_members_until_its_time
+    let room = uid(&t.ok(bob, "POST", "/chat/channels", &[], json!({"name": "status-room", "type": "Private", "members": ["alice@acme.test"]})).await);
+    let shown = |c: Uuid| async move {
+        let ch = t.ok(bob, "GET", &format!("/chat/channels/{c}"), &[], Value::Null).await;
+        ch["members"].as_array().unwrap().iter().find(|m| m["email"] == json!("alice@acme.test")).unwrap()["status"].clone()
+    };
+    assert_eq!(shown(room).await["text"], json!("Back Monday"));
+    let pair = t.ok(bob, "POST", "/chat/direct", &[], json!({"user": "alice@acme.test"})).await;
+    assert_eq!(pair["status"]["emoji"], json!("🌴"), "the other person's status heads a direct conversation: {pair}");
+    let listed = t.ok(bob, "GET", "/chat/channels", &[], Value::Null).await;
+    let row = listed["channels"].as_array().unwrap().iter().find(|c| uid(c) == uid(&pair)).cloned().unwrap();
+    assert_eq!(row["status"]["text"], json!("Back Monday"), "{row}");
+    t.exec("update e_chat_status set until = now() - interval '1 minute' where tenant_id = $1 and person = 'alice@acme.test' and $2::uuid is null", None).await;
+    assert_eq!(shown(room).await, Value::Null, "gone after its time");
+    assert_eq!(mine("alice").await["text"], json!("Back Monday"), "her own, expired, is still hers to change");
+
+    // ... and cleared
+    op(k, alice, "delete", json!({"id": id}), "s4").await.expect("alice clears it");
+    assert_eq!(mine("alice").await, Value::Null);
+
+    // erasing_a_person_takes_their_status
+    let hank = k.create_user(admin, "hank@acme.test", "Hank Hill", Some(PASSWORD), &["Comms User".to_string()], false).await.expect("user");
+    let hank = k.load_ctx(t.tenant, hank, None, "it".into()).await.unwrap();
+    op(k, &hank, "create", json!({"values": {"emoji": "🔥", "text": "Grilling"}}), "h1").await.unwrap();
+    k.erase_personal_data(admin, "hank@acme.test", "Request 13").await.unwrap();
+    let left: i64 = t
+        .scalar("select count(*) from e_chat_status where tenant_id = $1 and (person = 'hank@acme.test' or text = 'Grilling') and $2::uuid is null", None)
+        .await;
+    assert_eq!(left, 0);
 }
 
 /// Mail's sockets go where the platform's guard lets outbound calls go: an account whose SMTP or IMAP host is
