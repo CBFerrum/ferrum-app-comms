@@ -1384,5 +1384,20 @@
   "Send options": "भेजने के विकल्प",
   "The browser blocked the new window. Allow pop-ups for this site and try again.": "ब्राउज़र ने नई विंडो रोक दी। इस साइट के लिए पॉप-अप की अनुमति दें और फिर से कोशिश करें।",
   "Write something first: an empty message is not kept.": "पहले कुछ लिखें: खाली संदेश नहीं रखा जाता।",
-  "Write your message": "अपना संदेश लिखें"
+  "Write your message": "अपना संदेश लिखें",
+  "How long messages are kept": "संदेश कितने समय तक रखे जाते हैं",
+  "Both are set: the shorter time applies to this channel.": "दोनों तय हैं: इस चैनल पर कम समय लागू होता है।",
+  "Messages are kept until someone deletes them": "संदेश तब तक रखे जाते हैं जब तक कोई उन्हें हटा न दे",
+  "Older messages are removed by a daily run. Legal holds are respected; attached files are not removed yet.": "पुराने संदेश रोज़ाना चलने वाली प्रक्रिया से हटाए जाते हैं। कानूनी रोक का पालन होता है; संलग्न फ़ाइलें अभी नहीं हटाई जातीं।",
+  "This channel": "यह चैनल",
+  "Every channel": "हर चैनल",
+  "A whole number of days from 1 to 36500": "1 से 36500 तक दिनों की पूर्ण संख्या",
+  "Say why messages are kept this long": "बताएँ कि संदेश इतने समय तक क्यों रखे जाते हैं",
+  "More than {n} messages would be removed at the next daily run": "अगली दैनिक प्रक्रिया में {n} से अधिक संदेश हटाए जाएँगे",
+  "{n} messages would be removed at the next daily run": "अगली दैनिक प्रक्रिया में {n} संदेश हटाए जाएँगे",
+  "Remove this rule?": "यह नियम हटाएँ?",
+  "Messages are no longer removed by it.": "इसके द्वारा संदेश अब नहीं हटाए जाएँगे।",
+  "Removed": "हटाया गया",
+  "Days messages are kept": "संदेश रखने के दिन",
+  "Why": "क्यों"
 }

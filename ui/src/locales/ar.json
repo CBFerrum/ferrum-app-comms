@@ -1384,5 +1384,20 @@
   "Send options": "خيارات الإرسال",
   "The browser blocked the new window. Allow pop-ups for this site and try again.": "منع المتصفح النافذة الجديدة. اسمح بالنوافذ المنبثقة لهذا الموقع وحاول مجددًا.",
   "Write something first: an empty message is not kept.": "اكتب شيئًا أولًا: الرسالة الفارغة لا تُحفظ.",
-  "Write your message": "اكتب رسالتك"
+  "Write your message": "اكتب رسالتك",
+  "How long messages are kept": "مدة الاحتفاظ بالرسائل",
+  "Both are set: the shorter time applies to this channel.": "كلاهما محدد: تنطبق المدة الأقصر على هذه القناة.",
+  "Messages are kept until someone deletes them": "تُحفظ الرسائل حتى يحذفها أحد",
+  "Older messages are removed by a daily run. Legal holds are respected; attached files are not removed yet.": "تُزال الرسائل الأقدم في تشغيل يومي. تُحترم الحجوزات القانونية؛ ولا تُزال الملفات المرفقة بعد.",
+  "This channel": "هذه القناة",
+  "Every channel": "كل القنوات",
+  "A whole number of days from 1 to 36500": "عدد صحيح من الأيام من 1 إلى 36500",
+  "Say why messages are kept this long": "اذكر سبب الاحتفاظ بالرسائل هذه المدة",
+  "More than {n} messages would be removed at the next daily run": "ستُزال أكثر من {n} رسالة في التشغيل اليومي التالي",
+  "{n} messages would be removed at the next daily run": "ستُزال {n} رسالة في التشغيل اليومي التالي",
+  "Remove this rule?": "إزالة هذه القاعدة؟",
+  "Messages are no longer removed by it.": "لن تُزال الرسائل بها بعد الآن.",
+  "Removed": "أُزيلت",
+  "Days messages are kept": "أيام الاحتفاظ بالرسائل",
+  "Why": "السبب"
 }

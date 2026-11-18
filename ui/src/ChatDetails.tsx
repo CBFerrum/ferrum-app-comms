@@ -10,10 +10,11 @@ import { useNavigate } from "react-router";
 import { Badge, Button, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, Input, Label, Textarea } from "@ferrum/kit/primitives";
 import { cn, confirmDialog, FormSkeleton, TabPanel, Tabs, toast } from "@ferrum/kit";
 import { Failure } from "./States";
-import { api, errorMessage, t as tr, isolate } from "@ferrum/client";
+import { api, bootstrap, errorMessage, t as tr, isolate } from "@ferrum/client";
 import { useMe, usePeople } from "@ferrum/records";
 import { CHAT, LOUDNESS, SIDE_PANEL, accessText, addable, initials, keys, loudness, memberRows, type Channel, type Loud, type Member } from "./lib/chat";
 import { Base } from "./chatBase";
+import { ChatRetention } from "./ChatRetention";
 
 export type DetailsTab = "general" | "personal" | "members";
 
@@ -54,6 +55,8 @@ export function ChannelDetails({ id, tab, onTab, onClose }: { id: string; tab: D
                 {shown === "general" && <General c={c} />}
                 {shown === "personal" && <Personal c={c} />}
                 {shown === "members" && <Members c={c} />}
+                {/* For administrators; the platform refuses anyone else, whatever is shown. */}
+                {bootstrap()?.person?.admin && (shown === "general" || direct) && <ChatRetention channel={c.id} />}
               </div>
             </TabPanel>
           </>

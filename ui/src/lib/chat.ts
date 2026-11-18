@@ -356,3 +356,33 @@ export const initials = (name: string) => {
  *  tablets, a column on wide screens. */
 export const SIDE_PANEL =
   "fixed inset-y-0 end-0 z-40 grid w-full grid-rows-[auto_minmax(0,1fr)] border-s bg-background shadow-xl sm:w-[420px] xl:static xl:z-auto xl:row-span-2 xl:row-start-2 xl:w-[360px] xl:shadow-none";
+
+/** The platform's retention rules (`/api/admin/retention`, administrators only). */
+export const RETENTION = "/api/admin/retention";
+
+export interface RetentionRule {
+  id: string;
+  entity: string;
+  after_days: number;
+  date_field: string;
+  action: string;
+  condition: unknown;
+  reason: string;
+  is_active: boolean;
+}
+
+const emptyCondition = (c: unknown) => c == null || (Array.isArray(c) ? c.length === 0 : typeof c === "object" && Object.keys(c).length === 0);
+const onlyChannel = (c: unknown, channel: string) =>
+  Array.isArray(c) && c.length === 1 && Array.isArray(c[0]) && c[0].length === 3 && c[0][0] === "channel" && c[0][1] === "=" && c[0][2] === channel;
+
+/** The rules on chat messages that reach `channel`: its own (exactly `[["channel","=",id]]`) and the workspace's (no condition). */
+export function ruleFor(rules: RetentionRule[], channel: string): { channel?: RetentionRule; workspace?: RetentionRule } {
+  const chat = rules.filter((r) => r.entity === "ChatMessage");
+  return { channel: chat.find((r) => onlyChannel(r.condition, channel)), workspace: chat.find((r) => emptyCondition(r.condition)) };
+}
+
+/** A whole number of days a rule keeps messages, 1 to 36500, or null. */
+export function keptDays(text: string): number | null {
+  const n = /^\s*\d+\s*$/.test(text) ? Number(text) : NaN;
+  return n >= 1 && n <= 36500 ? n : null;
+}

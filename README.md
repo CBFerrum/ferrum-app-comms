@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.27.1-2563eb?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.28.0-2563eb?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 [![CI](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml/badge.svg)](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml)
@@ -41,7 +41,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 | | |
 |---|---|
-| 📦 **Version** | 0.27.1 |
+| 📦 **Version** | 0.28.0 |
 | 🖥️ **Kind** | Its own interface: four shell apps at `/mail/`, `/chat/`, `/calendar/` and `/meet/` |
 | ➕ **What it adds** | 19 entities in one package, 3 roles, 2 reports, 4 launcher apps, 3 intents, a side panel, bar search, 10 kinds of notification, 2 public pages |
 | 🧱 **Depends on** | The platform's `core` and `contacts` packages. Nothing else is required |
@@ -556,13 +556,15 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 | Link previews | ❌ | ✅ | ✅ | ✅ | ✅ |
 | Custom status | ❌ | ✅ | ✅ | ✅ | ✅ |
 | Guest access to chat | ❌ | ✅ | ✅ | ✅ | ✅ |
-| Message retention rules | ❌ | ✅ | ✅ | ✅ | ✅ |
+| Message retention rules | ✅ ¹ | ✅ | ✅ | ✅ | ✅ |
 | Bots, apps and incoming webhooks | ❌ | ✅ | ✅ | ✅ | ✅ |
 | Video call from a channel | ✅ | ✅ | ✅ | 🟡 | ✅ |
 | Share a business record into a chat | ✅ | 🟡 | 🟡 | 🟡 | 🟡 |
 | Native mobile apps | ❌ | ✅ | ✅ | ✅ | ✅ |
 | Self-hosted | ✅ | ❌ | ❌ | ✅ | ✅ |
 | Open source | ✅ | ❌ | ❌ | 🟡 | ✅ |
+
+¹ Administrators keep messages for so many days in one channel or in every channel (a channel's details); the platform removes older ones in a daily run and respects legal holds. The files attached to removed messages are not removed yet.
 
 ### 🎥 Meet
 
@@ -603,7 +605,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 
 - 📱 Native mobile apps and offline use. Comms is a web interface that adapts to a phone.
 - 🤖 AI help inside Mail, Chat and Calendar.
-- 💬 Chat depth: reactions, pins, typing indicators, link previews, group direct messages, guests, retention rules, bots and custom status.
+- 💬 Chat depth: reactions, pins, typing indicators, link previews, group direct messages, guests, bots and custom status; files of messages removed by a retention rule stay in storage.
 - 🎥 Meeting controls: raise hand, waiting room, host controls, breakout rooms, background blur and dial-in.
 - ✉️ Mail extras: attachment virus scanning, read receipts, importance, mailbox delegation and read-only shared mailboxes.
 - ✅ Tasks and a public holiday calendar built in.
@@ -616,6 +618,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 ### ✅ Recently shipped
 
 - [x] **0.27.0**: Upkeep runs one workspace at a time, on whichever replica is free; a failure is kept for the workspace's administrators.
+- [x] **0.28.0**: Administrators set how long chat messages are kept, for one channel and for every channel; a thread is never lost with its first message.
 - [x] **0.27.1**: Mail whose sender stopped mid-send is not sent again on its own: it is marked Failed, may have been delivered, and its author is told.
 - [x] **0.26.0**: The Mail Domain is a claim the workspace proved under Administration → Addresses; unproven, nothing is made or changed in it.
 - [x] **0.25.3**: the Email Activity report counts the workspace's days, not UTC's.
@@ -680,7 +683,8 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 - [ ] Dragging on a touch screen tried on real phones.
 
 **Chat**
-- [ ] Guest access, retention rules, bots and incoming webhooks.
+- [ ] Guest access, bots and incoming webhooks.
+- [ ] Removing the attached files of messages a retention rule deletes.
 - [ ] Custom status and statuses beyond "Active now".
 - [ ] Scheduled messages.
 
@@ -781,7 +785,7 @@ CHANGELOG.md          what changed in each version
 
 ## 📜 Changelog
 
-Every release is described in [CHANGELOG.md](CHANGELOG.md). The latest is **0.27.1**.
+Every release is described in [CHANGELOG.md](CHANGELOG.md). The latest is **0.28.0**.
 
 ## 🤝 Contributing
 
