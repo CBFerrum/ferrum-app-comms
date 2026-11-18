@@ -61,6 +61,21 @@ export interface Message {
   edited_at?: string | null;
   reply_count?: number;
   last_reply_at?: string | null;
+  /** Emoji to the addresses of the members who reacted with it. */
+  reactions?: Record<string, string[]>;
+  /** When it was pinned in its channel. */
+  pinned_at?: string | null;
+}
+
+/** The emoji the reaction palette offers. */
+export const REACTIONS = ["👍", "👎", "❤️", "😂", "😮", "😢", "🎉", "🙏", "👏", "🔥", "✅", "❌", "👀", "🚀", "💯", "🤔", "😀", "😍", "🙌", "💪", "⭐", "☕", "📌", "➕"];
+
+/** A message's reactions as chips, in the order they were first given, with whether the reader is among them. */
+export function reactionChips(reactions: Record<string, string[]> | null | undefined, me: string): { emoji: string; count: number; mine: boolean }[] {
+  const who = me.toLowerCase();
+  return Object.entries(reactions ?? {})
+    .filter(([, people]) => Array.isArray(people) && people.length > 0)
+    .map(([emoji, people]) => ({ emoji, count: people.length, mine: people.some((p) => p.toLowerCase() === who) }));
 }
 
 /** A file on a message, as the server lists it. */
@@ -327,11 +342,12 @@ export const keys = {
   messages: (id: string, around?: string | null) => (around ? (["chat", "messages", id, "around", around] as const) : (["chat", "messages", id] as const)),
   thread: (id: string) => ["chat", "thread", id] as const,
   message: (id: string) => ["chat", "message", id] as const,
+  pins: (id: string) => ["chat", "pins", id] as const,
 };
 
 /** Fetches again whatever shows messages, but not the files they carry (an image would flicker). */
 export function refreshMessages(qc: { invalidateQueries(o: { queryKey: readonly unknown[] }): unknown }) {
-  for (const queryKey of [["chat", "messages"], ["chat", "thread"], ["chat", "message"], ["chat", "channels"]]) void qc.invalidateQueries({ queryKey });
+  for (const queryKey of [["chat", "messages"], ["chat", "thread"], ["chat", "message"], ["chat", "channels"], ["chat", "pins"]]) void qc.invalidateQueries({ queryKey });
 }
 
 const graphemes = (s: string): string[] => (typeof Intl.Segmenter === "function" ? Array.from(new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(s), (g) => g.segment) : Array.from(s));

@@ -1399,5 +1399,14 @@
   "Messages are no longer removed by it.": "لن تُزال الرسائل بها بعد الآن.",
   "Removed": "أُزيلت",
   "Days messages are kept": "أيام الاحتفاظ بالرسائل",
-  "Why": "السبب"
+  "Why": "السبب",
+  "Pinned": "مثبّتة",
+  "Unpinned": "أُلغي التثبيت",
+  "Pin": "تثبيت",
+  "Unpin": "إلغاء التثبيت",
+  "Add reaction": "إضافة تفاعل",
+  "{emoji}, {n} reactions, you reacted": "{emoji}، {n} تفاعلات، تفاعلتَ",
+  "{emoji}, {n} reactions": "{emoji}، {n} تفاعلات",
+  "Nothing is pinned here": "لا شيء مثبّت هنا",
+  "Pinned messages": "الرسائل المثبّتة"
 }

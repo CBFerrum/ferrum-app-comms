@@ -94,6 +94,57 @@ impl DocHook for ChannelHook {
 
 pub struct MessageHook;
 
+/// Different emoji on one message.
+const MAX_REACTIONS: usize = 20;
+/// Pinned messages in one channel.
+const MAX_PINS: i64 = 50;
+
+/// One emoji: 1 to 32 bytes, no letter, digit, space, control character or markup.
+fn checked_emoji(params: &Value) -> Result<String> {
+    let e = params.get("emoji").and_then(Value::as_str).unwrap_or_default().trim();
+    let bad = |ch: char| ch.is_ascii_alphanumeric() || ch.is_whitespace() || ch.is_control() || "<>&\"'".contains(ch);
+    if e.is_empty() || e.len() > 32 || e.chars().any(bad) { Err(Error::field("emoji", "one emoji")) } else { Ok(e.to_string()) }
+}
+
+/// Who reacted with what is a person's own (an address in another person's message): in their copy, and
+/// gone with their erasure.
+pub struct Reactions;
+
+#[async_trait]
+impl ferrum_kernel::privacy::PersonalHeld for Reactions {
+    fn app(&self) -> &'static str {
+        "comms"
+    }
+
+    async fn report(&self, tx: &mut Tx, tenant: Uuid, _account: Option<Uuid>, emails: &[String]) -> Result<Vec<Value>> {
+        let emails: Vec<String> = emails.iter().map(|e| e.to_lowercase()).collect();
+        let rows: Vec<Value> = sqlx::query_scalar(
+            "select jsonb_build_object('message', x.id, 'emoji', e.key) from e_chat_message x, jsonb_each(x.reactions) e \
+             where x.tenant_id = $1 and x.reactions is not null and e.value ?| $2 order by x.posted_at limit 10000",
+        )
+        .bind(tenant)
+        .bind(&emails)
+        .fetch_all(&mut **tx)
+        .await?;
+        Ok(if rows.is_empty() { vec![] } else { vec![json!({"what": "Their reactions to chat messages", "reactions": rows})] })
+    }
+
+    async fn erase(&self, tx: &mut Tx, tenant: Uuid, _account: Option<Uuid>, emails: &[String], _reason: &str) -> Result<u64> {
+        let emails: Vec<String> = emails.iter().map(|e| e.to_lowercase()).collect();
+        let done = sqlx::query(
+            "update e_chat_message x set reactions = (select coalesce(jsonb_object_agg(k, v), '{}'::jsonb) from \
+               (select e.key k, (select jsonb_agg(a) from jsonb_array_elements_text(e.value) a where a <> all($2)) v from jsonb_each(x.reactions) e) s \
+               where v is not null) \
+             where x.tenant_id = $1 and x.reactions is not null and exists (select 1 from jsonb_each(x.reactions) e where e.value ?| $2)",
+        )
+        .bind(tenant)
+        .bind(&emails)
+        .execute(&mut **tx)
+        .await?;
+        Ok(done.rows_affected())
+    }
+}
+
 #[async_trait]
 impl DocHook for MessageHook {
     async fn before_validate(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
@@ -147,6 +198,91 @@ impl DocHook for MessageHook {
             return Err(Error::Conflict("this message starts a thread that still has replies; delete the replies first".into()));
         }
         Ok(())
+    }
+
+    /// React, Remove Reaction, Pin and Unpin (`packages/comms/entities/chat.yaml`): the kernel holds the message's
+    /// row lock, so two reactions at once are applied one after the other and both kept.
+    async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
+        if !matches!(name, "react" | "unreact" | "pin" | "unpin") {
+            return Ok(None);
+        }
+        let message = util::doc_id(doc)?;
+        let (_, c) = readable_message(hc.tx, hc.ctx, message).await?;
+        let me = hc.ctx.email.to_lowercase();
+        if c.role(&me).is_none() {
+            return Err(Error::Forbidden("join the channel to react".into()));
+        }
+        let deleted = util::b(doc, "deleted");
+        let out = if matches!(name, "react" | "unreact") {
+            if c.archived {
+                return Err(Error::invalid("this channel is archived"));
+            }
+            if deleted {
+                return Err(Error::invalid("this message was deleted"));
+            }
+            let emoji = checked_emoji(params)?;
+            let mut all = doc.get("reactions").and_then(Value::as_object).cloned().unwrap_or_default();
+            let mut who: Vec<String> = all.get(&emoji).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+            if name == "react" {
+                if !all.contains_key(&emoji) && all.len() >= MAX_REACTIONS {
+                    return Err(Error::invalid(format!("a message takes at most {MAX_REACTIONS} different reactions")));
+                }
+                if !who.contains(&me) {
+                    who.push(me);
+                }
+            } else {
+                who.retain(|w| *w != me);
+            }
+            if who.is_empty() {
+                all.remove(&emoji);
+            } else {
+                all.insert(emoji, json!(who));
+            }
+            let all = Value::Object(all);
+            sqlx::query("update e_chat_message set reactions = $3 where tenant_id = $1 and id = $2")
+                .bind(hc.ctx.tenant)
+                .bind(message)
+                .bind(&all)
+                .execute(&mut **hc.tx)
+                .await?;
+            push(hc.tx, hc.ctx.tenant, &member_emails(&c), json!({"event": "reaction", "channel": c.id, "message": message})).await?;
+            json!({"id": message, "reactions": all})
+        } else {
+            if c.kind != "Direct" {
+                owner_or_admin(&c, hc.ctx)?;
+            }
+            let pin = name == "pin";
+            if pin {
+                if c.archived {
+                    return Err(Error::invalid("this channel is archived"));
+                }
+                if deleted {
+                    return Err(Error::invalid("this message was deleted"));
+                }
+                let pinned: i64 =
+                    sqlx::query_scalar("select count(*) from e_chat_message where tenant_id = $1 and channel = $2 and pinned_at is not null and id <> $3")
+                        .bind(hc.ctx.tenant)
+                        .bind(c.id)
+                        .bind(message)
+                        .fetch_one(&mut **hc.tx)
+                        .await?;
+                if pinned >= MAX_PINS {
+                    return Err(Error::invalid(format!("a channel keeps at most {MAX_PINS} pinned messages; unpin one first")));
+                }
+            }
+            let at: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "update e_chat_message set pinned_at = case when $3 then coalesce(pinned_at, now()) end where tenant_id = $1 and id = $2 returning {}",
+                iso("pinned_at")
+            )))
+            .bind(hc.ctx.tenant)
+            .bind(message)
+            .bind(pin)
+            .fetch_one(&mut **hc.tx)
+            .await?;
+            push(hc.tx, hc.ctx.tenant, &member_emails(&c), json!({"event": "pinned", "channel": c.id, "message": message})).await?;
+            json!({"id": message, "pinned_at": at})
+        };
+        Ok(Some(out))
     }
 
     async fn after_save(&self, hc: &mut HookCtx<'_>, doc: &Doc, _old: Option<&Doc>) -> Result<()> {
@@ -575,6 +711,7 @@ fn message_sql(filter: &str) -> String {
         "select jsonb_build_object('id', x.id, 'channel', x.channel, 'sender', x.sender, 'sender_name', coalesce(nullif(u.full_name, ''), x.sender), \
          'body', case when x.deleted then '' else x.body end, 'parent', x.parent_message, 'mentions', coalesce(x.mentions, '[]'::jsonb), \
          'attachments', case when x.deleted then '[]'::jsonb else coalesce(x.attachments, '[]'::jsonb) end, 'deleted', x.deleted, \
+         'reactions', case when x.deleted then '{{}}'::jsonb else coalesce(x.reactions, '{{}}'::jsonb) end, 'pinned_at', {pinned}, \
          'posted_at', {posted}, 'edited_at', {edited}, \
          'reply_count', (select count(*) from e_chat_message r where r.tenant_id = x.tenant_id and r.parent_message = x.id and not r.deleted), \
          'last_reply_at', (select {reply} from e_chat_message r where r.tenant_id = x.tenant_id and r.parent_message = x.id and not r.deleted order by r.posted_at desc limit 1)) \
@@ -582,6 +719,7 @@ fn message_sql(filter: &str) -> String {
          where x.tenant_id = $1 {filter}",
         posted = iso("x.posted_at"),
         edited = iso("x.edited_at"),
+        pinned = iso("x.pinned_at"),
         reply = iso("r.posted_at"),
     )
 }
@@ -833,6 +971,21 @@ async fn readable_message(tx: &mut Tx, ctx: &Ctx, message: Uuid) -> Result<(Doc,
     Ok((doc, c))
 }
 
+/// `GET /chat/channels/{id}/pins`: its pinned messages, newest pin first (at most 50 are kept).
+async fn pins(k: &Kernel, ctx: &Ctx, channel: Uuid) -> Result<Value> {
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    readable_channel(&mut tx, ctx, channel).await?;
+    let rows: Vec<Value> = sqlx::query_scalar(sqlx::AssertSqlSafe(message_sql(
+        "and x.channel = $2 and x.pinned_at is not null and not x.deleted order by x.pinned_at desc limit 50",
+    )))
+    .bind(ctx.tenant)
+    .bind(channel)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(json!({"messages": rows}))
+}
+
 /// `PATCH /chat/messages/{id}` `{body}`: the sender only.
 async fn edit(k: &Kernel, ctx: &Ctx, message: Uuid, body: Map<String, Value>) -> Result<Value> {
     let text = body_text(&body)?;
@@ -861,7 +1014,7 @@ async fn delete(k: &Kernel, ctx: &Ctx, message: Uuid) -> Result<Value> {
     if !own && c.role(&ctx.email) != Some("Owner") && !ctx.has_role("Chat Admin") {
         return Err(Error::Forbidden("you can only delete your own messages".into()));
     }
-    let patch = util::obj(json!({"deleted": true, "body": "", "attachments": [], "mentions": []}));
+    let patch = util::obj(json!({"deleted": true, "body": "", "attachments": [], "mentions": [], "reactions": null, "pinned_at": null}));
     k.update_tx(&util::elevated(ctx), &mut tx, "ChatMessage", message, patch, None).await?;
     push(&mut tx, ctx.tenant, &member_emails(&c), json!({"event": "deleted", "channel": c.id, "message": message})).await?;
     tx.commit().await?;
@@ -1033,6 +1186,7 @@ pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> 
         ("POST", ["channels", c, "join"]) => join(k, ctx, uuid(c)?).await?,
         ("POST", ["channels", c, "leave"]) => leave(k, ctx, uuid(c)?).await?,
         ("GET", ["channels", c, "messages"]) => list_messages(k, ctx, uuid(c)?, req).await?,
+        ("GET", ["channels", c, "pins"]) => pins(k, ctx, uuid(c)?).await?,
         ("POST", ["channels", c, "messages"]) => return Ok(util::created(post(k, ctx, uuid(c)?, body()?).await?)),
         ("POST", ["channels", c, "read"]) => mark_read(k, ctx, uuid(c)?, body()?).await?,
         ("PUT", ["channels", c, "notify"]) => set_notify(k, ctx, uuid(c)?, body()?).await?,

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.29.0
+
+Database change: Chat Message gains `reactions` and `pinned_at` (both empty on existing messages). Interface change:
+reactions, pins and a Pinned tab in a channel's details. The package `comms` is 0.7.0.
+
+**Reactions and pinned messages.** A member reacts to a message with an emoji and takes it back; everyone in the
+channel sees the counts at once. A channel's owners, a Chat Admin, or either person of a direct conversation pin up to
+50 messages, listed newest first in the channel's details (`GET /api/app/comms/chat/channels/{id}/pins`). Deleting a
+message drops its pin and reactions. Who reacted is in that person's copy of their data and goes with their erasure.
+
+**Chat's first operations.** React, Remove Reaction, Pin and Unpin are actions of Chat Message with contracts
+(`comms.chat_message.react`, `.unreact`, `.pin`, `.unpin`), pressed by the screen through the platform's action route
+with an idempotency key, so a member's agent does exactly what the button does. A repeat under the same key changes
+nothing. For the gate to reach them, a Comms User now reads the channels they are a member of and those channels'
+messages through the generic API, search and MCP (and nothing else).
+
+**For tests.** The interface's route table is exported from `ui/src/routes.tsx`, so a test mounts the real routes.
+
 ## 0.28.0
 
 No database change. Interface change: a channel's details have a section for administrators.

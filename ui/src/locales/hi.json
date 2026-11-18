@@ -1399,5 +1399,14 @@
   "Messages are no longer removed by it.": "इसके द्वारा संदेश अब नहीं हटाए जाएँगे।",
   "Removed": "हटाया गया",
   "Days messages are kept": "संदेश रखने के दिन",
-  "Why": "क्यों"
+  "Why": "क्यों",
+  "Pinned": "पिन किया गया",
+  "Unpinned": "पिन हटाया गया",
+  "Pin": "पिन करें",
+  "Unpin": "पिन हटाएँ",
+  "Add reaction": "प्रतिक्रिया जोड़ें",
+  "{emoji}, {n} reactions, you reacted": "{emoji}, {n} प्रतिक्रियाएँ, आपने प्रतिक्रिया दी",
+  "{emoji}, {n} reactions": "{emoji}, {n} प्रतिक्रियाएँ",
+  "Nothing is pinned here": "यहाँ कुछ भी पिन नहीं है",
+  "Pinned messages": "पिन किए गए संदेश"
 }

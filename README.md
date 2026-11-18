@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.28.0-2563eb?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.29.0-2563eb?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 [![CI](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml/badge.svg)](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml)
@@ -41,7 +41,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 | | |
 |---|---|
-| 📦 **Version** | 0.28.0 |
+| 📦 **Version** | 0.29.0 |
 | 🖥️ **Kind** | Its own interface: four shell apps at `/mail/`, `/chat/`, `/calendar/` and `/meet/` |
 | ➕ **What it adds** | 19 entities in one package, 3 roles, 2 reports, 4 launcher apps, 3 intents, a side panel, bar search, 10 kinds of notification, 2 public pages |
 | 🧱 **Depends on** | The platform's `core` and `contacts` packages. Nothing else is required |
@@ -314,6 +314,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 - **Channels.** Public channels everyone can find and join, private channels that do not exist for non-members, and one direct conversation per pair of people. Names are unique. Archive a channel to end it.
 - **Messages.** Markdown messages up to 4 KB, with `@` completion to mention people (in a private conversation, only those who can read it). Edit your own messages; delete your own, or any as a channel owner or Chat Admin (the text and files are erased and the message stays as deleted).
+- **Reactions and pins.** Members react with an emoji and take it back, and everyone in the channel sees the counts at once. Owners (either person of a direct conversation) pin up to 50 messages, listed in the channel's details. Both are the message's actions (`comms.chat_message.react`, `.unreact`, `.pin`, `.unpin`), so a member's agent does the same through the platform.
 - **Threads.** Reply in a thread; a thread shows the message it belongs to; replies to a reply join the thread.
 - **Files.** Attach files from your computer, up to 25 MB, that channel members can download.
 - **Unread that is right.** Counts include replies in threads you started or answered, mentions are counted apart, and someone who joins a channel starts with nothing unread. A conversation opens at its first unread message, marks itself read only when you reach the bottom, and any message can be marked unread again. "Mark everything as read" is in the list's menu, and the bar shows how much waits.
@@ -355,9 +356,9 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 ### 🔐 Permissions, privacy and accessibility
 
-- **Roles.** Comms User, Comms Manager and Chat Admin (below). Private channels and conversations answer "not found" to non-members.
+- **Roles.** Comms User, Comms Manager and Chat Admin (below). Private channels and conversations answer "not found" to non-members. A Comms User reads, through the generic API, search and MCP, the channels they are a member of and those channels' messages, and nothing else; of the other members this shows when they last read and how loud the channel is for them.
 - **Row-level security and audit** come from the platform: every record, including through the REST and MCP APIs, follows the same rules and audit trail.
-- **Personal data.** A person's request for their data reaches the messages they sent, chat messages, mailing lists they are on, calendar feeds and meeting captions and attendance; an erasure blanks them.
+- **Personal data.** A person's request for their data reaches the messages they sent, chat messages and their reactions, mailing lists they are on, calendar feeds and meeting captions and attendance; an erasure blanks them.
 - **Languages and direction.** English, Arabic and Hindi, including the names of reports; right-to-left mirrors the screens.
 - **Accessibility.** Controls are named for assistive technology and every action has a key. A screen-reader audit has not been done yet.
 
@@ -550,8 +551,8 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 | Edit and delete | ✅ | ✅ | ✅ | ✅ | ✅ |
 | File sharing | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Search | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Emoji reactions | ❌ | ✅ | ✅ | ✅ | ✅ |
-| Pinned messages | ❌ | ✅ | ✅ | ✅ | 🟡 |
+| Emoji reactions | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Pinned messages | ✅ | ✅ | ✅ | ✅ | 🟡 |
 | Typing indicator | ❌ | ✅ | ✅ | ✅ | ✅ |
 | Link previews | ❌ | ✅ | ✅ | ✅ | ✅ |
 | Custom status | ❌ | ✅ | ✅ | ✅ | ✅ |
@@ -605,7 +606,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 
 - 📱 Native mobile apps and offline use. Comms is a web interface that adapts to a phone.
 - 🤖 AI help inside Mail, Chat and Calendar.
-- 💬 Chat depth: reactions, pins, typing indicators, link previews, group direct messages, guests, bots and custom status; files of messages removed by a retention rule stay in storage.
+- 💬 Chat depth: typing indicators, link previews, group direct messages, guests, bots and custom status; files of messages removed by a retention rule stay in storage.
 - 🎥 Meeting controls: raise hand, waiting room, host controls, breakout rooms, background blur and dial-in.
 - ✉️ Mail extras: attachment virus scanning, read receipts, importance, mailbox delegation and read-only shared mailboxes.
 - ✅ Tasks and a public holiday calendar built in.
@@ -618,6 +619,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 ### ✅ Recently shipped
 
 - [x] **0.27.0**: Upkeep runs one workspace at a time, on whichever replica is free; a failure is kept for the workspace's administrators.
+- [x] **0.29.0**: Emoji reactions and pinned messages in chat, as the message's own operations for people and their agents.
 - [x] **0.28.0**: Administrators set how long chat messages are kept, for one channel and for every channel; a thread is never lost with its first message.
 - [x] **0.27.1**: Mail whose sender stopped mid-send is not sent again on its own: it is marked Failed, may have been delivered, and its author is told.
 - [x] **0.26.0**: The Mail Domain is a claim the workspace proved under Administration → Addresses; unproven, nothing is made or changed in it.
@@ -654,7 +656,6 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 - [ ] A room's own calendar view, and a room that declines when there are too many people.
 
 **Chat**
-- [ ] Emoji reactions and pinned messages.
 - [ ] Typing indicators and link previews.
 - [ ] Group direct messages.
 
@@ -785,7 +786,7 @@ CHANGELOG.md          what changed in each version
 
 ## 📜 Changelog
 
-Every release is described in [CHANGELOG.md](CHANGELOG.md). The latest is **0.28.0**.
+Every release is described in [CHANGELOG.md](CHANGELOG.md). The latest is **0.29.0**.
 
 ## 🤝 Contributing
 

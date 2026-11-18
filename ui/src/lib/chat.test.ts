@@ -21,6 +21,7 @@ import {
   mentionsIn,
   mentionsMe,
   posting,
+  reactionChips,
   ruleFor,
   readDraft,
   showMentions,
@@ -250,5 +251,12 @@ describe("keeping unsent text", () => {
   it("takes a whole number of days from 1 to 36500", () => {
     expect([" 30 ", "1", "36500"].map(keptDays)).toEqual([30, 1, 36500]);
     expect(["0", "36501", "1.5", "-3", "", "ten"].map(keptDays)).toEqual([null, null, null, null, null, null]);
+  });
+  it("turns reactions into chips, marking mine and dropping empty ones", () => {
+    expect(reactionChips({ "👍": ["a@x.test", "Me@x.test"], "🎉": [], "❤️": ["b@x.test"] }, "me@x.test")).toEqual([
+      { emoji: "👍", count: 2, mine: true },
+      { emoji: "❤️", count: 1, mine: false },
+    ]);
+    expect(reactionChips(undefined, "me@x.test")).toEqual([]);
   });
 });

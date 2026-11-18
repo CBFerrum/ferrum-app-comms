@@ -4,88 +4,14 @@
 // public page (/meet/guest/…). What Comms does for other apps (compose, schedule, share, the Chat
 // panel) is in Intents.tsx.
 
-import { useEffect } from "react";
-import { Link, Outlet, useLocation, useRouteError } from "react-router";
-import { isPublicPage, routeBase, shell, t } from "@ferrum/client";
-import { EmptyState, StatePanel } from "@ferrum/kit";
 import { mountApp } from "@ferrum/records/frame";
-import { Failure } from "./States";
+import { routes } from "./routes";
 import "./styles.css";
-
-/** A route's first segment as the bootstrap gives it (`mail`). ponytail: pages link to `/mail/…`
- *  directly; an operator's remapped routes cover these entries only (docs/plan/apps-ui.md §10.1). */
-const at = (route: string) => routeBase(route).replace(/^\/+|\/+$/g, "");
-const TITLES: Record<string, string> = { [at("mail")]: "Mail", [at("chat")]: "Chat", [at("calendar")]: "Calendar", [at("meet")]: "Meet" };
-
-function Frame() {
-  const { pathname } = useLocation();
-  useEffect(() => shell().ready(), []);
-  // Moving between Mail, Chat, Calendar and Meet stays in this page: the bar follows.
-  const title = TITLES[pathname.split("/")[1] ?? ""];
-  // A page anyone with a link opens names itself (the event answered, the meeting).
-  useEffect(() => {
-    if (title && !isPublicPage()) shell().title(title);
-  }, [title]);
-  return (
-    <main id="main" className="comms-app">
-      <Outlet />
-    </main>
-  );
-}
-
-function RouteError() {
-  return <Failure error={useRouteError()} onRetry={() => window.location.reload()} />;
-}
-
-function NotFound() {
-  return (
-    <EmptyState title={t("Page not found")}>
-      <Link to="/mail">{t("Go to Mail")}</Link>
-    </EmptyState>
-  );
-}
-
-const page = (load: () => Promise<Record<string, unknown>>, name: string) => () => load().then((m) => ({ Component: m[name] as React.ComponentType }));
-const mail = () => import("./Mail");
-const chat = () => import("./Chat");
-const calendar = () => import("./Calendar");
-const meet = () => import("./Meet");
-const intents = () => import("./Intents");
-const domain = () => import("./MailDomain");
-const editor = () => import("./CalendarEditor");
-const rsvp = () => import("./CalendarRsvp");
 
 // One interface at the root, no base of its own: its four routes (mail, chat, calendar, meet) are in the paths below, so
 // the route given is "" (routeBase("") is "/").
 mountApp({
   route: "",
   catalogs: { ar: () => import("./locales/ar.json"), hi: () => import("./locales/hi.json") },
-  routes: [
-  {
-    path: "/",
-    element: <Frame />,
-    errorElement: <RouteError />,
-    // A first page that loads its code later says so meanwhile (the bar is there already).
-    hydrateFallbackElement: <StatePanel kind="loading" />,
-    children: [
-      { path: `${at("mail")}/_intent/compose`, lazy: page(intents, "ComposeIntentPage") },
-      { path: `${at("mail")}/compose`, lazy: () => mail().then((m) => ({ Component: () => <m.MailPage compose /> })) },
-      { path: `${at("mail")}/domain`, lazy: page(domain, "DomainPage") },
-      { path: `${at("mail")}/n/:notice`, lazy: page(mail, "MailNoticePage") },
-      { path: `${at("mail")}/:mailbox?/:email?`, lazy: page(mail, "MailPage") },
-      { path: `${at("chat")}/_intent/share`, lazy: page(intents, "ShareIntentPage") },
-      { path: `${at("chat")}/_panel/*`, lazy: page(intents, "ChatPanel") },
-      { path: `${at("chat")}/m/:message`, lazy: page(chat, "ChatMessagePage") },
-      { path: `${at("chat")}/:channel?`, lazy: page(chat, "ChatPage") },
-      { path: `${at("calendar")}/_intent/schedule`, lazy: page(intents, "ScheduleIntentPage") },
-      { path: `${at("calendar")}/e/:event`, lazy: page(editor, "EventPage") },
-      { path: `${at("calendar")}/rsvp/:tenant/:link`, lazy: page(rsvp, "RsvpPage") },
-      { path: at("calendar"), lazy: page(calendar, "CalendarPage") },
-      { path: at("meet"), lazy: page(meet, "MeetHomePage") },
-      { path: `${at("meet")}/guest/:tenant/:link`, lazy: page(meet, "GuestMeetPage") },
-      { path: `${at("meet")}/:kind/:id`, lazy: page(meet, "MeetPage") },
-      { path: "*", element: <NotFound /> },
-    ],
-  },
-  ],
+  routes,
 });
