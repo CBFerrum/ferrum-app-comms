@@ -696,7 +696,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 
 ## 🚀 Install
 
-Ferrum Comms is a native app. It is compiled into the official Ferrum server image; a workspace administrator installs it from **Apps** (`/store/`). Self-hosters who build their own image enable the `comms` feature of the server. It needs Ferrum platform `>=0.3.9, <0.4`.
+Ferrum Comms is a native app. It is compiled into the official Ferrum server image; a workspace administrator installs it from **Apps** (`/store/`). Self-hosters who build their own image enable the `comms` feature of the server. It needs Ferrum platform `>=0.4.0, <0.5`.
 
 **First steps**
 

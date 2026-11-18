@@ -2,8 +2,8 @@
 
 ## 0.27.0
 
-Needs a Ferrum that runs apps' upkeep one workspace at a time (its `docs/app-contract.md`, *Upkeep*). No database
-change, no interface change.
+Needs platform 0.4.0 (Ferrum's app API with upkeep of one workspace, its `docs/app-contract.md`, *Upkeep*): the
+manifest says `platform: ">=0.4.0, <0.5"`. No database change, no interface change.
 
 **Upkeep is one workspace's.** `maintenance(k, tenant)` and `maintenance_with(k, tenant, mailboxes)` do Comms' upkeep for
 the one workspace the platform hands them, which now runs each workspace with Comms installed about once a minute on
