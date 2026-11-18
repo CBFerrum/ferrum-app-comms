@@ -130,6 +130,25 @@ impl DocHook for MessageHook {
         Ok(())
     }
 
+    /// Replies link to their first message with a key that deletes them with it, unseen (no hook, no
+    /// event): a first message that still has replies stays until they have gone, each by its own
+    /// delete (a retention rule counts it and takes it on a later run). A channel's delete is not a
+    /// message's and still takes them all.
+    async fn before_delete(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        if id(doc, "parent_message").is_some() {
+            return Ok(());
+        }
+        let replies: bool = sqlx::query_scalar("select exists (select 1 from e_chat_message where tenant_id = $1 and parent_message = $2)")
+            .bind(hc.ctx.tenant)
+            .bind(util::doc_id(doc)?)
+            .fetch_one(&mut **hc.tx)
+            .await?;
+        if replies {
+            return Err(Error::Conflict("this message starts a thread that still has replies; delete the replies first".into()));
+        }
+        Ok(())
+    }
+
     async fn after_save(&self, hc: &mut HookCtx<'_>, doc: &Doc, _old: Option<&Doc>) -> Result<()> {
         // Uploads attached to nothing yet join the message (members download them through
         // /api/app/comms/attachments, which checks membership).
