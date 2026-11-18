@@ -82,44 +82,32 @@ pub fn reports() -> Vec<Arc<dyn ReportSource>> {
     vec![Arc::new(reports::CommsReports)]
 }
 
-/// Periodic upkeep: every minute, on one replica at a time (advisory lock); must be idempotent and cheap.
-pub async fn maintenance(k: &Kernel) -> Result<()> {
-    maintenance_with(k, &ImapConnector).await
+/// One workspace's upkeep, which the platform runs about once a minute where Comms is installed, on whichever replica
+/// is free, and may run again (docs/app-contract.md, Upkeep, in the platform): every step is idempotent, and each keeps
+/// to its budget.
+pub async fn maintenance(k: &Kernel, tenant: Uuid) -> Result<()> {
+    maintenance_with(k, tenant, &ImapConnector).await
 }
 
-/// [`maintenance`] reading mailboxes through `mailboxes` (tests pass a fake mailbox). Per tenant:
-/// look at new hosted mail (notify, file, wake snoozed mail, apply calendar answers), retry due mail, poll due IMAP accounts, announce reminders, keep hosted
-/// mailboxes in step, purge.
-/// A failing step is logged and does not stop the others; the first error is returned.
-pub async fn maintenance_with(k: &Kernel, mailboxes: &dyn MailboxConnector) -> Result<()> {
-    let mut tx = k.db.system_tx().await?;
-    let tenants: Vec<Uuid> = sqlx::query_scalar("select id from tenant where status = 'active' order by id").fetch_all(&mut *tx).await?;
-    tx.commit().await?;
+/// [`maintenance`] reading mailboxes through `mailboxes` (tests pass a fake mailbox): look at new hosted mail (notify,
+/// file, wake snoozed mail, apply calendar answers), retry due mail, poll due IMAP accounts, announce reminders, keep
+/// hosted mailboxes in step, purge. A failing step is logged and does not stop the others; the first error is returned.
+pub async fn maintenance_with(k: &Kernel, tenant: Uuid, mailboxes: &dyn MailboxConnector) -> Result<()> {
     let mut first_error: Option<Error> = None;
-    for tenant in tenants {
-        match k.registry.schema(tenant).await {
-            Ok(schema) if schema.packages.iter().any(|p| p == "comms") => {}
-            Ok(_) => continue,
-            Err(e) => {
-                first_error.get_or_insert(e);
-                continue;
-            }
-        }
-        let steps = [
-            ("new mail", arrivals::run(k, tenant, ARRIVALS_BUDGET).await),
-            ("mail retries", mail::retry_due(k, tenant, RETRY_BUDGET).await),
-            ("mail polling", inbound::poll_due(k, tenant, mailboxes, POLL_BUDGET).await),
-            ("reminders", calendar::fire_reminders(k, tenant).await),
-            ("calendar subscriptions", subscribe::run(k, tenant, SUBSCRIBE_BUDGET).await),
-            ("meeting attendance", meetings::upkeep(k, tenant).await),
-            ("hosted mail", hosted::reconcile_due(k, tenant).await.map(|_| 0)),
-            ("purge", purge(k, tenant).await),
-        ];
-        for (step, outcome) in steps {
-            if let Err(e) = outcome {
-                tracing::warn!(%tenant, step, "comms maintenance failed: {e}");
-                first_error.get_or_insert(e);
-            }
+    let steps = [
+        ("new mail", arrivals::run(k, tenant, ARRIVALS_BUDGET).await),
+        ("mail retries", mail::retry_due(k, tenant, RETRY_BUDGET).await),
+        ("mail polling", inbound::poll_due(k, tenant, mailboxes, POLL_BUDGET).await),
+        ("reminders", calendar::fire_reminders(k, tenant).await),
+        ("calendar subscriptions", subscribe::run(k, tenant, SUBSCRIBE_BUDGET).await),
+        ("meeting attendance", meetings::upkeep(k, tenant).await),
+        ("hosted mail", hosted::reconcile_due(k, tenant).await.map(|_| 0)),
+        ("purge", purge(k, tenant).await),
+    ];
+    for (step, outcome) in steps {
+        if let Err(e) = outcome {
+            tracing::warn!(%tenant, step, "comms maintenance failed: {e}");
+            first_error.get_or_insert(e);
         }
     }
     first_error.map_or(Ok(()), Err)
