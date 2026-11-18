@@ -208,14 +208,14 @@ async fn scenario() {
     };
 
     // The first look: where the mailbox is, and nothing old notifies.
-    ferrum_app_comms::maintenance(&k).await.expect("first round");
+    ferrum_app_comms::maintenance(&k, tenant).await.expect("first round");
     assert_eq!(state().await.as_deref(), Some("s1"));
     assert_eq!(count("select count(*) from notification where kind = 'comms.newmail'").await, 0);
 
     // Mail arrives; two rounds at once (two replicas) both see it: one notification.
     jmap.stage.store(2, Ordering::SeqCst);
     let before = jmap.requests.load(Ordering::SeqCst);
-    let (a, b) = tokio::join!(ferrum_app_comms::maintenance(&k), ferrum_app_comms::maintenance(&k));
+    let (a, b) = tokio::join!(ferrum_app_comms::maintenance(&k, tenant), ferrum_app_comms::maintenance(&k, tenant));
     a.expect("round a");
     b.expect("round b");
     assert!(jmap.requests.load(Ordering::SeqCst) - before >= 2, "both rounds asked the mail server");
@@ -231,7 +231,7 @@ async fn scenario() {
     assert_eq!((who, email.as_deref()), (ann, Some("m1")));
 
     // Nothing new: nothing more.
-    ferrum_app_comms::maintenance(&k).await.expect("later round");
+    ferrum_app_comms::maintenance(&k, tenant).await.expect("later round");
     assert_eq!(count("select count(*) from notification where kind = 'comms.newmail'").await, 1);
     let mut tx = k.db.system_tx().await.unwrap();
     let failures: i32 = sqlx::query_scalar("select failures from comms_mail_cursor where mailbox_id = $1").bind(mailbox).fetch_one(&mut *tx).await.unwrap();
@@ -276,7 +276,7 @@ async fn scenario() {
 
     // Mail sent and received from then on is raised once each, whichever replica sees it, and no more.
     jmap.stage.store(3, Ordering::SeqCst);
-    let (a, b) = tokio::join!(ferrum_app_comms::maintenance(&k), ferrum_app_comms::maintenance(&k));
+    let (a, b) = tokio::join!(ferrum_app_comms::maintenance(&k, tenant), ferrum_app_comms::maintenance(&k, tenant));
     a.expect("round a");
     b.expect("round b");
     let found = events().await;
@@ -305,12 +305,12 @@ async fn scenario() {
     assert_eq!(serde_json::from_slice::<Value>(&admin_site.body).unwrap(), json!({"email": "ann@acme.test", "private": true}));
     assert_eq!(serde_json::from_slice::<Value>(&site(me.clone(), "GET", "mail/filing", Value::Null).await.unwrap().body).unwrap()["filed"], json!(false));
     jmap.stage.store(4, Ordering::SeqCst);
-    ferrum_app_comms::maintenance(&k).await.expect("round while private");
+    ferrum_app_comms::maintenance(&k, tenant).await.expect("round while private");
     assert_eq!(events().await.len(), 2, "m4 arrived while private: nothing raised");
     // Unmarked, it goes on from there: not what came while it was private, and not drafts or junk.
     site(admin.clone(), "PUT", "mail/filing/private", json!({"email": "ann@acme.test", "private": false})).await.unwrap();
     jmap.stage.store(5, Ordering::SeqCst);
-    ferrum_app_comms::maintenance(&k).await.expect("round after");
+    ferrum_app_comms::maintenance(&k, tenant).await.expect("round after");
     let found = events().await;
     assert_eq!(found.len(), 3, "m5 only: {found:?}");
     assert_eq!((found[2].0.as_str(), found[2].2["email"].clone()), ("MailMessage.received", json!("m5")));
@@ -325,7 +325,7 @@ async fn scenario() {
         let (k, jmap) = (k.clone(), jmap.clone());
         async move {
             let before = jmap.requests.load(Ordering::SeqCst);
-            ferrum_app_comms::maintenance(&k).await.expect("a round");
+            ferrum_app_comms::maintenance(&k, tenant).await.expect("a round");
             jmap.requests.load(Ordering::SeqCst) > before
         }
     };

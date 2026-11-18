@@ -468,7 +468,7 @@ impl T {
     }
 
     async fn maintenance(&self, imap: &FakeImap) {
-        ferrum_app_comms::maintenance_with(&self.k, imap).await.expect("maintenance");
+        ferrum_app_comms::maintenance_with(&self.k, self.tenant, imap).await.expect("maintenance");
     }
 }
 

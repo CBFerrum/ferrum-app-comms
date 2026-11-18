@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.26.0-2563eb?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.27.0-2563eb?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 [![CI](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml/badge.svg)](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml)
@@ -41,7 +41,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 | | |
 |---|---|
-| 📦 **Version** | 0.26.0 |
+| 📦 **Version** | 0.27.0 |
 | 🖥️ **Kind** | Its own interface: four shell apps at `/mail/`, `/chat/`, `/calendar/` and `/meet/` |
 | ➕ **What it adds** | 19 entities in one package, 3 roles, 2 reports, 4 launcher apps, 3 intents, a side panel, bar search, 10 kinds of notification, 2 public pages |
 | 🧱 **Depends on** | The platform's `core` and `contacts` packages. Nothing else is required |
@@ -615,6 +615,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 
 ### ✅ Recently shipped
 
+- [x] **0.27.0**: Upkeep runs one workspace at a time, on whichever replica is free; a failure is kept for the workspace's administrators.
 - [x] **0.26.0**: The Mail Domain is a claim the workspace proved under Administration → Addresses; unproven, nothing is made or changed in it.
 - [x] **0.25.3**: the Email Activity report counts the workspace's days, not UTC's.
 - [x] **0.25.2**: Mail's SMTP and IMAP connections refuse private, loopback and link-local addresses unless the operator names the host; each route reads only the body it needs.
@@ -695,7 +696,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 
 ## 🚀 Install
 
-Ferrum Comms is a native app. It is compiled into the official Ferrum server image; a workspace administrator installs it from **Apps** (`/store/`). Self-hosters who build their own image enable the `comms` feature of the server. It needs Ferrum platform `>=0.3.9, <0.4`.
+Ferrum Comms is a native app. It is compiled into the official Ferrum server image; a workspace administrator installs it from **Apps** (`/store/`). Self-hosters who build their own image enable the `comms` feature of the server. It needs Ferrum platform `>=0.4.0, <0.5`.
 
 **First steps**
 
@@ -779,7 +780,7 @@ CHANGELOG.md          what changed in each version
 
 ## 📜 Changelog
 
-Every release is described in [CHANGELOG.md](CHANGELOG.md). The latest is **0.26.0**.
+Every release is described in [CHANGELOG.md](CHANGELOG.md). The latest is **0.27.0**.
 
 ## 🤝 Contributing
 

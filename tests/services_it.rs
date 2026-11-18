@@ -343,7 +343,7 @@ async fn scenario(logs: Logs) {
     .expect("hosted mail for acme.test");
     let signed_in = || mail.sessions.load(Ordering::SeqCst);
     let round = |k: Arc<Kernel>| async move {
-        let _ = ferrum_app_comms::maintenance(&k).await;
+        let _ = ferrum_app_comms::maintenance(&k, tenant).await;
     };
     let before = signed_in();
     round(k2.clone()).await;

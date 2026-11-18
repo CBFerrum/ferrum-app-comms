@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.27.0
+
+Needs platform 0.4.0 (Ferrum's app API with upkeep of one workspace, its `docs/app-contract.md`, *Upkeep*): the
+manifest says `platform: ">=0.4.0, <0.5"`. No database change, no interface change.
+
+**Upkeep is one workspace's.** `maintenance(k, tenant)` and `maintenance_with(k, tenant, mailboxes)` do Comms' upkeep for
+the one workspace the platform hands them, which now runs each workspace with Comms installed about once a minute on
+whichever replica has a slot free, instead of one replica going through every workspace in turn under Comms' lock. The
+steps, their order and their budgets per workspace are as before; the list of workspaces and the installation check
+are the platform's. A failing step is still logged and the others still run; the first failure is returned, and the
+platform keeps it on the workspace's row for its administrators (`GET /api/admin/upkeep`).
+
+**For other apps and tests.** A test that runs Comms' upkeep passes the workspace: `maintenance(&k, tenant)`.
+
 ## 0.26.0
 
 Needs Ferrum `98d2f7d0` or later (`Kernel::domain_proven`: domains claimed for mail). No database change, no interface
