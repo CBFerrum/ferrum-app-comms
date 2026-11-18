@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.28.0
+
+No database change. Interface change: a channel's details have a section for administrators.
+
+**A thread is never lost with its first message.** A reply links to its thread's first message with a database key that
+deletes the replies with it, so deleting a first message through the platform (a Chat Admin's generic delete, or a
+retention rule's daily run) removed every reply, however recent, without a hook, an event or an audit line for them.
+Deleting a first message that still has replies is now refused ("delete the replies first"); a reply is deleted alone,
+and a first message goes once its replies have gone. A channel's own delete still takes all its messages. The delete
+people use in Chat marks a message deleted and is unchanged.
+
+**How long chat is kept.** Administrators set, in a channel's (or a direct conversation's) details, how many days
+messages are kept in that channel and in every channel, see how many messages a rule would remove at the next daily
+run, and remove a rule. The rules are the platform's retention rules on Chat Message (`/api/admin/retention`, the same
+for an agent): the platform's daily run removes them, respects legal holds, and counts a first message whose replies
+are not yet due instead of removing it. Where both rules exist the shorter time wins. Files attached to removed
+messages stay in storage for now.
+
 ## 0.27.1
 
 No database change, no interface change.

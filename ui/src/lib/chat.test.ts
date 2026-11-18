@@ -11,6 +11,7 @@ import {
   draftKey,
   fileSize,
   filterChannels,
+  keptDays,
   firstUnread,
   groupChannels,
   loudness,
@@ -20,6 +21,7 @@ import {
   mentionsIn,
   mentionsMe,
   posting,
+  ruleFor,
   readDraft,
   showMentions,
   snippet,
@@ -30,6 +32,7 @@ import {
   writeDraft,
   type ChannelSummary,
   type Message,
+  type RetentionRule,
 } from "./chat";
 
 const msg = (id: string, at: string, sender = "a@x.test", extra: Partial<Message> = {}): Message => ({ id, channel: "c", sender, body: id, posted_at: at, ...extra });
@@ -229,5 +232,23 @@ describe("keeping unsent text", () => {
     expect(() => writeDraft("k", "text", broken)).not.toThrow();
     expect(readDraft("k", broken)).toBe("");
     expect(readDraft("k", null)).toBe("");
+  });
+
+  it("picks a channel's retention rule and the workspace's, and ignores other entities", () => {
+    const rule = (id: string, entity: string, condition: unknown): RetentionRule => ({ id, entity, condition, after_days: 30, date_field: "posted_at", action: "delete", reason: "r", is_active: true });
+    const rules = [
+      rule("mail", "Communication", {}),
+      rule("other", "ChatMessage", [["channel", "=", "c2"]]),
+      rule("narrower", "ChatMessage", [["channel", "=", "c1"], ["sender", "=", "a@x.test"]]),
+      rule("mine", "ChatMessage", [["channel", "=", "c1"]]),
+      rule("all", "ChatMessage", {}),
+    ];
+    expect(ruleFor(rules, "c1")).toEqual({ channel: rules[3], workspace: rules[4] });
+    expect(ruleFor(rules.slice(0, 1), "c1")).toEqual({ channel: undefined, workspace: undefined });
+    expect(ruleFor([rule("x", "ChatMessage", null)], "c9").workspace?.id).toBe("x");
+  });
+  it("takes a whole number of days from 1 to 36500", () => {
+    expect([" 30 ", "1", "36500"].map(keptDays)).toEqual([30, 1, 36500]);
+    expect(["0", "36501", "1.5", "-3", "", "ten"].map(keptDays)).toEqual([null, null, null, null, null, null]);
   });
 });

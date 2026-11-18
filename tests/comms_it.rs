@@ -1614,6 +1614,7 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     calendar_subscriptions(&t, &users).await;
     calendar_proposals(&t, &users, &smtp).await;
     calendar_rooms(&t, &users).await;
+    chat_retention(&t, &admin, &users).await;
     hosted_mail(&t, &admin, &users, &imap).await;
 
     // What meetings keep of a person, in Comms' own table: in their copy, and gone with their erasure,
@@ -1648,6 +1649,64 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     let activity = report(&mgr, "email_activity").await.unwrap();
     assert_eq!((&activity["meta"]["to_date"], &activity["totals"]), (&today, &before), "{activity}");
     assert!(activity["rows"].as_array().unwrap().iter().all(|r| r["day"] == today), "each on the workspace's day: {activity}");
+}
+
+/// A thread is never lost with its first message: deleting a first message through the kernel (as the retention
+/// engine does) is refused while it has replies, so replies go only by their own delete. A retention rule on chat is
+/// the platform's, for administrators, and its preview reaches only the channel it names.
+async fn chat_retention(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>) {
+    let (k, alice, bob) = (&t.k, &users["alice"], &users["bob"]);
+    let sys = Ctx::system(t.tenant, k.registry.schema(t.tenant).await.unwrap());
+    let kept = uid(&t.ok(alice, "POST", "/chat/channels", &[], json!({"name": "kept", "type": "Private", "members": ["bob@acme.test"]})).await);
+    let post = |channel: Uuid, body: &'static str, parent: Option<Uuid>| async move {
+        uid(&t.ok(alice, "POST", &format!("/chat/channels/{channel}/messages"), &[], json!({"body": body, "parent": parent})).await)
+    };
+    let count =
+        |channel: Uuid| async move { t.scalar::<i64>("select count(*) from e_chat_message where tenant_id = $1 and channel = $2", Some(channel)).await };
+
+    // a_thread_keeps_its_replies_when_its_first_message_is_deleted
+    let first = post(kept, "the plan", None).await;
+    let (r1, r2) = (post(kept, "agreed", Some(first)).await, post(kept, "me too", Some(first)).await);
+    refused(k.delete(&sys, "ChatMessage", first, None).await, "conflict");
+    assert_eq!(count(kept).await, 3, "the first message and both replies remain");
+
+    // a_reply_is_deleted_alone
+    k.delete(&sys, "ChatMessage", r1, None).await.unwrap();
+    assert_eq!(count(kept).await, 2, "the first message and the other reply remain");
+
+    // a_first_message_goes_once_its_replies_are_gone
+    k.delete(&sys, "ChatMessage", r2, None).await.unwrap();
+    k.delete(&sys, "ChatMessage", first, None).await.unwrap();
+    assert_eq!(count(kept).await, 0);
+
+    // a_channel_still_deletes_with_its_threads
+    let gone = uid(&t.ok(alice, "POST", "/chat/channels", &[], json!({"name": "gone", "type": "Private", "members": ["bob@acme.test"]})).await);
+    let top = post(gone, "a thread", None).await;
+    post(gone, "its reply", Some(top)).await;
+    k.delete(admin, "ChatChannel", gone, None).await.unwrap();
+    assert_eq!(count(gone).await, 0, "the channel's threads go with it");
+
+    // a_retention_rule_on_chat_is_accepted_and_previews
+    let other = uid(&t.ok(alice, "POST", "/chat/channels", &[], json!({"name": "other", "type": "Private", "members": ["bob@acme.test"]})).await);
+    for channel in [kept, other] {
+        post(channel, "old news", None).await;
+        post(channel, "fresh news", None).await;
+    }
+    t.exec("update e_chat_message set posted_at = now() - interval '40 days' where tenant_id = $1 and body = 'old news' and $2::uuid is null", None).await;
+    let rule = |channel: Uuid| ferrum_kernel::retention::RetentionInput {
+        entity: "ChatMessage".into(),
+        after_days: 30,
+        date_field: "posted_at".into(),
+        action: "delete".into(),
+        condition: json!([["channel", "=", channel.to_string()]]),
+        reason: "Chat is kept for a month".into(),
+        is_active: true,
+    };
+    refused(k.save_retention_rule(bob, None, rule(kept)).await, "forbidden");
+    let id = k.save_retention_rule(admin, None, rule(kept)).await.expect("a rule on one channel");
+    assert_eq!(k.retention_preview(admin, id).await.unwrap()["reaches"], json!(1), "only this channel's old message");
+    refused(k.retention_preview(bob, id).await, "forbidden");
+    k.delete_retention_rule(admin, id).await.unwrap();
 }
 
 /// Mail's sockets go where the platform's guard lets outbound calls go: an account whose SMTP or IMAP host is
