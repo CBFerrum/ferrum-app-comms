@@ -288,6 +288,7 @@ function Personal({ c }: { c: Channel }) {
           </Button>
         )}
       </fieldset>
+      {direct && <p className="rounded-md bg-muted px-3 py-2 text-muted-foreground">{isolate(accessText(c))}</p>}
       {!direct && (
         <div className="border-t pt-3">
           <Button variant="outline" onClick={() => void leave()}>

@@ -1,5 +1,5 @@
 package: comms
-version: 0.7.0
+version: 0.8.0
 label: Communication
 description: Mail (accounts, threaded communications on any record, templates, inbound mail), team chat and calendars with ICS.
 # The people mail goes to and the address book calendar and contacts apps read (Ferrum
@@ -31,7 +31,7 @@ roles:
       - {entity: CalendarEvent, read: true, write: true, create: true, delete: true, if_owner: true}
       - {entity: Calendar, read: true, if_owner: true}
       # The channels they are in and those channels' messages (what chat's operations act on; also their search and agent).
-      - {entity: ChatChannel, read: true, via: members.member}
+      - {entity: ChatChannel, read: true, create: true, via: members.member}
       - {entity: ChatMessage, read: true, via: channel.members.member}
       # The shared address book, for mail and contacts apps (CRM's roles edit it).
       - {entity: Contact, read: true}

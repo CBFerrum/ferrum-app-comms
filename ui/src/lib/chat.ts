@@ -216,7 +216,8 @@ export function posting(c: Pick<ChannelSummary, "archived" | "role" | "post_poli
 }
 
 /** Who reads and who posts, in a sentence for the channel's details. */
-export function accessText(c: Pick<ChannelSummary, "type" | "post_policy" | "archived">): string {
+export function accessText(c: Pick<ChannelSummary, "type" | "post_policy" | "archived"> & { members?: unknown[] }): string {
+  if (c.type === "Direct" && (c.members?.length ?? 2) > 2) return t("Only the {n} of you can read this conversation.", { n: c.members!.length });
   if (c.type === "Direct") return t("Only the two of you can read this conversation.");
   const reads = c.type === "Private" ? t("Only its members can read it.") : t("Anyone in the workspace can read it and join.");
   if (c.archived) return t("{reads} It is archived, so nobody can post.", { reads });
@@ -401,4 +402,20 @@ export function ruleFor(rules: RetentionRule[], channel: string): { channel?: Re
 export function keptDays(text: string): number | null {
   const n = /^\s*\d+\s*$/.test(text) ? Number(text) : NaN;
   return n >= 1 && n <= 36500 ? n : null;
+}
+
+/** People one direct conversation holds besides the one who starts it. */
+export const MAX_DIRECT_OTHERS = 8;
+
+/** Who is typing, in words: one or two names, then "several people". */
+export function typingLine(names: string[]): string | null {
+  if (!names.length) return null;
+  if (names.length === 1) return t("{name} is typing…", { name: names[0]! });
+  if (names.length === 2) return t("{a} and {b} are typing…", { a: names[0]!, b: names[1]! });
+  return t("Several people are typing…");
+}
+
+/** Whether the composer tells the others it is typing now: never for an empty box, at most once every 4 seconds. */
+export function shouldSignalTyping(text: string, last: number, now: number): boolean {
+  return text.trim().length > 0 && now - last >= 4000;
 }

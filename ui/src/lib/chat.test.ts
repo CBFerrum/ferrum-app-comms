@@ -21,6 +21,8 @@ import {
   mentionsIn,
   mentionsMe,
   posting,
+  shouldSignalTyping,
+  typingLine,
   reactionChips,
   ruleFor,
   readDraft,
@@ -258,5 +260,32 @@ describe("keeping unsent text", () => {
       { emoji: "❤️", count: 1, mine: false },
     ]);
     expect(reactionChips(undefined, "me@x.test")).toEqual([]);
+  });
+  it("says who is typing in words", () => {
+    expect(typingLine([])).toBeNull();
+    expect(typingLine(["Ann"])).toBe("Ann is typing…");
+    expect(typingLine(["Ann", "Bo"])).toBe("Ann and Bo are typing…");
+    expect(typingLine(["Ann", "Bo", "Cy"])).toBe("Several people are typing…");
+  });
+  it("signals typing at most once every 4 seconds, never for an empty box", () => {
+    const clock = { now: 10_000 };
+    let last = -Infinity;
+    const sent: number[] = [];
+    const type = (text: string) => {
+      if (shouldSignalTyping(text, last, clock.now)) {
+        last = clock.now;
+        sent.push(clock.now);
+      }
+    };
+    type("h");
+    clock.now += 1000;
+    type("he");
+    clock.now += 2999;
+    type("hel");
+    clock.now += 1;
+    type("hell");
+    clock.now += 5000;
+    type("   ");
+    expect(sent).toEqual([10_000, 14_000]);
   });
 });

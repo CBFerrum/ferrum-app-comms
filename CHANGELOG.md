@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.30.0
+
+No database change (the meaning of `direct_key` widens; existing conversations are untouched). Interface change: the
+new direct message dialog takes one to eight people, and a conversation shows who is typing. The package `comms` is 0.8.0.
+
+**Group direct messages.** Two to nine people have one direct conversation between them, whoever opens it and however
+often. A conversation of three or more is keyed by the SHA-256 of its people's sorted addresses (`g:` and the hex), so
+the same people always land in the same conversation; two people opening it at the same moment get one (the unique
+key decides, the other is answered `conflict` and finds it). Its title is the other people's names. Like a two-person
+conversation it keeps its people.
+
+**Made through the channel's own create.** A Comms User may create a Chat Channel through the platform
+(`comms.chat_channel.create`): a conversation they are in, or a channel they own; anything else is refused. The
+screen finds the conversation first (`GET /api/app/comms/chat/direct?members=`) and creates it only when there is
+none. Everyone added is told, whichever way it was made.
+
+**Who is typing.** While someone types, the others in the conversation see "{name} is typing…" for a few seconds
+(`POST /api/app/comms/chat/channels/{id}/typing`, a signal limited per person: nothing is stored).
+
 ## 0.29.0
 
 Database change: Chat Message gains `reactions` and `pinned_at` (both empty on existing messages). Interface change:

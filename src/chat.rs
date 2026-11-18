@@ -26,11 +26,16 @@ fn iso(col: &str) -> String {
     format!("to_char({col} at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')")
 }
 
-/// The key of a direct conversation: its two members, sorted.
+/// The key of a direct conversation: its two members, sorted and joined by `|`; for three to nine, `g:` and the
+/// SHA-256 (hex) of that same list, so the key never outgrows its column and two-person keys stay as they were.
 fn direct_key(members: &[String]) -> String {
-    let set: BTreeSet<String> = members.iter().map(|m| m.trim().to_lowercase()).collect();
-    set.into_iter().collect::<Vec<_>>().join("|")
+    let set: BTreeSet<String> = members.iter().map(|m| m.trim().to_lowercase()).filter(|m| !m.is_empty()).collect();
+    let list = set.iter().map(String::as_str).collect::<Vec<_>>().join("|");
+    if set.len() <= 2 { list } else { format!("g:{}", hex::encode(Sha256::digest(list.as_bytes()))) }
 }
+
+/// People in one direct conversation.
+const MAX_DIRECT: usize = 9;
 
 pub struct ChannelHook;
 
@@ -38,7 +43,23 @@ pub struct ChannelHook;
 impl DocHook for ChannelHook {
     async fn before_validate(&self, _hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
         if s(doc, "channel_type") == Some("Direct") {
-            let members: Vec<String> = rows(doc, "members").iter().filter_map(|r| s(r, "member").map(str::to_string)).collect();
+            // Its people, once each and all alike (a direct conversation has no owner).
+            let mut members: Vec<String> = Vec::new();
+            for m in rows(doc, "members").iter().filter_map(|r| s(r, "member").map(|m| m.trim().to_lowercase())) {
+                if !m.is_empty() && !members.contains(&m) {
+                    members.push(m);
+                }
+            }
+            if let Some(Value::Array(list)) = doc.get_mut("members") {
+                list.retain(|r| r.get("member").and_then(Value::as_str).is_some_and(|m| !m.trim().is_empty()));
+                let mut seen = BTreeSet::new();
+                list.retain(|r| seen.insert(r.get("member").and_then(Value::as_str).unwrap_or_default().trim().to_lowercase()));
+                for row in list.iter_mut().filter_map(Value::as_object_mut) {
+                    let m = row.get("member").and_then(Value::as_str).unwrap_or_default().trim().to_lowercase();
+                    row.insert("member".into(), json!(m));
+                    row.insert("role".into(), json!("Member"));
+                }
+            }
             let key = direct_key(&members);
             doc.insert("channel_name".into(), json!(format!("dm-{}", &hex::encode(Sha256::digest(key.as_bytes()))[..16])));
             doc.insert("direct_key".into(), json!(key));
@@ -57,7 +78,7 @@ impl DocHook for ChannelHook {
         }
         let kind = s(doc, "channel_type").unwrap_or("Public");
         match kind {
-            "Direct" if unique.len() != 2 => errors.push(FieldError::new("members", "a direct conversation has exactly two people")),
+            "Direct" if !(2..=MAX_DIRECT).contains(&unique.len()) => errors.push(FieldError::new("members", "a direct conversation has two to nine people")),
             "Direct" => {}
             _ => {
                 if s(doc, "channel_name").is_some_and(|n| n.starts_with("dm-")) {
@@ -74,6 +95,22 @@ impl DocHook for ChannelHook {
         if errors.is_empty() { Ok(()) } else { Err(Error::Validation(errors)) }
     }
 
+    /// Someone making a channel through the generic API (the screen's routes insert as the system) starts only what
+    /// the Chat screen lets them: a conversation they are in, and a channel they own.
+    async fn validate_change(&self, hc: &mut HookCtx<'_>, old: Option<&Doc>, doc: &Doc) -> Result<()> {
+        if old.is_some() || hc.ctx.is_system || hc.ctx.is_admin || hc.ctx.has_role("Chat Admin") {
+            return Ok(());
+        }
+        let me = hc.ctx.email.to_lowercase();
+        let members = rows(doc, "members");
+        let mine = members.iter().find(|r| s(r, "member").is_some_and(|m| m.eq_ignore_ascii_case(&me))).map(|r| s(r, "role").unwrap_or("Member"));
+        match mine {
+            None => Err(Error::Forbidden("you start conversations you are in".into())),
+            Some(role) if s(doc, "channel_type") != Some("Direct") && role != "Owner" => Err(Error::Forbidden("you own the channels you start".into())),
+            Some(_) => Ok(()),
+        }
+    }
+
     async fn after_save(&self, hc: &mut HookCtx<'_>, doc: &Doc, old: Option<&Doc>) -> Result<()> {
         if let Some(old) = old
             && (s(old, "channel_type") == Some("Direct")) != (s(doc, "channel_type") == Some("Direct"))
@@ -85,10 +122,16 @@ impl DocHook for ChannelHook {
             old.map(|o| rows(o, "members").iter().filter_map(|r| s(r, "member").map(str::to_lowercase)).collect()).unwrap_or_default();
         let added: Vec<String> = rows(doc, "members").iter().filter_map(|r| s(r, "member").map(str::to_lowercase)).filter(|m| !before.contains(m)).collect();
         let known: BTreeSet<String> = util::users(hc.tx, hc.ctx.tenant, &added).await?.into_iter().map(|u| u.email).collect();
-        match added.iter().find(|m| !known.contains(*m)) {
-            Some(missing) => Err(Error::field("members", format!("{missing} is not an active user"))),
-            None => Ok(()),
+        if let Some(missing) = added.iter().find(|m| !known.contains(*m)) {
+            return Err(Error::field("members", format!("{missing} is not an active user")));
         }
+        // A new conversation or channel is told to the people in it, whoever made it and however.
+        if old.is_none() {
+            let me = hc.ctx.email.to_lowercase();
+            let others: Vec<String> = added.into_iter().filter(|m| *m != me).collect();
+            push(hc.tx, hc.ctx.tenant, &others, json!({"event": "added", "channel": util::doc_id(doc)?})).await?;
+        }
+        Ok(())
     }
 }
 
@@ -391,8 +434,10 @@ pub(crate) async fn call_title(tx: &mut Tx, ctx: &Ctx, channel: Uuid) -> Result<
         return Ok(c.label());
     }
     let others: Vec<String> = member_emails(&c).into_iter().filter(|m| !m.eq_ignore_ascii_case(&ctx.email)).collect();
-    let name = util::users(tx, ctx.tenant, &others).await?.into_iter().map(|u| u.full_name).find(|n| !n.trim().is_empty());
-    Ok(name.or_else(|| others.into_iter().next()).unwrap_or_else(|| c.label()))
+    let names: BTreeMap<String, String> =
+        util::users(tx, ctx.tenant, &others).await?.into_iter().filter(|u| !u.full_name.trim().is_empty()).map(|u| (u.email, u.full_name)).collect();
+    let title = others.iter().map(|m| names.get(m).cloned().unwrap_or_else(|| m.clone())).collect::<Vec<_>>().join(", ");
+    Ok(if title.is_empty() { c.label() } else { util::cut(&title, 80) })
 }
 
 /// Pushes a chat event to these members' open apps (at commit).
@@ -412,9 +457,7 @@ async fn channel_json(tx: &mut Tx, ctx: &Ctx, channel: Uuid) -> Result<Value> {
         "select jsonb_build_object('id', c.id, 'name', c.channel_name, 'type', c.channel_type, 'topic', c.topic, 'archived', c.archived, \
          'post_policy', coalesce(c.post_policy, 'Members'), 'notify_level', me.notify_level, \
          'last_message_at', {last}, 'role', me.role, 'last_read_at', {read}, \
-         'title', case when c.channel_type = 'Direct' then (select coalesce(nullif(u.full_name, ''), o.member::text) from {MEMBERS} o \
-            left join app_user u on u.tenant_id = o.tenant_id and lower(u.email::text) = o.member \
-            where o.tenant_id = c.tenant_id and o.parent_id = c.id and o.member <> $3 limit 1) else c.channel_name end, \
+         'title', case when c.channel_type = 'Direct' then {OTHERS3} else c.channel_name end, \
          'members', (select coalesce(jsonb_agg(jsonb_build_object('email', m.member, 'full_name', u.full_name, 'role', m.role, 'last_read_at', {mread}, \
             'active', {ACTIVE}) order by m.idx), '[]') \
             from {MEMBERS} m left join app_user u on u.tenant_id = m.tenant_id and lower(u.email::text) = m.member \
@@ -424,6 +467,7 @@ async fn channel_json(tx: &mut Tx, ctx: &Ctx, channel: Uuid) -> Result<Value> {
         last = iso("c.last_message_at"),
         read = iso("me.last_read_at"),
         mread = iso("m.last_read_at"),
+        OTHERS3 = others_title("$3"),
     );
     sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
         .bind(ctx.tenant)
@@ -432,6 +476,16 @@ async fn channel_json(tx: &mut Tx, ctx: &Ctx, channel: Uuid) -> Result<Value> {
         .fetch_optional(&mut **tx)
         .await?
         .ok_or_else(|| Error::NotFound("Chat Channel".into()))
+}
+
+/// A direct conversation's title for the member `me` (a bind parameter): the others' names (their address where
+/// there is none), in member order, joined by ", " and cut to 80 characters.
+fn others_title(me: &str) -> String {
+    format!(
+        "left((select string_agg(coalesce(nullif(u.full_name, ''), o.member::text), ', ' order by o.idx) from {MEMBERS} o \
+         left join app_user u on u.tenant_id = o.tenant_id and lower(u.email::text) = o.member \
+         where o.tenant_id = c.tenant_id and o.parent_id = c.id and o.member <> {me}), 80)"
+    )
 }
 
 /// Whether the person `u` is about: a live session of theirs that made a request in the last ten
@@ -454,11 +508,9 @@ async fn list_channels(k: &Kernel, ctx: &Ctx, include_public: bool) -> Result<Va
         "select jsonb_build_object('id', c.id, 'name', c.channel_name, 'type', c.channel_type, 'topic', c.topic, 'archived', c.archived, \
          'post_policy', coalesce(c.post_policy, 'Members'), 'notify_level', me.notify_level, \
          'role', me.role, 'last_read_at', {read}, 'last_message_at', {last}, \
-         'title', case when c.channel_type = 'Direct' then (select coalesce(nullif(u.full_name, ''), o.member::text) from {MEMBERS} o \
-            left join app_user u on u.tenant_id = o.tenant_id and lower(u.email::text) = o.member \
-            where o.tenant_id = c.tenant_id and o.parent_id = c.id and o.member <> $2 limit 1) else c.channel_name end, \
-         'active', case when c.channel_type = 'Direct' then (select {ACTIVE} from {MEMBERS} o join app_user u on u.tenant_id = o.tenant_id \
-            and lower(u.email::text) = o.member where o.tenant_id = c.tenant_id and o.parent_id = c.id and o.member <> $2 limit 1) end, \
+         'title', case when c.channel_type = 'Direct' then {OTHERS2} else c.channel_name end, \
+         'active', case when c.channel_type = 'Direct' then exists (select 1 from {MEMBERS} o join app_user u on u.tenant_id = o.tenant_id \
+            and lower(u.email::text) = o.member where o.tenant_id = c.tenant_id and o.parent_id = c.id and o.member <> $2 and {ACTIVE}) end, \
          'unread', case when me.id is null then 0 else (select count(*) {UNREAD}) end, \
          'unread_mentions', case when me.id is null then 0 else (select count(*) {UNREAD} and x.mentions @> to_jsonb($2::text)) end, \
          'last_message', (select jsonb_build_object('id', x.id, 'sender', x.sender, 'body', left(x.body, 200), 'posted_at', {posted}) \
@@ -470,6 +522,7 @@ async fn list_channels(k: &Kernel, ctx: &Ctx, include_public: bool) -> Result<Va
         read = iso("me.last_read_at"),
         last = iso("c.last_message_at"),
         posted = iso("x.posted_at"),
+        OTHERS2 = others_title("$2"),
     );
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let channels: Vec<Value> =
@@ -508,10 +561,61 @@ async fn create_channel(k: &Kernel, ctx: &Ctx, body: Map<String, Value>) -> Resu
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let saved = k.insert_tx(&util::elevated(ctx), &mut tx, "ChatChannel", doc).await.map_err(|e| named_conflict(e, name))?;
     let channel = util::doc_id(&saved)?;
-    push(&mut tx, ctx.tenant, &others, json!({"event": "added", "channel": channel})).await?;
     let out = channel_json(&mut tx, ctx, channel).await?;
     tx.commit().await?;
     Ok(out)
+}
+
+/// `GET /chat/direct?members=a@x,b@x`: the caller's direct conversation with exactly those people (the caller is
+/// one of them whether named or not), or `{channel: null}`. Making one is the channel's own create.
+async fn find_direct(k: &Kernel, ctx: &Ctx, members: &str) -> Result<Value> {
+    let mut people: Vec<String> = members.split(',').map(|m| m.trim().to_lowercase()).filter(|m| !m.is_empty()).collect();
+    people.push(ctx.email.to_lowercase());
+    let key = direct_key(&people);
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let found: Option<Uuid> = sqlx::query_scalar("select id from e_chat_channel where tenant_id = $1 and direct_key = $2")
+        .bind(ctx.tenant)
+        .bind(&key)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let channel = match found {
+        Some(c) => Some(channel_json(&mut tx, ctx, c).await?),
+        None => None,
+    };
+    tx.commit().await?;
+    Ok(json!({"channel": channel}))
+}
+
+/// `POST /chat/channels/{id}/typing` `{parent?}`: tells the others in the conversation that the caller is typing.
+/// A signal, not data: nothing is written, and it is limited per person.
+async fn typing(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, Value>) -> Result<()> {
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let c = readable_channel(&mut tx, ctx, channel).await?;
+    let me = ctx.email.to_lowercase();
+    if c.role(&me).is_none() {
+        return Err(Error::Forbidden("join the channel to write in it".into()));
+    }
+    if c.archived {
+        return Ok(());
+    }
+    k.rate_limit(&format!("comms.typing|{}|{}", ctx.tenant, ctx.user), std::time::Duration::from_secs(10), 5, "typing too fast").await?;
+    // A thread's typing names the thread only when it is a message of this channel.
+    let parent = match body.get("parent").and_then(Value::as_str).and_then(|p| p.parse::<Uuid>().ok()) {
+        Some(p) => {
+            sqlx::query_scalar::<_, Uuid>("select id from e_chat_message where tenant_id = $1 and id = $2 and channel = $3")
+                .bind(ctx.tenant)
+                .bind(p)
+                .bind(channel)
+                .fetch_optional(&mut *tx)
+                .await?
+        }
+        None => None,
+    };
+    let name = if ctx.full_name.trim().is_empty() { ctx.email.clone() } else { ctx.full_name.clone() };
+    let others: Vec<String> = member_emails(&c).into_iter().filter(|m| *m != me).collect();
+    push(&mut tx, ctx.tenant, &others, json!({"event": "typing", "channel": channel, "parent": parent, "email": me, "name": name})).await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 /// `POST /chat/direct` `{user: email}`: the conversation with that person, created on first use.
@@ -543,7 +647,6 @@ async fn direct(k: &Kernel, ctx: &Ctx, body: Map<String, Value>) -> Result<Value
         match k.insert_tx(&util::elevated(ctx), &mut tx, "ChatChannel", doc).await {
             Ok(saved) => {
                 let channel = util::doc_id(&saved)?;
-                push(&mut tx, ctx.tenant, std::slice::from_ref(&other), json!({"event": "added", "channel": channel})).await?;
                 let out = channel_json(&mut tx, ctx, channel).await?;
                 tx.commit().await?;
                 return Ok(out);
@@ -621,7 +724,7 @@ async fn change_members(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, 
     let c = readable_channel(&mut tx, ctx, channel).await?;
     owner_or_admin(&c, ctx)?;
     if c.kind == "Direct" {
-        return Err(Error::invalid("direct conversations keep their two people"));
+        return Err(Error::invalid("direct conversations keep their people"));
     }
     let current: BTreeSet<String> = member_emails(&c).into_iter().collect();
     let added: Vec<String> = add.iter().filter(|e| !current.contains(*e)).cloned().collect();
@@ -686,7 +789,7 @@ async fn leave(k: &Kernel, ctx: &Ctx, channel: Uuid) -> Result<Value> {
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let c = readable_channel(&mut tx, ctx, channel).await?;
     if c.kind == "Direct" {
-        return Err(Error::invalid("direct conversations cannot be left"));
+        return Err(Error::invalid("direct conversations keep their people"));
     }
     if c.role(&ctx.email).is_none() {
         return Err(Error::invalid("you are not a member of this channel"));
@@ -1174,6 +1277,11 @@ pub async fn handle(k: &Kernel, ctx: &Ctx, req: &SiteRequest, path: &[&str]) -> 
         ("GET", ["channels"]) => list_channels(k, ctx, util::param(req, "include") == Some("public")).await?,
         ("POST", ["channels"]) => return Ok(util::created(create_channel(k, ctx, body()?).await?)),
         ("POST", ["direct"]) => direct(k, ctx, body()?).await?,
+        ("GET", ["direct"]) => find_direct(k, ctx, util::param(req, "members").unwrap_or_default()).await?,
+        ("POST", ["channels", c, "typing"]) => {
+            typing(k, ctx, uuid(c)?, body()?).await?;
+            return Ok(SiteResponse::text(204, "text/plain", ""));
+        }
         ("GET", ["channels", c]) => {
             let mut tx = k.db.tenant_tx(ctx.tenant).await?;
             readable_channel(&mut tx, ctx, uuid(c)?).await?;

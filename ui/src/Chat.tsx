@@ -6,7 +6,7 @@
 
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, BellOff, ChevronDown, Hash, Info, Lock, MessageSquare, MessagesSquare, MoreHorizontal, Paperclip, Pin, Plus, Search, SmilePlus, Users, Video, X } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useContext, type FormEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useContext, useSyncExternalStore, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import {
   Badge,
@@ -53,11 +53,13 @@ import {
   loudness,
   mentionsMe,
   posting,
+  MAX_DIRECT_OTHERS,
   reactionChips,
   refreshMessages,
   showMentions,
   startsDay,
   timeline,
+  typingLine,
   unreadTotal,
   type Attachment,
   type Channel,
@@ -82,6 +84,34 @@ interface Page {
   target?: Message;
 }
 
+/** Who is typing where, for 6 seconds after their last signal (pushes, not data: nothing is fetched for them). */
+const typingNow = new Map<string, Map<string, { name: string; until: number }>>();
+const typingSeen = new Set<() => void>();
+let typingVersion = 0;
+function typingChanged() {
+  typingVersion++;
+  typingSeen.forEach((f) => f());
+}
+function noteTyping(data: Record<string, unknown>) {
+  const channel = String(data.channel ?? "");
+  const email = String(data.email ?? "");
+  if (!channel || !email) return;
+  const here = typingNow.get(channel) ?? new Map();
+  here.set(email, { name: String(data.name || email), until: Date.now() + 6000 });
+  typingNow.set(channel, here);
+  typingChanged();
+  setTimeout(typingChanged, 6100);
+}
+function useTyping(channel: string): string | null {
+  useSyncExternalStore(
+    (f) => (typingSeen.add(f), () => void typingSeen.delete(f)),
+    () => typingVersion,
+  );
+  const now = Date.now();
+  const names = [...(typingNow.get(channel)?.values() ?? [])].filter((t) => t.until > now).map((t) => t.name);
+  return typingLine(names);
+}
+
 function ChannelIcon({ c }: { c: Pick<ChannelSummary, "type" | "active"> }) {
   if (c.type === "Direct")
     return (
@@ -103,6 +133,8 @@ export function ChatPage() {
   });
   const onPush = useCallback(
     (data: Record<string, unknown> | null) => {
+      // A signal, not a change: nothing to fetch again.
+      if (data?.event === "typing") return noteTyping(data);
       void qc.invalidateQueries({ queryKey: keys.channels });
       const ch = typeof data?.channel === "string" ? data.channel : undefined;
       if (!data || ch) {
@@ -305,6 +337,7 @@ function ChannelList({
 function Conversation({ id, summary }: { id: string; summary?: ChannelSummary }) {
   const base = useContext(Base);
   const qc = useQueryClient();
+  const typing = useTyping(id);
   const me = useMe().data;
   const email = me?.user.email ?? "";
   const people = usePeople().data?.users ?? [];
@@ -493,6 +526,7 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
         className="row-start-2"
       />
       <div className="row-start-3 border-t p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        {typing && <p className="-mt-1 mb-1 text-xs text-muted-foreground">{isolate(typing)}</p>}
         {!view ? (
           <Skeleton className="h-10" />
         ) : state.state === "ok" ? (
@@ -1158,25 +1192,77 @@ function NewDirect({ onClose }: { onClose: () => void }) {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const people = usePeople().data?.users ?? [];
-  const me = useMe().data?.user.email.toLowerCase();
-  const open = async (p: Person) => {
+  const me = useMe().data?.user.email.toLowerCase() ?? "";
+  const [chosen, setChosen] = useState<Person[]>([]);
+  const [busy, setBusy] = useState(false);
+  const full = chosen.length >= MAX_DIRECT_OTHERS;
+  const go = (id: string) => {
+    void qc.invalidateQueries({ queryKey: keys.channels });
+    onClose();
+    navigate(`${base}/${id}`);
+  };
+  // The conversation these people already have, else a new one through the channel's own create; when someone else
+  // made it at the same moment (a conflict), theirs.
+  const find = async (list: Person[]) =>
+    (await api.get<{ channel: Channel | null }>(`${CHAT}/direct`, { members: list.map((p) => p.email).join(",") })).channel;
+  const start = async (list: Person[]) => {
+    setBusy(true);
     try {
-      const c = await api.post<Channel>(`${CHAT}/direct`, { user: p.email });
-      void qc.invalidateQueries({ queryKey: keys.channels });
-      onClose();
-      navigate(`${base}/${c.id}`);
+      const found = await find(list);
+      if (found) return go(found.id);
+      const members = [me, ...list.map((p) => p.email.toLowerCase())].map((member) => ({ member }));
+      try {
+        const made = await api.post<{ id: string }>(docPath("ChatChannel"), { channel_type: "Direct", members }, { idempotencyKey: newKey() });
+        go(made.id);
+      } catch (e) {
+        const again = (e as { status?: number }).status === 409 ? await find(list) : null;
+        if (!again) throw e;
+        go(again.id);
+      }
     } catch (e) {
       toast(errorMessage(e), "error");
+    } finally {
+      setBusy(false);
     }
+  };
+  const pick = (p: Person) => {
+    if (chosen.some((c) => c.email === p.email) || full) return;
+    setChosen([...chosen, p]);
   };
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{tr("New direct message")}</DialogTitle>
-          <DialogDescription>{tr("Pick the person to talk to. They are told of each message.")}</DialogDescription>
+          <DialogDescription>{tr("Pick one to eight people. They are told of each message, and the same people always share one conversation.")}</DialogDescription>
         </DialogHeader>
-        <PeoplePicker people={people.filter((p) => p.email.toLowerCase() !== me)} onPick={(p) => void open(p)} onClose={onClose} />
+        {chosen.length > 0 && (
+          <ul className="flex flex-wrap gap-1" aria-label={tr("Chosen people")}>
+            {chosen.map((p) => (
+              <li key={p.email}>
+                <Badge variant="secondary" className="gap-1">
+                  {isolate(p.full_name || p.email)}
+                  <button type="button" aria-label={tr("Remove {name}", { name: p.full_name || p.email })} onClick={() => setChosen(chosen.filter((c) => c.email !== p.email))}>
+                    <X className="size-3" />
+                  </button>
+                </Badge>
+              </li>
+            ))}
+          </ul>
+        )}
+        {full ? (
+          <p className="text-sm text-muted-foreground">{tr("A conversation holds at most nine people.")}</p>
+        ) : (
+          <PeoplePicker people={people.filter((p) => p.email.toLowerCase() !== me && !chosen.some((c) => c.email === p.email))} onPick={pick} onClose={onClose} />
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            {tr("Cancel")}
+          </Button>
+          <Button disabled={!chosen.length || busy} onClick={() => void start(chosen)}>
+            {busy ? tr("Opening…") : tr("Start")}
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

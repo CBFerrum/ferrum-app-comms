@@ -664,7 +664,6 @@
   "Pick a date and time…": "तारीख और समय चुनें…",
   "Pick a message to read it.": "पढ़ने के लिए कोई संदेश चुनें।",
   "Pick a time in the future.": "आगे का कोई समय चुनें।",
-  "Pick the person to talk to. They are told of each message.": "जिससे बात करनी है उसे चुनें। उसे हर संदेश की सूचना मिलती है।",
   "Plain text": "सादा पाठ",
   "Plain text drops the formatting, pictures and links' looks of this message.": "सादा पाठ इस संदेश की फ़ॉर्मेटिंग, चित्र और लिंक का रूप हटा देता है।",
   "Pop out": "अलग विंडो में खोलें",
@@ -1408,5 +1407,14 @@
   "{emoji}, {n} reactions, you reacted": "{emoji}, {n} प्रतिक्रियाएँ, आपने प्रतिक्रिया दी",
   "{emoji}, {n} reactions": "{emoji}, {n} प्रतिक्रियाएँ",
   "Nothing is pinned here": "यहाँ कुछ भी पिन नहीं है",
-  "Pinned messages": "पिन किए गए संदेश"
+  "Pinned messages": "पिन किए गए संदेश",
+  "Only the {n} of you can read this conversation.": "केवल आप {n} लोग यह बातचीत पढ़ सकते हैं।",
+  "{name} is typing…": "{name} लिख रहे हैं…",
+  "{a} and {b} are typing…": "{a} और {b} लिख रहे हैं…",
+  "Several people are typing…": "कई लोग लिख रहे हैं…",
+  "Pick one to eight people. They are told of each message, and the same people always share one conversation.": "एक से आठ लोग चुनें। उन्हें हर संदेश की सूचना मिलती है, और वही लोग हमेशा एक ही बातचीत साझा करते हैं।",
+  "Chosen people": "चुने गए लोग",
+  "A conversation holds at most nine people.": "एक बातचीत में अधिकतम नौ लोग हो सकते हैं।",
+  "Opening…": "खोला जा रहा है…",
+  "Start": "शुरू करें"
 }

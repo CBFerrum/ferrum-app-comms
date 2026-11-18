@@ -20,7 +20,7 @@
     - {name: members, type: table, of: ChatChannelMember}
     - {name: archived, type: check, in_list: true, in_filter: true}
     - {name: post_policy, type: select, options: [Members, Owners], default: Members, in_filter: true, description: "Who starts posts: every member, or only the owners (members still reply in threads)"}
-    - {name: direct_key, type: data, unique: true, read_only: true, hidden: true, no_copy: true}
+    - {name: direct_key, type: data, unique: true, read_only: true, hidden: true, no_copy: true, description: "A direct conversation's people: two addresses, lower-case, sorted and joined by |; three to nine, g: and the SHA-256 (hex) of that same list. One conversation per set of people"}
     - {name: last_message_at, type: datetime, read_only: true, no_copy: true, in_list: true}
   list: {columns: [channel_name, channel_type, archived, last_message_at], sort: channel_name asc}
 

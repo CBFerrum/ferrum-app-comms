@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.29.0-2563eb?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.30.0-2563eb?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 [![CI](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml/badge.svg)](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml)
@@ -41,7 +41,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 | | |
 |---|---|
-| 📦 **Version** | 0.29.0 |
+| 📦 **Version** | 0.30.0 |
 | 🖥️ **Kind** | Its own interface: four shell apps at `/mail/`, `/chat/`, `/calendar/` and `/meet/` |
 | ➕ **What it adds** | 19 entities in one package, 3 roles, 2 reports, 4 launcher apps, 3 intents, a side panel, bar search, 10 kinds of notification, 2 public pages |
 | 🧱 **Depends on** | The platform's `core` and `contacts` packages. Nothing else is required |
@@ -312,7 +312,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 ### 💬 Chat
 
-- **Channels.** Public channels everyone can find and join, private channels that do not exist for non-members, and one direct conversation per pair of people. Names are unique. Archive a channel to end it.
+- **Channels.** Public channels everyone can find and join, private channels that do not exist for non-members, and one direct conversation per set of two to nine people, whoever opens it (the channel's own create, `comms.chat_channel.create`, for people and agents alike). Names are unique. While someone types, the others in the conversation see so (a signal: nothing is stored). Archive a channel to end it.
 - **Messages.** Markdown messages up to 4 KB, with `@` completion to mention people (in a private conversation, only those who can read it). Edit your own messages; delete your own, or any as a channel owner or Chat Admin (the text and files are erased and the message stays as deleted).
 - **Reactions and pins.** Members react with an emoji and take it back, and everyone in the channel sees the counts at once. Owners (either person of a direct conversation) pin up to 50 messages, listed in the channel's details. Both are the message's actions (`comms.chat_message.react`, `.unreact`, `.pin`, `.unpin`), so a member's agent does the same through the platform.
 - **Threads.** Reply in a thread; a thread shows the message it belongs to; replies to a reply join the thread.
@@ -543,7 +543,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 |---|:-:|:-:|:-:|:-:|:-:|
 | Public and private channels | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Direct messages | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Group direct messages | ❌ | ✅ | ✅ | ✅ | ✅ |
+| Group direct messages | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Threads | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Mentions with notifications | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Per-channel notification level | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -553,7 +553,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 | Search | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Emoji reactions | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Pinned messages | ✅ | ✅ | ✅ | ✅ | 🟡 |
-| Typing indicator | ❌ | ✅ | ✅ | ✅ | ✅ |
+| Typing indicator | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Link previews | ❌ | ✅ | ✅ | ✅ | ✅ |
 | Custom status | ❌ | ✅ | ✅ | ✅ | ✅ |
 | Guest access to chat | ❌ | ✅ | ✅ | ✅ | ✅ |
@@ -606,7 +606,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 
 - 📱 Native mobile apps and offline use. Comms is a web interface that adapts to a phone.
 - 🤖 AI help inside Mail, Chat and Calendar.
-- 💬 Chat depth: typing indicators, link previews, group direct messages, guests, bots and custom status; files of messages removed by a retention rule stay in storage.
+- 💬 Chat depth: link previews, guests, bots and custom status; files of messages removed by a retention rule stay in storage.
 - 🎥 Meeting controls: raise hand, waiting room, host controls, breakout rooms, background blur and dial-in.
 - ✉️ Mail extras: attachment virus scanning, read receipts, importance, mailbox delegation and read-only shared mailboxes.
 - ✅ Tasks and a public holiday calendar built in.
@@ -619,6 +619,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 ### ✅ Recently shipped
 
 - [x] **0.27.0**: Upkeep runs one workspace at a time, on whichever replica is free; a failure is kept for the workspace's administrators.
+- [x] **0.30.0**: Group direct messages of up to nine people, one conversation per set of people, and who is typing.
 - [x] **0.29.0**: Emoji reactions and pinned messages in chat, as the message's own operations for people and their agents.
 - [x] **0.28.0**: Administrators set how long chat messages are kept, for one channel and for every channel; a thread is never lost with its first message.
 - [x] **0.27.1**: Mail whose sender stopped mid-send is not sent again on its own: it is marked Failed, may have been delivered, and its author is told.
@@ -656,8 +657,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 - [ ] A room's own calendar view, and a room that declines when there are too many people.
 
 **Chat**
-- [ ] Typing indicators and link previews.
-- [ ] Group direct messages.
+- [ ] Link previews.
 
 **Meet**
 - [ ] Raise hand, a waiting room and host controls (mute others, remove, end for all).
@@ -786,7 +786,7 @@ CHANGELOG.md          what changed in each version
 
 ## 📜 Changelog
 
-Every release is described in [CHANGELOG.md](CHANGELOG.md). The latest is **0.29.0**.
+Every release is described in [CHANGELOG.md](CHANGELOG.md). The latest is **0.30.0**.
 
 ## 🤝 Contributing
 

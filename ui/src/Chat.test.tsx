@@ -29,8 +29,9 @@ const answers: Record<string, unknown> = {
   "/api/app/comms/chat/channels/c1/messages": { messages: [message] },
   "/api/app/comms/chat/channels/c1/pins": { messages: [message] },
   "/api/v1/ChatMessage/m1/actions/unreact": { id: "m1", reactions: { "🎉": ["bob@test.test"] } },
+  "/api/users": { users: [{ id: "u2", email: "bob@test.test", full_name: "Bob Builder" }] },
 };
-const asked: { method: string; path: string; key: string | null }[] = [];
+const asked: { method: string; path: string; key: string | null; body?: string; query?: string }[] = [];
 
 beforeEach(() => {
   asked.length = 0;
@@ -43,7 +44,7 @@ beforeEach(() => {
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input instanceof Request ? input.url : input), "http://localhost");
       const headers = new Headers(init?.headers);
-      asked.push({ method: init?.method ?? "GET", path: url.pathname, key: headers.get("idempotency-key") });
+      asked.push({ method: init?.method ?? "GET", path: url.pathname, key: headers.get("idempotency-key"), body: typeof init?.body === "string" ? init.body : undefined, query: url.search });
       const body = answers[url.pathname];
       return new Response(JSON.stringify(body ?? { error: "not found" }), { status: body === undefined ? 404 : 200, headers: { "content-type": "application/json" } });
     }),
@@ -73,7 +74,7 @@ async function mount(path: string) {
   return { host, close: async () => (await act(async () => root.unmount()), host.remove()) };
 }
 
-describe("chat reactions and pins, mounted", { timeout: 60_000 }, () => {
+describe("chat, mounted", { timeout: 60_000 }, () => {
   it("shows the reactions as chips and takes mine back through the message's action", async () => {
     const { host, close } = await mount("/chat/c1");
     expect(host.textContent).toContain("Ship it on Friday");
@@ -93,5 +94,34 @@ describe("chat reactions and pins, mounted", { timeout: 60_000 }, () => {
     const list = host.querySelector('[aria-label="Pinned messages"]');
     expect(list?.textContent).toContain("Ship it on Friday");
     await close();
+  });
+
+  // New direct message: the people's conversation when it exists (nothing is posted), else the channel's own create.
+  async function startWith(found: unknown) {
+    answers["/api/app/comms/chat/direct"] = { channel: found };
+    answers["/api/v1/ChatChannel"] = { id: "d10" };
+    const { host, close } = await mount("/chat/c1");
+    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="New direct message"]')!.click());
+    await settle(() => !!document.body.textContent?.includes("Bob Builder"));
+    const bob = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.includes("Bob Builder"));
+    await act(async () => bob!.click());
+    const start = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Start");
+    await act(async () => start!.click());
+    await settle(() => asked.some((a) => a.path === "/api/app/comms/chat/direct"));
+    await settle(() => true);
+    await close();
+  }
+
+  it("opens the conversation those people already have, without making one", async () => {
+    await startWith({ id: "d9", name: "dm-x", title: "Bob Builder", type: "Direct", role: "Member", members: [] });
+    expect(asked.find((a) => a.path === "/api/app/comms/chat/direct")?.query).toContain("members=bob%40test.test");
+    expect(asked.some((a) => a.path === "/api/v1/ChatChannel")).toBe(false);
+  });
+
+  it("makes the conversation through the channel's create when there is none", async () => {
+    await startWith(null);
+    const made = asked.find((a) => a.path === "/api/v1/ChatChannel" && a.method === "POST");
+    expect(made?.key).toBeTruthy();
+    expect(JSON.parse(made!.body!)).toEqual({ channel_type: "Direct", members: [{ member: ME }, { member: "bob@test.test" }] });
   });
 });
