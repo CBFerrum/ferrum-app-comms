@@ -36,7 +36,7 @@ impl Site for CommsSite {
         match (method, p.as_slice()) {
             ("POST", ["inbound", _] | ["mail", "upload", _] | ["calendar", "import"]) => inbound::MAX_MESSAGE,
             ("POST", ["mail", "jmap"]) => JMAP_BODY,
-            (_, ["rsvp"] | ["meet", "guest"]) => PUBLIC_BODY,
+            (_, ["rsvp"] | ["meet", "guest"] | ["chat", "hook", _]) => PUBLIC_BODY,
             _ => self.max_body(),
         }
     }
@@ -62,6 +62,7 @@ async fn public(k: &Kernel, req: &SiteRequest, path: &[&str]) -> Result<SiteResp
             Ok(SiteResponse::json(202, &inbound::webhook(k, req.tenant, token, util::header(req, "content-type"), &req.body).await?))
         }
         ("POST", ["meet", "guest"]) => meet::guest(k, req).await,
+        ("POST", ["chat", "hook", token]) => chat::webhook_post(k, req.tenant, token, &req.body).await,
         ("GET", ["rsvp"]) => Ok(ok(calendar::answer_info(k, req.tenant, util::param(req, "token").unwrap_or_default()).await?)),
         ("POST", ["rsvp"]) => Ok(ok(calendar::answer(k, req.tenant, &req.client_ip, &util::body_json(req)?).await?)),
         ("GET", ["calendar", file]) => match file.strip_suffix(".ics") {

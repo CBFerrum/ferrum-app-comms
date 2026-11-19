@@ -64,6 +64,7 @@ pub fn register(hooks: &mut HookRegistry) {
         .register("ChatChannel", Arc::new(chat::ChannelHook))
         .register("ChatMessage", Arc::new(chat::MessageHook))
         .register("ChatStatus", Arc::new(chat::StatusHook))
+        .register("ChatWebhook", Arc::new(chat::WebhookHook))
         .register("CalendarEvent", Arc::new(calendar::EventHook))
         .register("CommsSettings", Arc::new(hosted::SettingsHook))
         .register("HostedMailbox", Arc::new(hosted::MailboxHook))

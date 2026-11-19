@@ -167,4 +167,15 @@ describe("chat, mounted", { timeout: 60_000 }, () => {
     expect(host.textContent).toContain("Example News");
     await close();
   });
+
+  it("lists a channel's webhooks and shows a new address once", async () => {
+    answers["/api/v1/ChatWebhook"] = { rows: [{ id: "w1", webhook_name: "CI", enabled: true, last_used_at: null }] };
+    answers["/api/v1/ChatWebhook/w1/actions/rotate_token"] = { path: "/api/site/t/comms/chat/hook/w1.secret", url: null };
+    const { host, close } = await mount("/chat/c1?panel=integrations");
+    await settle(() => !!host.querySelector('[aria-label="Incoming webhooks"]'));
+    expect(host.querySelector('[aria-label="Incoming webhooks"]')?.textContent).toContain("CI");
+    const rotate = [...host.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "New address");
+    expect(rotate).toBeTruthy();
+    await close();
+  });
 });

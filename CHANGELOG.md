@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.34.0
+
+Database change: a new entity, Incoming Webhook (`ChatWebhook`); Chat Message gains `webhook` and `sender_label`.
+Interface change: an Integrations tab in a channel's details, and an App marker on a webhook's messages. The package
+`comms` is 0.12.0.
+
+**Incoming webhooks.** A channel's owner (or a Chat Admin) makes a webhook: its New Address action makes a secret
+address, shown once (a repeat of the action under the same key does not show it again), that an outside program posts
+`{"text": "…"}` to (`POST /api/site/{workspace}/comms/chat/hook/{token}`). The message appears in the webhook's own
+channel under its name, with no sender, counted as unread and told as any message (a mention in it notifies nobody
+by name). A new address stops the old one; a switched-off webhook, an archived channel and a wrong address all answer
+the same "not found"; at most 60 posts a minute a webhook, 16 KB a request, 4096 bytes of text. The secret lives in
+the vault only. Making, changing and deleting a webhook are its record's own operations; members of the channel see
+that it exists.
+
+**Posting is an operation.** `comms.chat_channel.post` (a text, and `parent` for a thread) does what Chat's post
+does, through the gate, so a member's agent posts and a repeat under the same key posts once. Chat's own route and
+the webhook route share one function with it, so every message is stored, told and notified the same way. Unread
+counts now compare senders null-safely, so a message without a sender is counted.
+
 ## 0.33.0
 
 Database change: Chat Message gains `previews`, Communication Settings gains `chat_link_previews` (empty reads as On).

@@ -23,6 +23,20 @@
     - {name: direct_key, type: data, unique: true, read_only: true, hidden: true, no_copy: true, description: "A direct conversation's people: two addresses, lower-case, sorted and joined by |; three to nine, g: and the SHA-256 (hex) of that same list. One conversation per set of people"}
     - {name: last_message_at, type: datetime, read_only: true, no_copy: true, in_list: true}
   list: {columns: [channel_name, channel_type, archived, last_message_at], sort: channel_name asc}
+  # Posting a text message, for a member's agent as for the screen (files stay with Chat's own route: an action's
+  # parameters are single values).
+  actions:
+    - name: post
+      label: Post a Message
+      permission: read
+      hidden: true
+      params:
+        - {name: body, label: Message, type: text, required: true, description: "Markdown, at most 4096 bytes; <@address> mentions a member"}
+        - {name: parent, label: Thread, type: link, to: ChatMessage, description: "A message of this channel to answer in its thread"}
+      contract:
+        effect: transactional_action
+        completion: The message is in the channel; its members' open pages and notifications were told
+        returns: {type: object, properties: {id: {type: string, format: uuid, x-ferrum-link: ChatMessage}, channel: {type: string, format: uuid, x-ferrum-link: ChatChannel}, posted_at: {type: string}}}
 
 - name: ChatMessage
   label: Chat Message
@@ -42,6 +56,8 @@
     - {name: deleted, type: check, read_only: true, in_filter: true}
     - {name: reactions, type: json, read_only: true, no_copy: true, description: "{emoji: [addresses of the members who reacted with it]}; changed only by the React and Remove Reaction actions"}
     - {name: pinned_at, type: datetime, read_only: true, no_copy: true, in_filter: true, description: "When it was pinned in its channel; empty when it is not"}
+    - {name: webhook, type: link, to: ChatWebhook, on_delete: set_null, read_only: true, description: "The incoming webhook that posted it (then it has no sender)"}
+    - {name: sender_label, type: data, max_length: 80, read_only: true, description: "The name a webhook's message was posted under"}
     - {name: previews, type: json, read_only: true, no_copy: true, description: "[{url, title, description, site}]: what the linked pages say of themselves, fetched by the server after the message is posted; at most three"}
   indexes: [[channel, posted_at], [parent_message, posted_at], [channel, pinned_at]]
   list: {columns: [posted_at, channel, sender, body], sort: posted_at desc}
@@ -102,3 +118,28 @@
     - {name: text, type: data, max_length: 100, in_list: true}
     - {name: until, type: datetime, in_list: true, description: "Shown until then; empty: until it is changed"}
   list: {columns: [person, emoji, text, until], sort: person asc}
+
+- name: ChatWebhook
+  label: Incoming Webhook
+  kind: master
+  module: communication
+  title_field: webhook_name
+  description: "A secret address an outside program posts messages to. It belongs to one channel and posts under its own name."
+  fields:
+    - {name: webhook_name, type: data, required: true, max_length: 80, in_list: true, label: Name}
+    - {name: channel, type: link, to: ChatChannel, required: true, on_delete: cascade, in_list: true, in_filter: true}
+    - {name: enabled, type: check, default: true, in_list: true}
+    - {name: token, type: secret, read_only: true, description: "Set by the New Address action; never shown again"}
+    - {name: last_used_at, type: datetime, read_only: true, no_copy: true, in_list: true}
+  unique: [[channel, webhook_name]]
+  list: {columns: [webhook_name, channel, enabled, last_used_at], sort: webhook_name asc}
+  actions:
+    - name: rotate_token
+      label: New Address
+      permission: write
+      confirm: "A new secret address is made and the previous one stops working. Continue?"
+      contract:
+        effect: transactional_action
+        completion: The webhook has a new secret address and the one before no longer posts
+        answer_once: {fields: [token, path, url], then: "Make a new address with New Address"}
+        returns: {type: object, properties: {token: {type: string}, path: {type: string}, url: {type: [string, "null"]}}}

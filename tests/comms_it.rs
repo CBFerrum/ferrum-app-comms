@@ -29,8 +29,10 @@ fn obj(v: Value) -> Doc {
     v.as_object().cloned().unwrap()
 }
 
+#[track_caller]
 fn uid(v: &Value) -> Uuid {
-    v["id"].as_str().unwrap_or_else(|| panic!("no id in {v}")).parse().unwrap()
+    let Some(id) = v["id"].as_str() else { panic!("no id in {v}") };
+    id.parse().unwrap()
 }
 
 /// A refusal of the expected kind.
@@ -1637,6 +1639,7 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     chat_status(&t, &admin, &users).await;
     interapp_mail(&t, &users).await;
     chat_previews(&t, &users).await;
+    chat_webhooks(&t, &users).await;
     hosted_mail(&t, &admin, &users, &imap).await;
 
     // What meetings keep of a person, in Comms' own table: in their copy, and gone with their erasure,
@@ -2186,6 +2189,100 @@ async fn chat_previews(t: &T, users: &HashMap<String, Ctx>) {
     run().await;
     assert_eq!((cards(off).await, site.asked().len()), (json!([]), before));
     k.update(mgr, "CommsSettings", settings_id, obj(json!({"chat_link_previews": "On"})), None).await.unwrap();
+}
+
+/// Posting is an operation (`comms.chat_channel.post`), and an incoming webhook posts to its own channel through a
+/// secret address shown once, under its own name, told and counted as any message.
+async fn chat_webhooks(t: &T, users: &HashMap<String, Ctx>) {
+    use ferrum_kernel::capability::Invocation;
+    let (k, alice, bob, carol) = (&t.k, &users["alice"], &users["bob"], &users["carol"]);
+    async fn op(k: &Kernel, who: &Ctx, cap: &str, input: Value, key: &str) -> Result<ferrum_kernel::capability::Receipt, Error> {
+        k.invoke(who, Invocation::new(cap, input).key(key.to_string())).await
+    }
+    let ch = uid(&t.ok(alice, "POST", "/chat/channels", &[], json!({"name": "deploys", "type": "Private", "members": ["bob@acme.test"]})).await);
+    let count = || async move { t.scalar::<i64>("select count(*) from e_chat_message where tenant_id = $1 and channel = $2", Some(ch)).await };
+
+    // posting_is_an_operation_and_behaves_as_the_route
+    let told = t.notifications(bob, "Alice Rao mentioned you in #deploys").await;
+    let post = json!({"id": ch, "params": {"body": "ship it <@bob@acme.test>"}});
+    let first = op(k, alice, "comms.chat_channel.post", post.clone(), "post-1").await.expect("alice posts through the gate");
+    let m = uid(&first.result);
+    assert_eq!(first.result["channel"], json!(ch.to_string()), "{:?}", first.result);
+    let again = op(k, alice, "comms.chat_channel.post", post, "post-1").await.unwrap();
+    // A repeat answers as the platform does for an action: the record it ran on as the caller may read it now.
+    assert!(again.repeated, "{:?}", again.result);
+    assert_eq!(count().await, 1, "one message for one key");
+    assert_eq!(t.notifications(bob, "Alice Rao mentioned you in #deploys").await, told + 1);
+    let reply = op(k, bob, "comms.chat_channel.post", json!({"id": ch, "params": {"body": "done", "parent": m}}), "post-2").await.unwrap();
+    assert_eq!(t.scalar::<Option<Uuid>>("select parent_message from e_chat_message where tenant_id = $1 and id = $2", Some(uid(&reply.result))).await, Some(m));
+    refused(op(k, carol, "comms.chat_channel.post", json!({"id": ch, "params": {"body": "let me in"}}), "post-3").await, "not found");
+
+    // only_owners_make_webhooks_and_not_in_direct_conversations
+    refused(k.insert(bob, "ChatWebhook", obj(json!({"webhook_name": "Mine", "channel": ch}))).await, "forbidden");
+    let direct = uid(&t.ok(alice, "POST", "/chat/direct", &[], json!({"user": "bob@acme.test"})).await);
+    refused(k.insert(alice, "ChatWebhook", obj(json!({"webhook_name": "DM", "channel": direct}))).await, "invalid");
+
+    // an_owner_makes_a_webhook_and_its_address_is_shown_once
+    let hook = uid(&Value::Object(k.insert(alice, "ChatWebhook", obj(json!({"webhook_name": "CI", "channel": ch}))).await.expect("alice's webhook")));
+    let rotate = |key: &'static str| async move { op(k, alice, "comms.chat_webhook.rotate_token", json!({"id": hook}), key).await };
+    let shown = rotate("rot-1").await.unwrap();
+    let token = shown.result["token"].as_str().expect("the address, once").to_string();
+    assert!(shown.result["path"].as_str().is_some_and(|p| p.ends_with(&format!("/chat/hook/{token}"))), "{:?}", shown.result);
+    let repeat = rotate("rot-1").await.unwrap();
+    assert!(repeat.repeated && repeat.result.get("token").is_none(), "a repeat does not show it again: {:?}", repeat.result);
+    refused(op(k, bob, "comms.chat_webhook.rotate_token", json!({"id": hook}), "rot-bob").await, "forbidden");
+
+    // a_post_to_the_address_appears_under_the_webhooks_name, and a_webhooks_message_counts_as_unread
+    t.ok(bob, "POST", &format!("/chat/channels/{ch}/read"), &[], Value::Null).await;
+    let hit = |token: String, body: Value| async move { t.call(None, "POST", &format!("/chat/hook/{token}"), &[], body).await };
+    let posted = uid(&hit(token.clone(), json!({"text": "build 42 passed <@bob@acme.test>"})).await.expect("the webhook posts"));
+    let listed = t.ok(bob, "GET", &format!("/chat/channels/{ch}/messages"), &[], Value::Null).await;
+    let row = listed["messages"].as_array().unwrap().iter().find(|r| uid(r) == posted).cloned().unwrap();
+    assert_eq!((row["sender"].clone(), row["sender_name"].clone(), row["webhook"].clone()), (json!(""), json!("CI"), json!(true)), "{row}");
+    let mine = t.ok(bob, "GET", "/chat/channels", &[], Value::Null).await;
+    let unread = mine["channels"].as_array().unwrap().iter().find(|c| uid(c) == ch).unwrap()["unread"].clone();
+    assert_eq!(unread, json!(1), "a webhook's message counts as unread");
+    assert_eq!(t.notifications(bob, "CI mentioned you in #deploys").await, 0, "a webhook's mention notifies nobody by name");
+
+    // the_old_address_stops_when_a_new_one_is_made
+    let token2 = rotate("rot-2").await.unwrap().result["token"].as_str().unwrap().to_string();
+    refused(hit(token.clone(), json!({"text": "old"})).await, "not found");
+    hit(token2.clone(), json!({"text": "new address"})).await.expect("the new address posts");
+
+    // a_disabled_webhook_and_an_archived_channel_answer_not_found
+    k.update(alice, "ChatWebhook", hook, obj(json!({"enabled": false})), None).await.unwrap();
+    refused(hit(token2.clone(), json!({"text": "off"})).await, "not found");
+    k.update(alice, "ChatWebhook", hook, obj(json!({"enabled": true})), None).await.unwrap();
+    t.ok(alice, "PATCH", &format!("/chat/channels/{ch}"), &[], json!({"archived": true})).await;
+    refused(hit(token2.clone(), json!({"text": "archived"})).await, "not found");
+    t.ok(alice, "PATCH", &format!("/chat/channels/{ch}"), &[], json!({"archived": false})).await;
+
+    // a_wrong_token_learns_nothing
+    let wrong = format!("{}.{}", hook.simple(), "x".repeat(43));
+    let missing = format!("{}.{}", Uuid::now_v7().simple(), "x".repeat(43));
+    let a = hit(wrong, json!({"text": "guess"})).await.unwrap_err().to_string();
+    let b = hit(missing, json!({"text": "guess"})).await.unwrap_err().to_string();
+    assert_eq!(a, b);
+
+    // a_body_over_the_cap_or_without_text_is_refused
+    for bad in [json!({"text": ""}), json!({"text": "   "}), json!({"words": "hi"}), json!({"text": "x".repeat(4097)}), json!(["text"])] {
+        refused(hit(token2.clone(), bad.clone()).await, "invalid");
+    }
+    let huge = t.raw(t.request(None, "POST", &format!("/chat/hook/{token2}"), &[], vec![b'a'; 20 << 10], "application/json")).await;
+    assert!(huge.is_err() || huge.as_ref().is_ok_and(|r| r.status >= 400), "a body over the cap is refused");
+
+    // a_webhook_posts_at_most_sixty_times_a_minute
+    let burst = uid(&Value::Object(k.insert(alice, "ChatWebhook", obj(json!({"webhook_name": "Burst", "channel": ch}))).await.unwrap()));
+    let burst_token =
+        op(k, alice, "comms.chat_webhook.rotate_token", json!({"id": burst}), "rot-burst").await.unwrap().result["token"].as_str().unwrap().to_string();
+    for i in 0..60 {
+        hit(burst_token.clone(), json!({"text": format!("tick {i}")})).await.unwrap_or_else(|e| panic!("post {i}: {e:?}"));
+    }
+    assert!(matches!(hit(burst_token.clone(), json!({"text": "one too many"})).await, Err(Error::TooManyRequests(_))));
+
+    // the_token_is_nowhere_in_plain
+    let secret = token2.split_once('.').unwrap().1.to_string();
+    assert!(plain_anywhere(k, &secret).await.is_empty(), "the webhook's secret is kept only in the vault");
 }
 
 /// Mail's sockets go where the platform's guard lets outbound calls go: an account whose SMTP or IMAP host is

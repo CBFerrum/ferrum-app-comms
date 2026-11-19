@@ -563,7 +563,7 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
           onClose={() => patch({ thread: null })}
         />
       )}
-      {side === "details" && <ChannelDetails id={id} tab={(["general", "personal", "members", "pinned"].includes(panel ?? "") ? panel : "general") as DetailsTab} onTab={(t) => patch({ panel: t })} onClose={() => patch({ panel: null })} />}
+      {side === "details" && <ChannelDetails id={id} tab={(["general", "personal", "members", "pinned", "integrations"].includes(panel ?? "") ? panel : "general") as DetailsTab} onTab={(t) => patch({ panel: t })} onClose={() => patch({ panel: null })} />}
       {side === "search" && (
         <ChannelSearch
           channel={id}
@@ -805,6 +805,7 @@ function MessageRow({
         {!compact && (
           <div className="flex flex-wrap items-baseline gap-x-2">
             <span className="text-sm font-semibold">{isolate(name)}</span>
+            {m.webhook && <span className="rounded bg-muted px-1 text-xs font-medium text-muted-foreground">{tr("App")}</span>}
             <time className="text-xs text-muted-foreground" dateTime={m.posted_at}>
               {isolate(time(m.posted_at))}
             </time>

@@ -16,14 +16,16 @@ import { CHAT, LOUDNESS, SIDE_PANEL, accessText, addable, initials, keys, loudne
 import { Base } from "./chatBase";
 import { ChatRetention } from "./ChatRetention";
 import { StatusMark } from "./ChatStatus";
+import { Integrations } from "./ChatIntegrations";
 
-export type DetailsTab = "general" | "personal" | "members" | "pinned";
+export type DetailsTab = "general" | "personal" | "members" | "pinned" | "integrations";
 
 const TABS: { id: DetailsTab; label: string }[] = [
   { id: "general", get label() { return tr("General"); } },
   { id: "personal", get label() { return tr("Notifications"); } },
   { id: "members", get label() { return tr("Members"); } },
   { id: "pinned", get label() { return tr("Pinned"); } },
+  { id: "integrations", get label() { return tr("Integrations"); } },
 ];
 
 export function ChannelDetails({ id, tab, onTab, onClose }: { id: string; tab: DetailsTab; onTab: (t: DetailsTab) => void; onClose: () => void }) {
@@ -58,6 +60,7 @@ export function ChannelDetails({ id, tab, onTab, onClose }: { id: string; tab: D
                 {shown === "personal" && <Personal c={c} />}
                 {shown === "members" && <Members c={c} />}
                 {shown === "pinned" && <Pinned c={c} />}
+                {shown === "integrations" && <Integrations c={c} />}
                 {/* For administrators; the platform refuses anyone else, whatever is shown. */}
                 {bootstrap()?.person?.admin && (shown === "general" || (direct && shown === "personal")) && <ChatRetention channel={c.id} />}
               </div>

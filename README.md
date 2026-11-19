@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.33.0-2563eb?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.34.0-2563eb?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 [![CI](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml/badge.svg)](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml)
@@ -41,7 +41,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 | | |
 |---|---|
-| 📦 **Version** | 0.33.0 |
+| 📦 **Version** | 0.34.0 |
 | 🖥️ **Kind** | Its own interface: four shell apps at `/mail/`, `/chat/`, `/calendar/` and `/meet/` |
 | ➕ **What it adds** | 19 entities in one package, 3 roles, 2 reports, 4 launcher apps, 3 intents, a side panel, bar search, 10 kinds of notification, 2 public pages |
 | 🧱 **Depends on** | The platform's `core` and `contacts` packages. Nothing else is required |
@@ -320,6 +320,8 @@ chat tool and a video meeting service, and it keeps every message about a record
 - **Unread that is right.** Counts include replies in threads you started or answered, mentions are counted apart, and someone who joins a channel starts with nothing unread. A conversation opens at its first unread message, marks itself read only when you reach the bottom, and any message can be marked unread again. "Mark everything as read" is in the list's menu, and the bar shows how much waits.
 - **How loud a channel is.** Every message, mentions and replies to you, or nothing (muted, with no count, though a mention still marks it). Direct messages notify, replies notify the people of their thread.
 - **Channel details.** Name and topic, who can find it, who can post (every member, or only owners start posts while members reply in threads), your notification level, leaving, and members that owners add, remove and make owners. The last owner cannot be demoted.
+- **Incoming webhooks.** A channel's owners add a webhook in its details (Integrations): a secret address, shown once, that an outside program posts `{"text": "…"}` to (JSON, at most 4096 bytes of text, 60 posts a minute). The message appears under the webhook's name with an App marker, counts as unread and is told as any message; a mention in it is shown but notifies nobody by name. New address stops the old one; a switched-off webhook, an archived channel and a wrong address all answer the same "not found". A retry by the sender posts twice (no repeat key yet). The secret is kept in the vault only.
+- **Posting for agents.** Posting a text message is an operation, `comms.chat_channel.post` (a reply with `parent`), so a member's agent posts through the platform exactly as Chat's own post does; files stay with Chat's screen.
 - **Link previews.** A few seconds after a message with links is posted, it shows a card per link (up to three): the page's title, a short description and the site's name, text only, no pictures yet. The server fetches each page once, in a background job, through the platform's vetted client: HTTPS only, never a private, loopback or link-local address at any hop of a redirect, at most 256 KB, four requests and ten seconds a link, 120 a minute a workspace. The linked site sees that someone here posted its link, and a one-use link (a sign-in link pasted by mistake) is used up by the fetch: a Comms Manager turns previews off for the workspace in Communication Settings.
 - **Status.** Each person may say what they are up to: an emoji and up to 100 characters, cleared after a time they choose or when they change it. Everyone with a Comms role sees it beside the person's name (in members, a direct conversation's header and list row). It is a record of the person's own (`comms.chat_status.create`, `.update`, `.delete`), goes with their erasure, and nobody else changes it.
 - **Presence.** A green dot and "Active now" show whether a person made a request in the last ten minutes, and never when they were last seen.
@@ -560,7 +562,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 | Custom status | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Guest access to chat | ❌ | ✅ | ✅ | ✅ | ✅ |
 | Message retention rules | ✅ ¹ | ✅ | ✅ | ✅ | ✅ |
-| Bots, apps and incoming webhooks | ❌ | ✅ | ✅ | ✅ | ✅ |
+| Bots, apps and incoming webhooks | 🟡 ³ | ✅ | ✅ | ✅ | ✅ |
 | Video call from a channel | ✅ | ✅ | ✅ | 🟡 | ✅ |
 | Share a business record into a chat | ✅ | 🟡 | 🟡 | 🟡 | 🟡 |
 | Native mobile apps | ❌ | ✅ | ✅ | ✅ | ✅ |
@@ -568,6 +570,8 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 | Open source | ✅ | ❌ | ❌ | 🟡 | ✅ |
 
 ² Text only (title, description, site): no pictures yet.
+
+³ Incoming webhooks are there; bots as identities of their own wait for the platform's agent identities.
 
 ¹ Administrators keep messages for so many days in one channel or in every channel (a channel's details); the platform removes older ones in a daily run and respects legal holds. The files attached to removed messages are not removed yet.
 
@@ -623,6 +627,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 ### ✅ Recently shipped
 
 - [x] **0.27.0**: Upkeep runs one workspace at a time, on whichever replica is free; a failure is kept for the workspace's administrators.
+- [x] **0.34.0**: Incoming webhooks for Chat, and posting a message as a declared operation.
 - [x] **0.33.0**: Link previews in Chat, fetched by the server without reaching private networks; one switch turns them off.
 - [x] **0.32.0**: Other apps and agents send mail as a Communication through the record's own create, with reply and threading fields checked wherever they come from.
 - [x] **0.31.0**: Custom status in Chat: an emoji and a short text, until a time.
@@ -691,7 +696,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 - [ ] Dragging on a touch screen tried on real phones.
 
 **Chat**
-- [ ] Guest access, bots and incoming webhooks.
+- [ ] Guest access, and bots as identities of their own.
 - [ ] Removing the attached files of messages a retention rule deletes.
 - [ ] Scheduled messages.
 
@@ -792,7 +797,7 @@ CHANGELOG.md          what changed in each version
 
 ## 📜 Changelog
 
-Every release is described in [CHANGELOG.md](CHANGELOG.md). The latest is **0.33.0**.
+Every release is described in [CHANGELOG.md](CHANGELOG.md). The latest is **0.34.0**.
 
 ## 🤝 Contributing
 
