@@ -6,6 +6,7 @@
     - {name: public_url, type: url, label: Public URL, description: "Address this server is reached at from the internet (e.g. https://erp.example.com); used in unsubscribe links, inbound webhook and calendar feed URLs"}
     - {name: max_send_attempts, type: int, default: 5, min: 1, max: 20, description: "Attempts before an outgoing email is marked Failed"}
     - {name: signing_key, type: secret, read_only: true, hidden: true, description: "Signs invitation answer and meeting guest links; created automatically"}
+    - {name: chat_link_previews, type: select, options: [On, Off], default: On, label: Link Previews in Chat, description: "On: the server fetches the title and description of links posted in Chat. The linked site sees that someone here posted its link, and a one-use link (a sign-in link pasted by mistake) is used up by the fetch"}
     - {name: mail_domain, type: data, max_length: 253, label: Mail Domain, description: "With hosted mail (a Stalwart server the operator runs): the domain whose people get a mailbox there, e.g. acme.com. Empty: no hosted mailboxes"}
   actions:
     - {name: sync_mail, label: Sync Mailboxes, permission: write}

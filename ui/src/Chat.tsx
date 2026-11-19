@@ -67,6 +67,7 @@ import {
   type ChannelSummary,
   type Message,
   type Person,
+  type Preview,
   type Show,
 } from "./lib/chat";
 import { openCall, useMeetAvailable } from "./lib/meet";
@@ -823,6 +824,7 @@ function MessageRow({
           <>
             {m.body && <Markdown source={showMentions(m.body, people)} />}
             <Attachments files={attachmentsOf(m)} />
+            <LinkCards previews={m.previews} />
             <ReactionChips m={m} react={react} />
           </>
         )}
@@ -924,6 +926,24 @@ function ReactionChips({ m, react }: { m: Message; react: ReturnType<typeof useR
         </button>
       ))}
     </div>
+  );
+}
+
+/** What the pages a message links to say of themselves: text only, each linking to the address as it was posted. */
+function LinkCards({ previews }: { previews?: Preview[] }) {
+  if (!previews?.length) return null;
+  return (
+    <ul className="mt-1 grid max-w-md gap-1" aria-label={tr("Link previews")}>
+      {previews.map((p) => (
+        <li key={p.url} className="rounded-md border-s-4 border-primary/40 bg-muted/40 px-2 py-1">
+          <p className="truncate text-xs text-muted-foreground">{isolate(p.site)}</p>
+          <a className="block truncate text-sm font-medium text-primary hover:underline" href={p.url} target="_blank" rel="noopener noreferrer nofollow">
+            {isolate(p.title)}
+          </a>
+          {p.description && <p className="line-clamp-2 text-xs text-muted-foreground">{isolate(p.description)}</p>}
+        </li>
+      ))}
+    </ul>
   );
 }
 

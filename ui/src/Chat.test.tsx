@@ -19,6 +19,7 @@ const message = {
   body: "Ship it on Friday",
   posted_at: "2026-11-18T09:00:00Z",
   reactions: { "👍": [ME, "bob@test.test"], "🎉": ["bob@test.test"] },
+  previews: [{ url: "https://news.example.com/q3?ref=chat", title: "Q3 plan", description: "What ships next", site: "Example News" }],
   pinned_at: "2026-11-18T09:05:00Z",
 };
 const channel = { id: "c1", name: "general", title: "#general", type: "Public", role: "Owner", members: [{ email: ME, role: "Owner" }], unread: 0 };
@@ -154,5 +155,16 @@ describe("chat, mounted", { timeout: 60_000 }, () => {
     expect(changed?.method).toBe("PATCH");
     expect(JSON.parse(changed!.body!)).toMatchObject({ emoji: "🎉", text: "Away" });
     expect(asked.some((a) => a.path === "/api/v1/ChatStatus" && a.method === "POST")).toBe(false);
+  });
+
+  it("shows a link's card, linking to the address as it was posted", async () => {
+    const { host, close } = await mount("/chat/c1");
+    const card = host.querySelector<HTMLAnchorElement>('[aria-label="Link previews"] a');
+    expect(card?.textContent).toBe("Q3 plan");
+    expect(card?.getAttribute("href")).toBe("https://news.example.com/q3?ref=chat");
+    expect(card?.getAttribute("rel")).toBe("noopener noreferrer nofollow");
+    expect(card?.getAttribute("target")).toBe("_blank");
+    expect(host.textContent).toContain("Example News");
+    await close();
   });
 });

@@ -401,10 +401,18 @@ impl DocHook for MessageHook {
         Ok(Some(out))
     }
 
-    async fn after_save(&self, hc: &mut HookCtx<'_>, doc: &Doc, _old: Option<&Doc>) -> Result<()> {
+    async fn after_save(&self, hc: &mut HookCtx<'_>, doc: &Doc, old: Option<&Doc>) -> Result<()> {
         // Uploads attached to nothing yet join the message (members download them through
         // /api/app/comms/attachments, which checks membership).
-        util::attach_files(hc.tx, hc.ctx.tenant, doc.get("attachments"), "ChatMessage", util::doc_id(doc)?).await
+        util::attach_files(hc.tx, hc.ctx.tenant, doc.get("attachments"), "ChatMessage", util::doc_id(doc)?).await?;
+        // Its links' cards, by a job after the commit: for a new text with an address in it, and for an edit (which
+        // may also take the cards of links it removed away).
+        let body = s(doc, "body").unwrap_or_default();
+        let edited = old.is_some_and(|o| s(o, "body").unwrap_or_default() != body);
+        if !util::b(doc, "deleted") && ((old.is_none() && body.contains("://")) || edited) {
+            crate::preview::queue(hc.tx, hc.ctx.tenant, util::doc_id(doc)?, body).await?;
+        }
+        Ok(())
     }
 }
 
@@ -517,6 +525,14 @@ pub(crate) async fn call_title(tx: &mut Tx, ctx: &Ctx, channel: Uuid) -> Result<
 async fn push(tx: &mut Tx, tenant: Uuid, emails: &[String], data: Value) -> Result<()> {
     for u in util::users(tx, tenant, emails).await? {
         notify::push(tx, tenant, u.id, "chat", data.clone()).await?;
+    }
+    Ok(())
+}
+
+/// Pushes a chat event to the members of a channel (at commit), for work that has only its id (a job).
+pub(crate) async fn push_to_channel(tx: &mut Tx, tenant: Uuid, channel: Uuid, data: Value) -> Result<()> {
+    if let Some(c) = load_channel(tx, tenant, channel).await? {
+        push(tx, tenant, &member_emails(&c), data).await?;
     }
     Ok(())
 }
@@ -891,6 +907,7 @@ fn message_sql(filter: &str) -> String {
          'body', case when x.deleted then '' else x.body end, 'parent', x.parent_message, 'mentions', coalesce(x.mentions, '[]'::jsonb), \
          'attachments', case when x.deleted then '[]'::jsonb else coalesce(x.attachments, '[]'::jsonb) end, 'deleted', x.deleted, \
          'reactions', case when x.deleted then '{{}}'::jsonb else coalesce(x.reactions, '{{}}'::jsonb) end, 'pinned_at', {pinned}, \
+         'previews', case when x.deleted then '[]'::jsonb else coalesce(x.previews, '[]'::jsonb) end, \
          'posted_at', {posted}, 'edited_at', {edited}, \
          'reply_count', (select count(*) from e_chat_message r where r.tenant_id = x.tenant_id and r.parent_message = x.id and not r.deleted), \
          'last_reply_at', (select {reply} from e_chat_message r where r.tenant_id = x.tenant_id and r.parent_message = x.id and not r.deleted order by r.posted_at desc limit 1)) \
@@ -1193,7 +1210,7 @@ async fn delete(k: &Kernel, ctx: &Ctx, message: Uuid) -> Result<Value> {
     if !own && c.role(&ctx.email) != Some("Owner") && !ctx.has_role("Chat Admin") {
         return Err(Error::Forbidden("you can only delete your own messages".into()));
     }
-    let patch = util::obj(json!({"deleted": true, "body": "", "attachments": [], "mentions": [], "reactions": null, "pinned_at": null}));
+    let patch = util::obj(json!({"deleted": true, "body": "", "attachments": [], "mentions": [], "reactions": null, "pinned_at": null, "previews": null}));
     k.update_tx(&util::elevated(ctx), &mut tx, "ChatMessage", message, patch, None).await?;
     push(&mut tx, ctx.tenant, &member_emails(&c), json!({"event": "deleted", "channel": c.id, "message": message})).await?;
     tx.commit().await?;

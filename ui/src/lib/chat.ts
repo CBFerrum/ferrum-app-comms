@@ -81,6 +81,15 @@ export interface Message {
   reactions?: Record<string, string[]>;
   /** When it was pinned in its channel. */
   pinned_at?: string | null;
+  /** What the pages it links to say of themselves, fetched by the server after it was posted. */
+  previews?: Preview[];
+}
+
+export interface Preview {
+  url: string;
+  title: string;
+  description?: string | null;
+  site: string;
 }
 
 /** The emoji the reaction palette offers. */

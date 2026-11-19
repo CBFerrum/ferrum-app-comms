@@ -351,6 +351,8 @@ async fn fresh_kernel(mailer: TestMailer) -> (Arc<Kernel>, ferrum_kernel::vault:
     let mut comms = None;
     hooks.app("comms", &[], |h| {
         ferrum_app_comms::register(h);
+        // Link previews may reach this machine's stand-in, for the first request of a link only.
+        h.add_job_handler(Arc::new(ferrum_app_comms::preview::LinkPreviews { stand_in: true }));
         comms = Some(h.vault());
     });
     hooks.own("comms", &ferrum_app_comms::packages().unwrap().iter().map(|p| p.name().to_string()).collect::<Vec<_>>());
@@ -1634,6 +1636,7 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     chat_groups(&t, &users).await;
     chat_status(&t, &admin, &users).await;
     interapp_mail(&t, &users).await;
+    chat_previews(&t, &users).await;
     hosted_mail(&t, &admin, &users, &imap).await;
 
     // What meetings keep of a person, in Comms' own table: in their copy, and gone with their erasure,
@@ -2040,6 +2043,149 @@ async fn interapp_mail(t: &T, users: &HashMap<String, Ctx>) {
     // they_do_not_change_afterwards
     refused(k.update(alice, "Communication", id, obj(json!({"in_reply_to": "other@customer.test"})), None).await, "invalid");
     assert_eq!(k.get(alice, "Communication", id, false).await.unwrap()["in_reply_to"], json!("order-77@customer.test"));
+}
+
+/// A web server on this machine for link previews: each path answers as set, after a delay, and every path asked is noted.
+#[derive(Clone, Default)]
+struct Site {
+    pages: Arc<Mutex<HashMap<String, (u16, Vec<(String, String)>, Vec<u8>, u64)>>>,
+    asked: Arc<Mutex<Vec<String>>>,
+}
+
+impl Site {
+    async fn start() -> (Site, String) {
+        let site = Site::default();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let s = site.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((sock, _)) = listener.accept().await else { return };
+                let s = s.clone();
+                tokio::spawn(async move {
+                    let mut reader = BufReader::new(sock);
+                    let mut line = String::new();
+                    let _ = reader.read_line(&mut line).await;
+                    loop {
+                        let mut h = String::new();
+                        if reader.read_line(&mut h).await.unwrap_or(0) == 0 || h.trim_end().is_empty() {
+                            break;
+                        }
+                    }
+                    let path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
+                    s.asked.lock().unwrap().push(path.clone());
+                    let page = s.pages.lock().unwrap().get(&path).cloned();
+                    let (status, headers, body, delay) = page.unwrap_or((404, vec![], vec![], 0));
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                    let mut head = format!("HTTP/1.1 {status} X\r\ncontent-length: {}\r\nconnection: close\r\n", body.len());
+                    for (n, v) in &headers {
+                        head.push_str(&format!("{n}: {v}\r\n"));
+                    }
+                    head.push_str("\r\n");
+                    let mut sock = reader.into_inner();
+                    let _ = sock.write_all(head.as_bytes()).await;
+                    let _ = sock.write_all(&body).await;
+                });
+            }
+        });
+        (site, base)
+    }
+
+    fn page(&self, path: &str, status: u16, headers: &[(&str, &str)], body: Vec<u8>, delay_ms: u64) {
+        let headers = headers.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect();
+        self.pages.lock().unwrap().insert(path.to_string(), (status, headers, body, delay_ms));
+    }
+
+    fn asked(&self) -> Vec<String> {
+        self.asked.lock().unwrap().clone()
+    }
+}
+
+/// Link previews: the server fetches what is posted, through the platform's vetted client, and never a private address
+/// at any hop (the stand-in on this machine is allowed for a link's first request only, and only in tests).
+async fn chat_previews(t: &T, users: &HashMap<String, Ctx>) {
+    use ferrum_app_comms::preview;
+    let (k, alice, mgr) = (&t.k, &users["alice"], &users["mgr"]);
+    let (site, base) = Site::start().await;
+    let html = [("content-type", "text/html; charset=utf-8")];
+    site.page("/a", 200, &html, br#"<html><head><title>Plain</title><meta property="og:title" content="Q3 plan &amp; notes"><meta name="description" content="What ships next"></head></html>"#.to_vec(), 0);
+    let room = uid(&t.ok(alice, "POST", "/chat/channels", &[], json!({"name": "links", "type": "Private", "members": ["bob@acme.test"]})).await);
+    let post = |body: String| async move { uid(&t.ok(alice, "POST", &format!("/chat/channels/{room}/messages"), &[], json!({"body": body})).await) };
+    let run = || async { while t.k.run_jobs_once(4).await.unwrap() > 0 {} };
+    let cards = |m: Uuid| async move {
+        t.scalar::<Value>("select coalesce(previews, '[]'::jsonb) from e_chat_message where tenant_id = $1 and id = $2", Some(m)).await
+    };
+
+    // a_posted_link_gets_a_card_after_its_job_ran
+    let link = format!("{base}/a");
+    let m = post(format!("the plan: {link}.")).await;
+    assert_eq!(cards(m).await, json!([]), "nothing before the job");
+    run().await;
+    assert_eq!(cards(m).await, json!([{"url": link, "title": "Q3 plan & notes", "description": "What ships next", "site": "127.0.0.1"}]));
+    let listed = t.ok(&users["bob"], "GET", &format!("/chat/channels/{room}/messages"), &[], Value::Null).await;
+    assert_eq!(listed["messages"].as_array().unwrap().iter().find(|r| uid(r) == m).unwrap()["previews"][0]["title"], json!("Q3 plan & notes"));
+
+    // a_link_to_a_private_address_gets_no_card: with the stand-in flag off, refused before any connection.
+    let before = site.asked().len();
+    for refused_link in [format!("{base}/a"), "https://localhost/a".to_string(), "https://127.0.0.1/a".to_string(), "https://[::1]/a".to_string()] {
+        assert_eq!(preview::fetch_preview(k, &refused_link, false).await, (None, 0), "{refused_link}");
+    }
+    assert_eq!(site.asked().len(), before, "the stand-in saw no request");
+
+    // a_link_that_redirects_to_a_private_address_gets_no_card: the first hop may reach the stand-in, the next may not.
+    let port = base.rsplit(':').next().unwrap().to_string();
+    for (path, to) in
+        [("/r1", format!("{base}/a")), ("/r2", format!("https://localhost:{port}/a")), ("/r3", "https://127.0.0.1/a".to_string()), ("/r4", "/a".to_string())]
+    {
+        site.page(path, 302, &[("location", &to)], vec![], 0);
+        let before = site.asked().len();
+        assert_eq!(preview::fetch_preview(k, &format!("{base}{path}"), true).await, (None, 1), "{path} -> {to}");
+        assert_eq!(site.asked()[before..], [path.to_string()], "only the first hop reached this machine");
+    }
+
+    // a_page_larger_than_the_cap_is_read_only_up_to_it
+    let mut big = br#"<html><head><title>Big page</title>"#.to_vec();
+    big.extend(std::iter::repeat_n(b' ', preview::MAX_PAGE + 1000));
+    big.extend_from_slice(br#"<meta name="description" content="past the cap"></head>"#);
+    big.extend(std::iter::repeat_n(b'x', 4 << 20));
+    site.page("/big", 200, &html, big, 0);
+    let (card, _) = preview::fetch_preview(k, &format!("{base}/big"), true).await;
+    let card = card.expect("a card from what was read");
+    assert_eq!((card.title.as_str(), card.description.as_deref()), ("Big page", None));
+
+    // a_page_that_is_not_html_gets_no_card
+    site.page("/json", 200, &[("content-type", "application/json")], br#"<title>not a page</title>"#.to_vec(), 0);
+    assert_eq!(preview::fetch_preview(k, &format!("{base}/json"), true).await.0, None);
+
+    // a_slow_page_gets_no_card_within_the_time_limit
+    site.page("/slow", 200, &html, br#"<title>Too late</title>"#.to_vec(), 12_000);
+    let started = std::time::Instant::now();
+    assert_eq!(preview::fetch_preview(k, &format!("{base}/slow"), true).await.0, None);
+    assert!(started.elapsed() < Duration::from_secs(8), "{:?}", started.elapsed());
+
+    // an_edit_that_removes_the_link_removes_the_card
+    t.ok(alice, "PATCH", &format!("/chat/messages/{m}"), &[], json!({"body": "the plan: later"})).await;
+    run().await;
+    assert_eq!(cards(m).await, json!([]));
+
+    // a_card_is_not_written_onto_a_changed_message: the text changed after the job read it.
+    let w = post("see nothing yet".to_string()).await;
+    run().await;
+    t.exec("update e_chat_message set body = 'changed meanwhile' where tenant_id = $1 and id = $2", Some(w)).await;
+    let card = json!({"url": link, "title": "Stale", "description": null, "site": "127.0.0.1"});
+    assert!(!preview::write_cards(k, t.tenant, w, "see nothing yet", std::slice::from_ref(&card)).await.unwrap());
+    assert_eq!(cards(w).await, json!([]), "no card describes a text the message no longer has");
+    assert!(preview::write_cards(k, t.tenant, w, "changed meanwhile", &[card]).await.unwrap(), "the text it was made from takes it");
+
+    // previews_off_fetches_nothing
+    let settings = k.list(mgr, "CommsSettings", &ferrum_kernel::ListQuery::default()).await.unwrap().rows[0].clone();
+    let settings_id = uid(&Value::Object(settings));
+    k.update(mgr, "CommsSettings", settings_id, obj(json!({"chat_link_previews": "Off"})), None).await.unwrap();
+    let before = site.asked().len();
+    let off = post(format!("quiet {base}/a")).await;
+    run().await;
+    assert_eq!((cards(off).await, site.asked().len()), (json!([]), before));
+    k.update(mgr, "CommsSettings", settings_id, obj(json!({"chat_link_previews": "On"})), None).await.unwrap();
 }
 
 /// Mail's sockets go where the platform's guard lets outbound calls go: an account whose SMTP or IMAP host is

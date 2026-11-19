@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.33.0
+
+Database change: Chat Message gains `previews`, Communication Settings gains `chat_link_previews` (empty reads as On).
+Interface change: link cards under messages. The package `comms` is 0.11.0.
+
+**Link previews in Chat.** A message with links shows, a few seconds after it is posted, a card per link (up to
+three) with the page's title, description and site name: text only, no pictures yet (a remote picture would be loaded
+by every reader's browser from the linked site; a stored copy needs the platform's file services). The server fetches
+each page in a background job (`comms.link_preview`), never inside a request or a transaction, through the platform's
+vetted client: HTTPS only, the host resolved once and refused when private, loopback or link-local, the connection
+pinned to the addresses checked. Redirects are followed by Comms, each hop vetted again from the start; at most four
+requests and ten seconds a link, 256 KB a page, 120 fetches a minute a workspace. Nothing from a page is used as
+markup or as an address: the card links to the address as it was posted. An edit that removes a link removes its
+card; a card is written only onto the text it was made from. Logs carry a link's host, never its path or query.
+
+**One switch.** Fetching a link tells the linked site that someone here posted it, and uses up a one-use link. A
+Comms Manager turns previews off for the workspace (Communication Settings, Link Previews in Chat).
+
 ## 0.32.0
 
 No database change, no interface change. The package `comms` is 0.10.0.

@@ -22,6 +22,7 @@ mod mailadmin;
 pub(crate) mod meet;
 pub mod meetings;
 pub mod outbound;
+pub mod preview;
 mod proposals;
 pub mod recur;
 mod reports;
@@ -73,6 +74,7 @@ pub fn register(hooks: &mut HookRegistry) {
         .add_site("comms", site);
     hooks.add_personal_held(Arc::new(meet::Transcripts));
     hooks.add_personal_held(Arc::new(chat::Reactions));
+    hooks.add_job_handler(Arc::new(preview::LinkPreviews { stand_in: false }));
     hooks.add_personal_held(Arc::new(meetings::Attendance));
     // The programs beside the server whose files Comms renders as they start (`ferrum task render service:<name>`).
     hooks.add_companion("meet", Arc::new(meet::Service));

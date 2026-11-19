@@ -42,6 +42,7 @@
     - {name: deleted, type: check, read_only: true, in_filter: true}
     - {name: reactions, type: json, read_only: true, no_copy: true, description: "{emoji: [addresses of the members who reacted with it]}; changed only by the React and Remove Reaction actions"}
     - {name: pinned_at, type: datetime, read_only: true, no_copy: true, in_filter: true, description: "When it was pinned in its channel; empty when it is not"}
+    - {name: previews, type: json, read_only: true, no_copy: true, description: "[{url, title, description, site}]: what the linked pages say of themselves, fetched by the server after the message is posted; at most three"}
   indexes: [[channel, posted_at], [parent_message, posted_at], [channel, pinned_at]]
   list: {columns: [posted_at, channel, sender, body], sort: posted_at desc}
   # Chat's own buttons (hidden from the generic record page), and operations for a member's agent. A member reads
