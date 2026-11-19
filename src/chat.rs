@@ -1051,24 +1051,36 @@ async fn post(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, Value>) ->
     let text = body_text(&body)?;
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let c = readable_channel(&mut tx, ctx, channel).await?;
+    let parent: Option<Uuid> =
+        body.get("parent").and_then(Value::as_str).map(|p| p.parse()).transpose().map_err(|_| Error::field("parent", "must be a message id"))?;
+    let root = may_post(&mut tx, ctx, &c, parent).await?;
+    let mentioned = mentioned(&mut tx, ctx.tenant, &c, &text, body.get("mentions"), &ctx.email).await?;
+    let attachments = util::check_files(k, &mut tx, ctx, body.get("attachments")).await?;
+    let message = deliver(k, &mut tx, ctx, &c, None, &text, root, mentioned, attachments).await?;
+    let out = message_json(&mut tx, ctx.tenant, message).await?;
+    tx.commit().await?;
+    Ok(out)
+}
+
+/// What a member's post must pass, by the route or the operation: a member of a channel that is not archived, a
+/// thread of this channel, and the owners-only rule for new posts. The thread's first message, for a reply.
+async fn may_post(tx: &mut Tx, ctx: &Ctx, c: &Channel, parent: Option<Uuid>) -> Result<Option<Uuid>> {
     if c.role(&ctx.email).is_none() {
         return Err(Error::Forbidden("join the channel to post".into()));
     }
     if c.archived {
         return Err(Error::invalid("this channel is archived"));
     }
-    let parent: Option<Uuid> =
-        body.get("parent").and_then(Value::as_str).map(|p| p.parse()).transpose().map_err(|_| Error::field("parent", "must be a message id"))?;
     // Replies to replies join the thread's first message.
     let root = match parent {
         Some(p) => {
             let row: Option<(Uuid, Option<Uuid>)> = sqlx::query_as("select channel, parent_message from e_chat_message where tenant_id = $1 and id = $2")
                 .bind(ctx.tenant)
                 .bind(p)
-                .fetch_optional(&mut *tx)
+                .fetch_optional(&mut **tx)
                 .await?;
             match row {
-                Some((ch, up)) if ch == channel => Some(up.unwrap_or(p)),
+                Some((ch, up)) if ch == c.id => Some(up.unwrap_or(p)),
                 _ => return Err(Error::field("parent", "is not a message of this channel")),
             }
         }
@@ -1077,36 +1089,66 @@ async fn post(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, Value>) ->
     if c.owners_post && root.is_none() && c.role(&ctx.email) != Some("Owner") {
         return Err(Error::Forbidden("only the channel's owners start posts here; members can reply in threads".into()));
     }
-    let me = ctx.email.to_lowercase();
-    let mut mentioned: BTreeSet<String> = emails(body.get("mentions")).into_iter().collect();
-    mentioned.extend(MENTION.captures_iter(&text).map(|m| m[1].to_lowercase()));
-    mentioned.remove(&me);
+    Ok(root)
+}
+
+/// The people a text mentions (`<@address>`, and an explicit list), the poster aside, of those who can read the channel.
+async fn mentioned(tx: &mut Tx, tenant: Uuid, c: &Channel, text: &str, extra: Option<&Value>, me: &str) -> Result<Vec<String>> {
+    let mut mentioned: BTreeSet<String> = emails(extra).into_iter().collect();
+    mentioned.extend(MENTION.captures_iter(text).map(|m| m[1].to_lowercase()));
+    mentioned.remove(&me.to_lowercase());
     // Only people who can read the channel learn about the message.
-    let mentioned: Vec<String> = if c.kind == "Public" {
-        util::users(&mut tx, ctx.tenant, &mentioned.into_iter().collect::<Vec<_>>()).await?.into_iter().map(|u| u.email).collect()
+    Ok(if c.kind == "Public" {
+        util::users(tx, tenant, &mentioned.into_iter().collect::<Vec<_>>()).await?.into_iter().map(|u| u.email).collect()
     } else {
         mentioned.into_iter().filter(|m| c.role(m).is_some()).collect()
-    };
-    let attachments = util::check_files(k, &mut tx, ctx, body.get("attachments")).await?;
-    let doc = util::obj(json!({"channel": channel, "body": text, "parent_message": root, "mentions": mentioned, "attachments": attachments}));
-    let saved = k.insert_tx(&util::elevated(ctx), &mut tx, "ChatMessage", doc).await?;
+    })
+}
+
+/// Stores a message in a channel and tells its people, as every post does: by a member (`ctx`, the person), or by an
+/// incoming webhook (`webhook`: its id and name; `ctx` is then the system). A webhook's mentions are shown but
+/// notify nobody by name.
+#[allow(clippy::too_many_arguments)]
+async fn deliver(
+    k: &Kernel,
+    tx: &mut Tx,
+    ctx: &Ctx,
+    c: &Channel,
+    webhook: Option<(Uuid, &str)>,
+    text: &str,
+    root: Option<Uuid>,
+    mentioned: Vec<String>,
+    attachments: Value,
+) -> Result<Uuid> {
+    let channel = c.id;
+    let mut doc = util::obj(json!({"channel": channel, "body": text, "parent_message": root, "mentions": mentioned, "attachments": attachments}));
+    if let Some((id, name)) = webhook {
+        doc.insert("webhook".into(), json!(id));
+        doc.insert("sender_label".into(), json!(name));
+    }
+    let saved = k.insert_tx(&util::elevated(ctx), tx, "ChatMessage", doc).await?;
     let message = util::doc_id(&saved)?;
-    sqlx::query("update e_chat_channel set last_message_at = now() where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(channel).execute(&mut *tx).await?;
-    if root.is_none() {
+    sqlx::query("update e_chat_channel set last_message_at = now() where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(channel).execute(&mut **tx).await?;
+    let me = if webhook.is_some() { String::new() } else { ctx.email.to_lowercase() };
+    if root.is_none() && webhook.is_none() {
         sqlx::query(sqlx::AssertSqlSafe(format!("update {MEMBERS} set last_read_at = now() where tenant_id = $1 and parent_id = $2 and member = $3")))
             .bind(ctx.tenant)
             .bind(channel)
             .bind(&me)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
     }
-    push(&mut tx, ctx.tenant, &member_emails(&c), json!({"event": "message", "channel": channel, "message": message, "parent": root, "sender": me})).await?;
-    let who = if ctx.full_name.trim().is_empty() { ctx.email.clone() } else { ctx.full_name.clone() };
-    let snippet = util::cut(&text, 200);
+    push(tx, ctx.tenant, &member_emails(c), json!({"event": "message", "channel": channel, "message": message, "parent": root, "sender": me})).await?;
+    let who = match webhook {
+        Some((_, name)) => name.to_string(),
+        None if ctx.full_name.trim().is_empty() => ctx.email.clone(),
+        None => ctx.full_name.clone(),
+    };
+    let snippet = util::cut(text, 200);
     let snippet = if snippet.trim().is_empty() { "Sent a file".to_string() } else { snippet };
     // Each person hears once, of the most direct thing: a mention, then what the conversation is
     // to them (a direct message, a thread they are in, a channel they chose to hear in full).
-    let mut hears: BTreeMap<String, &str> = mentioned.iter().map(|m| (m.clone(), "mention")).collect();
+    let mut hears: BTreeMap<String, &str> = if webhook.is_some() { BTreeMap::new() } else { mentioned.iter().map(|m| (m.clone(), "mention")).collect() };
     match root {
         _ if c.kind == "Direct" => {
             for m in c.members.iter().filter(|m| m.email != me && c.loud(&m.email) != Loud::Nothing) {
@@ -1114,7 +1156,7 @@ async fn post(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, Value>) ->
             }
         }
         Some(r) => {
-            for p in thread_people(&mut tx, ctx.tenant, r).await? {
+            for p in thread_people(tx, ctx.tenant, r).await? {
                 if p != me && c.member(&p).is_some() && c.loud(&p) != Loud::Nothing {
                     hears.entry(p).or_insert("thread");
                 }
@@ -1127,7 +1169,7 @@ async fn post(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, Value>) ->
         }
     }
     let wanted: Vec<String> = hears.keys().cloned().collect();
-    let users: BTreeMap<String, Uuid> = util::users(&mut tx, ctx.tenant, &wanted).await?.into_iter().map(|u| (u.email, u.id)).collect();
+    let users: BTreeMap<String, Uuid> = util::users(tx, ctx.tenant, &wanted).await?.into_iter().map(|u| (u.email, u.id)).collect();
     for (email, by) in hears {
         let Some(user) = users.get(&email) else { continue };
         let title = match by {
@@ -1136,22 +1178,10 @@ async fn post(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, Value>) ->
             "thread" => format!("{who} replied in a thread in {}", c.label()),
             _ => format!("{who} in {}", c.label()),
         };
-        notify::send_kind(
-            &mut tx,
-            ctx.tenant,
-            *user,
-            &format!("comms.{by}"),
-            "inapp",
-            &util::cut(&title, 200),
-            Some(&snippet),
-            Some("ChatMessage"),
-            Some(message),
-        )
-        .await?;
+        notify::send_kind(tx, ctx.tenant, *user, &format!("comms.{by}"), "inapp", &util::cut(&title, 200), Some(&snippet), Some("ChatMessage"), Some(message))
+            .await?;
     }
-    let out = message_json(&mut tx, ctx.tenant, message).await?;
-    tx.commit().await?;
-    Ok(out)
+    Ok(message)
 }
 
 /// The message and its channel, when the caller can read them.
