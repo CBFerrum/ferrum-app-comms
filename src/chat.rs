@@ -882,6 +882,15 @@ async fn set_members(k: &Kernel, ctx: &Ctx, tx: &mut Tx, channel: Uuid, change: 
     Ok(())
 }
 
+/// Whether `ctx` hosts a call of this channel: an owner or a Chat Admin, or either person of a direct conversation.
+pub(crate) async fn channel_host(tx: &mut Tx, ctx: &Ctx, channel: Uuid) -> Result<bool> {
+    Ok(match load_channel(tx, ctx.tenant, channel).await? {
+        Some(c) if c.kind == "Direct" => c.role(&ctx.email).is_some(),
+        Some(c) => owner_or_admin(&c, ctx).is_ok(),
+        None => false,
+    })
+}
+
 fn owner_or_admin(c: &Channel, ctx: &Ctx) -> Result<()> {
     if c.role(&ctx.email) == Some("Owner") || ctx.has_role("Chat Admin") {
         Ok(())

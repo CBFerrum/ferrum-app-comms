@@ -12,6 +12,7 @@ mod dav;
 mod dns;
 mod groups;
 mod hosted;
+mod hosts;
 mod hours;
 pub mod ics;
 pub mod inbound;
@@ -65,6 +66,7 @@ pub fn register(hooks: &mut HookRegistry) {
         .register("ChatMessage", Arc::new(chat::MessageHook))
         .register("ChatStatus", Arc::new(chat::StatusHook))
         .register("ChatWebhook", Arc::new(chat::WebhookHook))
+        .register("Meeting", Arc::new(hosts::MeetingHook))
         .register("CalendarEvent", Arc::new(calendar::EventHook))
         .register("CommsSettings", Arc::new(hosted::SettingsHook))
         .register("HostedMailbox", Arc::new(hosted::MailboxHook))
@@ -76,6 +78,7 @@ pub fn register(hooks: &mut HookRegistry) {
     hooks.add_personal_held(Arc::new(meet::Transcripts));
     hooks.add_personal_held(Arc::new(chat::Reactions));
     hooks.add_job_handler(Arc::new(preview::LinkPreviews { stand_in: false }));
+    hooks.add_job_handler(Arc::new(hosts::MeetCommand));
     hooks.add_personal_held(Arc::new(meetings::Attendance));
     // The programs beside the server whose files Comms renders as they start (`ferrum task render service:<name>`).
     hooks.add_companion("meet", Arc::new(meet::Service));
@@ -106,6 +109,7 @@ pub async fn maintenance_with(k: &Kernel, tenant: Uuid, mailboxes: &dyn MailboxC
         ("reminders", calendar::fire_reminders(k, tenant).await),
         ("calendar subscriptions", subscribe::run(k, tenant, SUBSCRIBE_BUDGET).await),
         ("meeting attendance", meetings::upkeep(k, tenant).await),
+        ("meeting removals", hosts::purge(k, tenant).await.map(|n| n as usize)),
         ("hosted mail", hosted::reconcile_due(k, tenant).await.map(|_| 0)),
         ("purge", purge(k, tenant).await),
     ];

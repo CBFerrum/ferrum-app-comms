@@ -107,6 +107,13 @@ impl Egress {
                             "/twirp/livekit.Egress/StartRoomCompositeEgress" => (200, json!({"egress_id": "EG_one", "room_name": room})),
                             "/twirp/livekit.RoomService/ListParticipants" => (200, json!({"participants": h.lock().unwrap().clone()})),
                             "/twirp/livekit.RoomService/DeleteRoom" => (200, json!({})),
+                            // A person with a microphone and a camera (TrackType AUDIO is the enum's first value: protojson leaves it out).
+                            "/twirp/livekit.RoomService/GetParticipant" => (
+                                200,
+                                json!({"identity": body["identity"], "tracks": [{"sid": "TR_mic", "muted": false}, {"sid": "TR_cam", "type": "VIDEO", "muted": false}]}),
+                            ),
+                            "/twirp/livekit.RoomService/MutePublishedTrack" => (200, json!({"track": {"sid": body["track_sid"], "muted": true}})),
+                            "/twirp/livekit.RoomService/RemoveParticipant" => (200, json!({})),
                             "/twirp/livekit.Egress/StopEgress" => {
                                 s.store(true, Ordering::SeqCst);
                                 (200, json!({"egress_id": body["egress_id"], "status": "EGRESS_ENDING"}))
@@ -1551,6 +1558,7 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     refused(join(bob, "event", event_id).await, "invalid");
     livekit.refuse.store(false, std::sync::atomic::Ordering::SeqCst);
     app_meetings(&t, &users, &livekit).await;
+    meet_hosts(&t, &users, &livekit).await;
     // ───────────── LiveKit's key and secret from Comms' vault ─────────────
     let signed_with = |token: &str, secret: &str| {
         use hmac::Mac;
@@ -2283,6 +2291,129 @@ async fn chat_webhooks(t: &T, users: &HashMap<String, Ctx>) {
     // the_token_is_nowhere_in_plain
     let secret = token2.split_once('.').unwrap().1.to_string();
     assert!(plain_anywhere(k, &secret).await.is_empty(), "the webhook's secret is kept only in the vault");
+}
+
+/// Meet's hosts and their controls: a Meeting record per call, made on the first join; hosts worked out from the room,
+/// event or channel; mute, remove and end queued as jobs that call the meeting server after the commit; who may record.
+async fn meet_hosts(t: &T, users: &HashMap<String, Ctx>, livekit: &Egress) {
+    use ferrum_kernel::capability::Invocation;
+    let (k, alice, bob) = (&t.k, &users["alice"], &users["bob"]);
+    async fn control(k: &Kernel, who: &Ctx, action: &str, meeting: Uuid, params: Value, key: &str) -> Result<ferrum_kernel::capability::Receipt, Error> {
+        k.invoke(who, Invocation::new(format!("comms.meeting.{action}"), json!({"id": meeting, "params": params})).key(key.to_string())).await
+    }
+    let join = |who: &'static str, kind: &'static str, id: Uuid| async move {
+        t.call(Some(&users[who]), "POST", &format!("/meet/{kind}/{id}/token"), &[], Value::Null).await
+    };
+    let run = || async { while t.k.run_jobs_once(4).await.unwrap() > 0 {} };
+    let calls = |method: &str| livekit.calls.lock().unwrap().iter().filter(|(p, _, _)| p.ends_with(method)).map(|(_, _, b)| b.clone()).collect::<Vec<_>>();
+    let room = uid(&t.ok(alice, "POST", "/meet/rooms", &[], json!({"title": "Standup"})).await);
+
+    // the_first_join_makes_one_meeting_record, with passes short-lived (DECISIONS: enough to connect)
+    let (a, b) = tokio::join!(join("alice", "room", room), join("bob", "room", room));
+    let (a, b) = (a.unwrap(), b.unwrap());
+    assert_eq!(a["meeting"], b["meeting"], "{a} {b}");
+    let meeting: Uuid = a["meeting"].as_str().unwrap().parse().unwrap();
+    let rows: i64 = t.scalar("select count(*) from e_meeting where tenant_id = $1 and room like '%' || replace($2::text, '-', '')", Some(room)).await;
+    assert_eq!(rows, 1);
+    let part = b["token"].as_str().unwrap().split('.').nth(1).unwrap().to_string();
+    let pass: Value = serde_json::from_slice(&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(part).unwrap()).unwrap();
+    let life = pass["exp"].as_i64().unwrap() - pass["nbf"].as_i64().unwrap();
+    assert!(life <= 6 * 60, "a pass lasts minutes, not hours: {life} s");
+
+    // a_rooms_creator_an_events_organizer_and_a_channels_owner_are_hosts
+    assert_eq!((a["host"].clone(), b["host"].clone(), a["recording_by"].clone()), (json!(true), json!(false), json!("Everyone")));
+    let soon = chrono::Utc::now() + chrono::Duration::hours(2);
+    let iso = |d: chrono::DateTime<chrono::Utc>| d.to_rfc3339();
+    let event = uid(&Value::Object(
+        k.insert(
+            alice,
+            "CalendarEvent",
+            obj(json!({"subject": "Review", "starts_at": iso(soon), "ends_at": iso(soon + chrono::Duration::hours(1)), "visibility": "Public"})),
+        )
+        .await
+        .unwrap(),
+    ));
+    assert_eq!(
+        (join("alice", "event", event).await.unwrap()["host"].clone(), join("bob", "event", event).await.unwrap()["host"].clone()),
+        (json!(true), json!(false))
+    );
+    let ch = uid(&t.ok(alice, "POST", "/chat/channels", &[], json!({"name": "hosts", "type": "Private", "members": ["bob@acme.test"]})).await);
+    assert_eq!(
+        (join("alice", "channel", ch).await.unwrap()["host"].clone(), join("bob", "channel", ch).await.unwrap()["host"].clone()),
+        (json!(true), json!(false))
+    );
+    let dm = uid(&t.ok(bob, "POST", "/chat/direct", &[], json!({"user": "carol@acme.test"})).await);
+    assert_eq!(
+        (join("bob", "channel", dm).await.unwrap()["host"].clone(), join("carol", "channel", dm).await.unwrap()["host"].clone()),
+        (json!(true), json!(true))
+    );
+
+    // a_non_host_is_refused_every_control
+    let bobs = b["identity"].as_str().expect("the pass's identity is told to its holder").to_string();
+    let alices = a["identity"].as_str().unwrap().to_string();
+    for (action, params) in
+        [("mute", json!({"identity": alices})), ("remove", json!({"identity": alices})), ("end", json!({})), ("set_recording", json!({"by": "Hosts"}))]
+    {
+        refused(control(k, bob, action, meeting, params, &format!("bob-{action}")).await, "forbidden");
+    }
+    refused(control(k, &users["dave"], "end", meeting, json!({}), "dave-end").await, "forbidden");
+
+    // a_host_mutes_another_person: the microphone only
+    let before = calls("MutePublishedTrack").len();
+    assert_eq!(control(k, alice, "mute", meeting, json!({"identity": bobs}), "mute-1").await.unwrap().result, json!({"queued": true}));
+    run().await;
+    let muted = calls("MutePublishedTrack")[before..].to_vec();
+    assert_eq!(muted.len(), 1, "{muted:?}");
+    assert_eq!((muted[0]["identity"].clone(), muted[0]["track_sid"].clone(), muted[0]["muted"].clone()), (json!(bobs), json!("TR_mic"), json!(true)));
+    refused(control(k, alice, "mute", meeting, json!({"identity": "bad identity!"}), "mute-bad").await, "invalid");
+
+    // a_removed_member_gets_no_pass_for_six_hours
+    refused(control(k, alice, "remove", meeting, json!({"identity": alices}), "remove-self").await, "invalid");
+    control(k, alice, "remove", meeting, json!({"identity": bobs}), "remove-1").await.unwrap();
+    run().await;
+    assert!(calls("RemoveParticipant").iter().any(|c| c["identity"] == json!(bobs)));
+    refused(join("bob", "room", room).await, "forbidden");
+    join("alice", "room", room).await.expect("the host still joins");
+    t.exec("update comms_meeting_denied set until = now() - interval '1 minute' where tenant_id = $1 and $2::uuid is null", None).await;
+    join("bob", "room", room).await.expect("a pass again once the denial ended");
+
+    // ending_the_meeting_deletes_the_room_once_for_one_key
+    let deletes = |room_name: &str| calls("DeleteRoom").iter().filter(|c| c["room"] == json!(room_name)).count();
+    let room_name = format!("{}-room-{}", t.tenant.simple(), room.simple());
+    let before = deletes(&room_name);
+    let first = control(k, alice, "end", meeting, json!({}), "end-1").await.unwrap();
+    let again = control(k, alice, "end", meeting, json!({}), "end-1").await.unwrap();
+    assert!(!first.repeated && again.repeated);
+    run().await;
+    assert_eq!(deletes(&room_name) - before, 1);
+
+    // only_hosts_record_when_the_meeting_says_so
+    assert_eq!(control(k, alice, "set_recording", meeting, json!({"by": "Hosts"}), "rec-1").await.unwrap().result, json!({"recording_by": "Hosts"}));
+    refused(t.call(Some(bob), "POST", &format!("/meet/room/{room}/recordings"), &[], Value::Null).await, "forbidden");
+    let rec = t.ok(alice, "POST", &format!("/meet/room/{room}/recordings"), &[], Value::Null).await;
+    t.ok(alice, "POST", &format!("/meet/room/{room}/recordings/{}/stop", uid(&rec)), &[], Value::Null).await;
+
+    // a_meeting_server_that_is_down_is_tried_again
+    livekit.refuse.store(true, std::sync::atomic::Ordering::SeqCst);
+    control(k, alice, "mute", meeting, json!({"identity": bobs}), "mute-down").await.unwrap();
+    t.k.run_jobs_once(4).await.unwrap();
+    let (status, error): (String, Option<String>) = {
+        let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
+        let row = sqlx::query_as("select status, last_error from job where tenant_id = $1 and kind = 'comms.meet_command' order by created_at desc limit 1")
+            .bind(t.tenant)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        row
+    };
+    assert_eq!(status, "queued", "kept to be tried again: {error:?}");
+    livekit.refuse.store(false, std::sync::atomic::Ordering::SeqCst);
+    t.exec("update job set run_at = now() where tenant_id = $1 and kind = 'comms.meet_command' and status = 'queued' and $2::uuid is null", None).await;
+    run().await;
+    let done: i64 =
+        t.scalar("select count(*) from job where tenant_id = $1 and kind = 'comms.meet_command' and status <> 'done' and $2::uuid is null", None).await;
+    assert_eq!(done, 0, "every command was carried out");
 }
 
 /// Mail's sockets go where the platform's guard lets outbound calls go: an account whose SMTP or IMAP host is

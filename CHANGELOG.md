@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.35.0
+
+Database change: a new entity, Meeting (one per call of a channel, an event or a room, made on the first join), and
+the table `comms_meeting_denied` (`sql/002_meet_hosts.sql`). The package `comms` is 0.13.0. No interface change yet:
+the People panel with the controls is not built in this release.
+
+**Hosts and their controls.** Hosts are worked out, never stored: a room's creator, an event's organizer, a channel's
+owners or a Chat Admin, either person of a direct conversation. A host mutes another person's microphone, removes them
+(they get no new pass for six hours; removing oneself is refused), ends the call for everyone, and sets who may record
+(everyone, or hosts only; recordings obey it). Each is an action of the Meeting record with a contract
+(`comms.meeting.mute`, `.remove`, `.end`, `.set_recording`); mute, remove and end are queued as a job
+(`comms.meet_command`) in the action's transaction and carried out by the meeting server after the commit, tried again
+when it cannot be reached. A host's agent uses the same operations. Joining answers `meeting`, `identity`, `host` and
+`recording_by` beside the pass.
+
+**Passes last minutes.** A pass now lasts five minutes, enough to connect; the meeting server refreshes a connected
+person's pass. A removed member, or a removed named guest of another app's meeting, gets no new one until the removal
+ends; removals are purged by upkeep and go with the person's erasure.
+
 ## 0.34.0
 
 Database change: a new entity, Incoming Webhook (`ChatWebhook`); Chat Message gains `webhook` and `sender_label`.

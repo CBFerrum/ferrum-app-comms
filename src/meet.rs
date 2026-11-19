@@ -39,9 +39,9 @@ use sqlx::AssertSqlSafe;
 use std::time::Duration;
 use uuid::Uuid;
 
-/// How long a token admits its holder. LiveKit checks it when joining and reconnecting, so it
-/// covers a long meeting's reconnections; a person who loses access gets no new one.
-const TOKEN_SECONDS: i64 = 6 * 3600;
+/// How long a pass admits its holder: minutes, enough to connect (DECISIONS, Comms). A connected person's pass is
+/// refreshed by the meeting server itself; a person who loses access, or whom a host removed, gets no new one.
+const TOKEN_SECONDS: i64 = 5 * 60;
 
 pub(crate) struct Server {
     pub(crate) url: String,
@@ -168,11 +168,35 @@ async fn new_room(k: &Kernel, ctx: &Ctx, body: Map<String, Value>) -> Result<Val
 /// other is "not found".
 async fn join(k: &Kernel, ctx: &Ctx, server: &Server, kind: &str, id: Uuid) -> Result<Value> {
     let (title, guest_path) = admit(k, ctx, kind, id).await?;
+    let room = room_name(ctx.tenant, kind, id);
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    if crate::hosts::denied(&mut tx, ctx.tenant, &room, &ctx.user.simple().to_string()).await? {
+        return Err(Error::Forbidden("you were removed from this meeting".into()));
+    }
+    let host = crate::hosts::is_host(k, &mut tx, ctx, kind, id).await?;
+    tx.commit().await?;
+    let (meeting, recording_by) = crate::hosts::ensure_meeting(k, ctx.tenant, kind, id).await?;
     let name = if ctx.full_name.trim().is_empty() { ctx.email.clone() } else { ctx.full_name.clone() };
     // Each joining is its own participant, so a person can be in from two devices.
     let identity = format!("{}.{}", ctx.user.simple(), hex::encode(rand::random::<[u8; 4]>()));
-    let token = token(k, server, &identity, &name, &room_name(ctx.tenant, kind, id), chrono::Utc::now().timestamp()).await?;
-    Ok(json!({"url": server.url, "token": token, "title": title, "guest_path": guest_path}))
+    let token = token(k, server, &identity, &name, &room, chrono::Utc::now().timestamp()).await?;
+    Ok(
+        json!({"url": server.url, "token": token, "title": title, "guest_path": guest_path, "identity": identity, "meeting": meeting, "host": host, "recording_by": recording_by}),
+    )
+}
+
+/// Who may start and stop a recording: everyone who may join, or only hosts when the meeting says so.
+async fn may_record(k: &Kernel, ctx: &Ctx, kind: &str, id: Uuid) -> Result<()> {
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    let by: Option<Option<String>> = sqlx::query_scalar("select recording_by from e_meeting where tenant_id = $1 and room = $2")
+        .bind(ctx.tenant)
+        .bind(room_name(ctx.tenant, kind, id))
+        .fetch_optional(&mut *tx)
+        .await?;
+    let hosts_only = by.flatten().as_deref() == Some("Hosts");
+    let allowed = !hosts_only || crate::hosts::is_host(k, &mut tx, ctx, kind, id).await?;
+    tx.commit().await?;
+    if allowed { Ok(()) } else { Err(Error::Forbidden("only hosts record this meeting".into())) }
 }
 
 /// The LiveKit room of a meeting.
@@ -402,6 +426,7 @@ async fn recordings(k: &Kernel, ctx: &Ctx, kind: &str, id: Uuid) -> Result<Value
 async fn start_recording(k: &Kernel, ctx: &Ctx, kind: &str, id: Uuid) -> Result<Value> {
     let server = server(k).await.ok().filter(|_| recordings_on()).ok_or_else(|| Error::invalid("recordings are not set up on this server"))?;
     admit(k, ctx, kind, id).await?;
+    may_record(k, ctx, kind, id).await?;
     let room = room_name(ctx.tenant, kind, id);
     let rec = Uuid::new_v4();
     // The partial unique index keeps it to one at a time, even when two people start at once.
@@ -455,6 +480,7 @@ async fn start_recording(k: &Kernel, ctx: &Ctx, kind: &str, id: Uuid) -> Result<
 async fn stop_recording(k: &Kernel, ctx: &Ctx, kind: &str, id: Uuid, rec: Uuid) -> Result<Value> {
     let server = server(k).await?;
     admit(k, ctx, kind, id).await?;
+    may_record(k, ctx, kind, id).await?;
     let room = room_name(ctx.tenant, kind, id);
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let found: Option<(Option<String>, bool)> =
@@ -613,6 +639,12 @@ pub async fn guest(k: &Kernel, req: &SiteRequest) -> Result<SiteResponse> {
                 return Err(gone());
             }
             let title = crate::meetings::admit_guest(k, tenant, room).await?.ok_or_else(gone)?;
+            let mut tx = k.db.tenant_tx(tenant).await?;
+            let removed = crate::hosts::denied(&mut tx, tenant, &room_name(tenant, "room", room), &format!("guest.{}", hex::encode(&email))).await?;
+            tx.commit().await?;
+            if removed {
+                return Err(Error::Forbidden("you were removed from this meeting".into()));
+            }
             let identity = format!("guest.{}.{}", hex::encode(&email), hex::encode(rand::random::<[u8; 4]>()));
             let name = typed.unwrap_or(signed_name);
             let pass = token(k, &server, &identity, &format!("{name} (guest)"), &room_name(tenant, "room", room), chrono::Utc::now().timestamp()).await?;
