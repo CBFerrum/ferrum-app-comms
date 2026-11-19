@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.31.0-2563eb?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.32.0-2563eb?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 [![CI](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml/badge.svg)](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml)
@@ -41,7 +41,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 | | |
 |---|---|
-| 📦 **Version** | 0.31.0 |
+| 📦 **Version** | 0.32.0 |
 | 🖥️ **Kind** | Its own interface: four shell apps at `/mail/`, `/chat/`, `/calendar/` and `/meet/` |
 | ➕ **What it adds** | 19 entities in one package, 3 roles, 2 reports, 4 launcher apps, 3 intents, a side panel, bar search, 10 kinds of notification, 2 public pages |
 | 🧱 **Depends on** | The platform's `core` and `contacts` packages. Nothing else is required |
@@ -277,7 +277,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 - **Consent respected.** A communication has a Purpose, Transactional or Marketing. As mail goes out, each recipient is checked as they stand: marketing skips anyone who withdrew consent in any app, and nothing goes to anyone whose processing is restricted. If no one is left the email is Withheld, saying who and why.
 - **Extra headers for bulk senders.** Apps that queue mail can set `List-Unsubscribe`, `List-Id`, `Precedence`, `Auto-Submitted`, `Feedback-ID` and `X-` headers from an allow-list.
 - **Received mail keeps its headers.** Message-ID, In-Reply-To, References, Reply-To, delivered-to, Auto-Submitted, List-Id, Return-Path, the auto-reply and bounce markers, and the sender check result are stored with each received message and erased with the sender. No `x-ferrum-` header a sender wrote is kept; Mail's own verdict `x-ferrum-auth` is always written.
-- **Mail for other apps.** An app can send with Reply-To, threading headers and an envelope sender on a workspace domain, and get the Message-ID back. It can register an address or pattern (`ticket-*@`, plus-addressing) to take inbound mail once, behind a savepoint, so a failing handler loses nothing. Hosted mail can raise `MailMessage.received` and `MailMessage.sent` events (ids, addresses, thread, subject, never the body) once per message, off until the owner turns it on and never for a mailbox a manager marks private.
+- **Mail for other apps.** An app (or a person's agent) sends a mail as a Communication through the record's own create, `comms.communication.create`, declared in its `uses`: with `reply_to_address`, `in_reply_to` and `mail_references` (and, for an app, an envelope sender on a workspace domain and allow-listed headers), checked the same way whoever sends, fixed once made, and it gets the Message-ID back in the record. The Rust `outbound::send` does the same for apps that still link Comms. It can register an address or pattern (`ticket-*@`, plus-addressing) to take inbound mail once, behind a savepoint, so a failing handler loses nothing. Hosted mail can raise `MailMessage.received` and `MailMessage.sent` events (ids, addresses, thread, subject, never the body) once per message, off until the owner turns it on and never for a mailbox a manager marks private.
 
 ### 📅 Calendar: views and events
 
@@ -620,6 +620,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 ### ✅ Recently shipped
 
 - [x] **0.27.0**: Upkeep runs one workspace at a time, on whichever replica is free; a failure is kept for the workspace's administrators.
+- [x] **0.32.0**: Other apps and agents send mail as a Communication through the record's own create, with reply and threading fields checked wherever they come from.
 - [x] **0.31.0**: Custom status in Chat: an emoji and a short text, until a time.
 - [x] **0.30.0**: Group direct messages of up to nine people, one conversation per set of people, and who is typing.
 - [x] **0.29.0**: Emoji reactions and pinned messages in chat, as the message's own operations for people and their agents.
@@ -787,7 +788,7 @@ CHANGELOG.md          what changed in each version
 
 ## 📜 Changelog
 
-Every release is described in [CHANGELOG.md](CHANGELOG.md). The latest is **0.31.0**.
+Every release is described in [CHANGELOG.md](CHANGELOG.md). The latest is **0.32.0**.
 
 ## 🤝 Contributing
 

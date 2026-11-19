@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.32.0
+
+No database change, no interface change. The package `comms` is 0.10.0.
+
+**Mail for other apps through the gate.** Sending a mail as a Communication with its reply and threading fields is
+now the record's own create operation, `comms.communication.create`, which another app declares in its `uses` and
+calls with `Kernel::call_tx` (CRM's sequences and Helpdesk's replies, which compile against `outbound::send` today), and
+which a person's agent invokes: `reply_to_address`, `in_reply_to` and `mail_references` are given when the mail is
+made (they are no longer read-only) and do not change after; an app's envelope sender and headers stay for apps. The
+checks that `outbound::send` made (one Reply-To address, real message ids, at most 50 references, an envelope sender on
+a domain of the workspace) are now the Communication's own, so they hold however a mail is made. The result is the
+stored record, with its `message_id`. A repeat under the same key sends nothing more.
+
 ## 0.31.0
 
 Database change: a new entity, Chat Status (a new table; nothing to migrate). Interface change: a status button in

@@ -1633,6 +1633,7 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     chat_reactions_and_pins(&t, &admin, &users).await;
     chat_groups(&t, &users).await;
     chat_status(&t, &admin, &users).await;
+    interapp_mail(&t, &users).await;
     hosted_mail(&t, &admin, &users, &imap).await;
 
     // What meetings keep of a person, in Comms' own table: in their copy, and gone with their erasure,
@@ -1989,6 +1990,56 @@ async fn chat_status(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>) {
         .scalar("select count(*) from e_chat_status where tenant_id = $1 and (person = 'hank@acme.test' or text = 'Grilling') and $2::uuid is null", None)
         .await;
     assert_eq!(left, 0);
+}
+
+/// Another app (CRM's sequences, Helpdesk's replies) or an agent sends a mail as a Communication through the record's own
+/// create, with its reply and threading fields; Comms checks them wherever they come from, and they do not change after.
+async fn interapp_mail(t: &T, users: &HashMap<String, Ctx>) {
+    use ferrum_kernel::capability::Invocation;
+    let (k, alice, dave) = (&t.k, &users["alice"], &users["dave"]);
+    async fn send(k: &Kernel, who: &Ctx, values: Value, key: &str) -> Result<ferrum_kernel::capability::Receipt, Error> {
+        k.invoke(who, Invocation::new("comms.communication.create", json!({"values": values})).key(key.to_string())).await
+    }
+    let reply = json!({
+        "recipients": "pat@customer.test", "subject": "Re: your order 77", "content": "<p>On its way</p>",
+        "in_reply_to": "<order-77@customer.test>", "mail_references": "<start-77@customer.test> <order-77@customer.test>",
+        "reply_to_address": "Acme Help <help@acme.test>",
+    });
+
+    // a_reply_goes_out_as_a_communication_with_its_threading
+    let sent = send(k, alice, reply.clone(), "mail-77").await.expect("alice's reply is queued");
+    let id = uid(&sent.result);
+    assert!(sent.result["message_id"].as_str().is_some_and(|m| m.contains('@')), "{:?}", sent.result);
+    let stored = k.get(alice, "Communication", id, false).await.unwrap();
+    assert_eq!(stored["in_reply_to"], json!("order-77@customer.test"));
+    assert_eq!(stored["mail_references"], json!("start-77@customer.test order-77@customer.test"));
+    assert_eq!(stored["reply_to_address"], json!("Acme Help <help@acme.test>"));
+    assert_eq!(stored["thread_key"], json!("order-77@customer.test"), "a thread Mail does not have starts at the message answered");
+
+    // the_same_key_sends_once
+    let again = send(k, alice, reply.clone(), "mail-77").await.unwrap();
+    assert!(again.repeated && uid(&again.result) == id);
+    let count: i64 = t.scalar("select count(*) from e_communication where tenant_id = $1 and subject = 'Re: your order 77' and $2::uuid is null", None).await;
+    assert_eq!(count, 1);
+
+    // threading_fields_are_checked_wherever_they_come_from
+    let with = |field: &str, v: Value| {
+        let mut m = reply.as_object().unwrap().clone();
+        m.insert(field.into(), v);
+        Value::Object(m)
+    };
+    refused(send(k, alice, with("in_reply_to", json!("not an id")), "bad-1").await, "invalid");
+    refused(send(k, alice, with("reply_to_address", json!("a@x.test, b@y.test")), "bad-2").await, "invalid");
+    let many: Vec<String> = (0..51).map(|i| format!("<r{i}@customer.test>")).collect();
+    refused(send(k, alice, with("mail_references", json!(many.join(" "))), "bad-3").await, "invalid");
+    let sys = Ctx::system(t.tenant, k.registry.schema(t.tenant).await.unwrap());
+    let elsewhere = with("envelope_sender", json!("bounce@elsewhere.test"));
+    refused(k.insert(&sys, "Communication", elsewhere.as_object().unwrap().clone()).await, "invalid");
+    refused(send(k, dave, reply.clone(), "no-role").await, "forbidden");
+
+    // they_do_not_change_afterwards
+    refused(k.update(alice, "Communication", id, obj(json!({"in_reply_to": "other@customer.test"})), None).await, "invalid");
+    assert_eq!(k.get(alice, "Communication", id, false).await.unwrap()["in_reply_to"], json!("order-77@customer.test"));
 }
 
 /// Mail's sockets go where the platform's guard lets outbound calls go: an account whose SMTP or IMAP host is
