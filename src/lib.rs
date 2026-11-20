@@ -62,6 +62,7 @@ pub fn register(hooks: &mut HookRegistry) {
         .register("EmailTemplate", Arc::new(template::TemplateHook))
         .register("ChatChannel", Arc::new(chat::ChannelHook))
         .register("ChatMessage", Arc::new(chat::MessageHook))
+        .register("ChatStatus", Arc::new(chat::StatusHook))
         .register("CalendarEvent", Arc::new(calendar::EventHook))
         .register("CommsSettings", Arc::new(hosted::SettingsHook))
         .register("HostedMailbox", Arc::new(hosted::MailboxHook))
@@ -71,6 +72,7 @@ pub fn register(hooks: &mut HookRegistry) {
         .add_event_sink(Arc::new(mail::MailSink))
         .add_site("comms", site);
     hooks.add_personal_held(Arc::new(meet::Transcripts));
+    hooks.add_personal_held(Arc::new(chat::Reactions));
     hooks.add_personal_held(Arc::new(meetings::Attendance));
     // The programs beside the server whose files Comms renders as they start (`ferrum task render service:<name>`).
     hooks.add_companion("meet", Arc::new(meet::Service));
@@ -166,6 +168,18 @@ mod tests {
         assert!(schema.warnings.is_empty(), "{:?}", schema.warnings);
         assert!(schema.entity("CalendarFeed").is_some_and(|e| e.secret_fields().count() == 1));
         assert!(super::MANIFEST.contains("packages: [comms]"));
+    }
+
+    /// Chat's operations say what they do, what they return and what "done" means.
+    #[test]
+    fn the_four_actions_have_contracts() {
+        let packages = super::packages().expect("app packages");
+        let message = packages.iter().flat_map(|p| &p.entities).find(|e| e.name == "ChatMessage").expect("ChatMessage");
+        for name in ["react", "unreact", "pin", "unpin"] {
+            let a = message.actions.iter().find(|a| a.name == name).unwrap_or_else(|| panic!("action {name}"));
+            let c = a.contract.as_ref().unwrap_or_else(|| panic!("{name} has a contract"));
+            assert!(c.effect.is_some() && c.returns.is_some() && c.completion.is_some() && c.compensate_with.is_some(), "{name}: {c:?}");
+        }
     }
 
     #[test]

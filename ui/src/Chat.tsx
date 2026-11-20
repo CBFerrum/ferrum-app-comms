@@ -5,8 +5,8 @@
 // (`?m=`); its threads and details open beside it (`?thread=`, `?panel=`).
 
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, BellOff, ChevronDown, Hash, Info, Lock, MessageSquare, MessagesSquare, MoreHorizontal, Paperclip, Plus, Search, Users, Video, X } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useContext, type FormEvent } from "react";
+import { ArrowLeft, BellOff, ChevronDown, Hash, Info, Lock, MessageSquare, MessagesSquare, MoreHorizontal, Paperclip, Pin, Plus, Search, SmilePlus, Users, Video, X } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useContext, useSyncExternalStore, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import {
   Badge,
@@ -27,7 +27,7 @@ import {
   Skeleton,
   Textarea,
 } from "@ferrum/kit/primitives";
-import { api, download, errorMessage, fetchBlob, relativeTime, shell, t as tr, isolate } from "@ferrum/client";
+import { api, docPath, download, errorMessage, fetchBlob, newKey, relativeTime, shell, t as tr, isolate } from "@ferrum/client";
 import { cn, confirmDialog, EmptyState, ListSkeleton, Markdown, StatePanel, toast, useLivePush } from "@ferrum/kit";
 import { Failure } from "./States";
 import { useMe, usePeople } from "@ferrum/records";
@@ -35,8 +35,10 @@ import { Composer, PeoplePicker } from "./ChatComposer";
 import { ChannelDetails, type DetailsTab } from "./ChatDetails";
 import { ChannelSearch, SearchDialog } from "./ChatSearch";
 import { Base } from "./chatBase";
+import { MyStatusButton, StatusMark } from "./ChatStatus";
 import {
   CHAT,
+  REACTIONS,
   SIDE_PANEL,
   attachmentPath,
   attachmentsOf,
@@ -52,10 +54,13 @@ import {
   loudness,
   mentionsMe,
   posting,
+  MAX_DIRECT_OTHERS,
+  reactionChips,
   refreshMessages,
   showMentions,
   startsDay,
   timeline,
+  typingLine,
   unreadTotal,
   type Attachment,
   type Channel,
@@ -80,6 +85,34 @@ interface Page {
   target?: Message;
 }
 
+/** Who is typing where, for 6 seconds after their last signal (pushes, not data: nothing is fetched for them). */
+const typingNow = new Map<string, Map<string, { name: string; until: number }>>();
+const typingSeen = new Set<() => void>();
+let typingVersion = 0;
+function typingChanged() {
+  typingVersion++;
+  typingSeen.forEach((f) => f());
+}
+function noteTyping(data: Record<string, unknown>) {
+  const channel = String(data.channel ?? "");
+  const email = String(data.email ?? "");
+  if (!channel || !email) return;
+  const here = typingNow.get(channel) ?? new Map();
+  here.set(email, { name: String(data.name || email), until: Date.now() + 6000 });
+  typingNow.set(channel, here);
+  typingChanged();
+  setTimeout(typingChanged, 6100);
+}
+function useTyping(channel: string): string | null {
+  useSyncExternalStore(
+    (f) => (typingSeen.add(f), () => void typingSeen.delete(f)),
+    () => typingVersion,
+  );
+  const now = Date.now();
+  const names = [...(typingNow.get(channel)?.values() ?? [])].filter((t) => t.until > now).map((t) => t.name);
+  return typingLine(names);
+}
+
 function ChannelIcon({ c }: { c: Pick<ChannelSummary, "type" | "active"> }) {
   if (c.type === "Direct")
     return (
@@ -101,6 +134,8 @@ export function ChatPage() {
   });
   const onPush = useCallback(
     (data: Record<string, unknown> | null) => {
+      // A signal, not a change: nothing to fetch again.
+      if (data?.event === "typing") return noteTyping(data);
       void qc.invalidateQueries({ queryKey: keys.channels });
       const ch = typeof data?.channel === "string" ? data.channel : undefined;
       if (!data || ch) {
@@ -108,6 +143,7 @@ export function ChatPage() {
         void qc.invalidateQueries({ queryKey: ["chat", "thread"] });
       }
       if (!data || ["channel_updated", "added", "removed"].includes(String(data.event))) void qc.invalidateQueries({ queryKey: ["chat", "channel"] });
+      if (!data || data.event === "pinned") void qc.invalidateQueries({ queryKey: ["chat", "pins"] });
     },
     [qc],
   );
@@ -194,6 +230,7 @@ function ChannelList({
         >
           <ChannelIcon c={c} />
           <span className="min-w-0 flex-1 truncate">{c.title || c.name}</span>
+          <StatusMark status={c.status} />
           {quiet && <BellOff className="size-3.5 shrink-0" aria-label={tr("Muted")} />}
           {b.mention && (
             <span className="grid size-5 shrink-0 place-items-center rounded-full border border-destructive bg-destructive-soft text-xs leading-none font-bold text-destructive" aria-hidden="true">
@@ -220,6 +257,7 @@ function ChannelList({
     <div className="flex h-full min-h-0 flex-col gap-2 p-2">
       <div className="flex items-center gap-1">
         <h1 className="flex-1 px-1 font-semibold">{tr("Chat")}</h1>
+        <MyStatusButton />
         <Button size="icon-sm" variant="ghost" aria-label={tr("Search messages")} onClick={() => setSearching(true)}>
           <Search />
         </Button>
@@ -302,6 +340,7 @@ function ChannelList({
 function Conversation({ id, summary }: { id: string; summary?: ChannelSummary }) {
   const base = useContext(Base);
   const qc = useQueryClient();
+  const typing = useTyping(id);
   const me = useMe().data;
   const email = me?.user.email ?? "";
   const people = usePeople().data?.users ?? [];
@@ -434,7 +473,10 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
           </Button>
           {view ? <span className="max-sm:hidden"><ChannelIcon c={view} /></span> : null}
           <div className="min-w-0 flex-1">
-            <h2 className="truncate font-semibold">{c?.title || c?.name || summary?.title || "…"}</h2>
+            <h2 className="flex min-w-0 items-center gap-1 font-semibold">
+              <span className="truncate">{c?.title || c?.name || summary?.title || "…"}</span>
+              {direct && <StatusMark status={c?.members.length === 2 ? c.members.find((m) => m.email.toLowerCase() !== email.toLowerCase())?.status : null} />}
+            </h2>
             {c?.topic && <p className="truncate text-xs text-muted-foreground">{isolate(c.topic)}</p>}
           </div>
           {c && !direct && (
@@ -473,6 +515,7 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
         people={people}
         me={email}
         canModerate={owner}
+        canPin={owner || direct}
         loading={feed.isLoading || placing}
         error={feed.error && !target ? feed.error : null}
         hasMore={!!feed.hasNextPage}
@@ -489,6 +532,7 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
         className="row-start-2"
       />
       <div className="row-start-3 border-t p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        {typing && <p className="-mt-1 mb-1 text-xs text-muted-foreground">{isolate(typing)}</p>}
         {!view ? (
           <Skeleton className="h-10" />
         ) : state.state === "ok" ? (
@@ -511,13 +555,14 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
           mentionable={mentionable}
           me={email}
           canModerate={owner}
+          canPin={owner || direct}
           posting={view ? posting(view, true) : { state: "ok" }}
           onJoin={() => void join()}
           onUnread={member ? (m) => void markUnread(m) : undefined}
           onClose={() => patch({ thread: null })}
         />
       )}
-      {side === "details" && <ChannelDetails id={id} tab={(["general", "personal", "members"].includes(panel ?? "") ? panel : "general") as DetailsTab} onTab={(t) => patch({ panel: t })} onClose={() => patch({ panel: null })} />}
+      {side === "details" && <ChannelDetails id={id} tab={(["general", "personal", "members", "pinned"].includes(panel ?? "") ? panel : "general") as DetailsTab} onTab={(t) => patch({ panel: t })} onClose={() => patch({ panel: null })} />}
       {side === "search" && (
         <ChannelSearch
           channel={id}
@@ -536,6 +581,8 @@ function MessageList(p: {
   people: Person[];
   me: string;
   canModerate: boolean;
+  /** Pins and unpins (an owner, or either person of a direct conversation). */
+  canPin: boolean;
   loading: boolean;
   error: unknown;
   hasMore: boolean;
@@ -642,9 +689,11 @@ function MessageList(p: {
               compact={continues(m, p.list[i - 1]) && !p.marks?.[m.id]}
               people={p.people}
               mine={m.sender.toLowerCase() === p.me.toLowerCase()}
+              me={p.me}
               toMe={mentionsMe(m, p.me)}
               picked={m.id === p.focus}
               canModerate={p.canModerate}
+              canPin={p.canPin}
               onThread={p.onThread}
               onUnread={p.onUnread}
             />
@@ -676,6 +725,8 @@ function MessageRow({
   toMe,
   picked,
   canModerate,
+  canPin,
+  me,
   onThread,
   onUnread,
 }: {
@@ -689,11 +740,23 @@ function MessageRow({
   /** The message a link or a search result led to. */
   picked: boolean;
   canModerate: boolean;
+  canPin: boolean;
+  me: string;
   onThread?: (id: string) => void;
   onUnread?: (m: Message) => void;
 }) {
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
+  const react = useReact(m, me);
+  const pin = async () => {
+    try {
+      await api.post(docPath("ChatMessage", m.id, "actions", m.pinned_at ? "unpin" : "pin"), {}, { idempotencyKey: newKey() });
+      refreshMessages(qc);
+      toast(m.pinned_at ? tr("Unpinned") : tr("Pinned"));
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    }
+  };
   const name = m.sender_name || m.sender;
   const remove = async () => {
     if (!(await confirmDialog({ title: tr("Delete this message?"), message: tr("Its text and attachments are erased for everyone."), confirmLabel: tr("Delete"), danger: true }))) return;
@@ -744,6 +807,12 @@ function MessageRow({
             <time className="text-xs text-muted-foreground" dateTime={m.posted_at}>
               {isolate(time(m.posted_at))}
             </time>
+            {m.pinned_at && !m.deleted && (
+              <span className="inline-flex items-center gap-0.5 text-xs text-muted-foreground">
+                <Pin className="size-3" aria-hidden="true" />
+                {tr("Pinned")}
+              </span>
+            )}
           </div>
         )}
         {m.deleted ? (
@@ -754,6 +823,7 @@ function MessageRow({
           <>
             {m.body && <Markdown source={showMentions(m.body, people)} />}
             <Attachments files={attachmentsOf(m)} />
+            <ReactionChips m={m} react={react} />
           </>
         )}
         {((m.edited_at && !m.deleted) || (onThread && (m.reply_count ?? 0) > 0)) && (
@@ -777,6 +847,20 @@ function MessageRow({
           )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon-sm" aria-label={tr("Add reaction")} title={tr("Add reaction")} disabled={react.busy}>
+                <SmilePlus />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="grid grid-cols-6 gap-0.5">
+              {REACTIONS.map((e) => (
+                <DropdownMenuItem key={e} className="justify-center text-base" aria-label={e} onSelect={() => void react.toggle(e)}>
+                  {e}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon-sm" aria-label={tr("More actions")} title={tr("More actions")}>
                 <MoreHorizontal />
               </Button>
@@ -785,6 +869,7 @@ function MessageRow({
               {mine && <DropdownMenuItem onSelect={() => setEditing(true)}>{tr("Edit")}</DropdownMenuItem>}
               {onUnread && <DropdownMenuItem onSelect={() => onUnread(m)}>{tr("Mark as unread from here")}</DropdownMenuItem>}
               <DropdownMenuItem onSelect={() => void link()}>{tr("Copy link")}</DropdownMenuItem>
+              {canPin && <DropdownMenuItem onSelect={() => void pin()}>{m.pinned_at ? tr("Unpin") : tr("Pin")}</DropdownMenuItem>}
               {canDelete && (
                 <>
                   <DropdownMenuSeparator />
@@ -796,6 +881,49 @@ function MessageRow({
         </div>
       )}
     </article>
+  );
+}
+
+/** Adds or takes back the reader's reaction, through the message's actions (the chip waits for the answer). */
+function useReact(m: Message, me: string) {
+  const qc = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const toggle = async (emoji: string) => {
+    const mine = reactionChips(m.reactions, me).some((c) => c.emoji === emoji && c.mine);
+    setBusy(true);
+    try {
+      await api.post(docPath("ChatMessage", m.id, "actions", mine ? "unreact" : "react"), { emoji }, { idempotencyKey: newKey() });
+      refreshMessages(qc);
+    } catch (e) {
+      toast(errorMessage(e), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return { busy, toggle, me };
+}
+
+/** A message's reactions: one chip per emoji, pressed when the reader is among them; pressing toggles theirs. */
+function ReactionChips({ m, react }: { m: Message; react: ReturnType<typeof useReact> }) {
+  const chips = reactionChips(m.reactions, react.me);
+  if (!chips.length) return null;
+  return (
+    <div className="mt-1 flex flex-wrap gap-1">
+      {chips.map((c) => (
+        <button
+          key={c.emoji}
+          type="button"
+          aria-pressed={c.mine}
+          disabled={react.busy}
+          aria-label={c.mine ? tr("{emoji}, {n} reactions, you reacted", { emoji: c.emoji, n: c.count }) : tr("{emoji}, {n} reactions", { emoji: c.emoji, n: c.count })}
+          className={cn("inline-flex h-6 items-center gap-1 rounded-full border px-2 text-xs hover:bg-muted pointer-coarse:min-h-11", c.mine && "border-primary bg-primary-soft")}
+          onClick={() => void react.toggle(c.emoji)}
+        >
+          <span aria-hidden="true">{isolate(c.emoji)}</span>
+          <span aria-hidden="true">{c.count}</span>
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -910,6 +1038,7 @@ function Thread({
   mentionable,
   me,
   canModerate,
+  canPin,
   posting: allowed,
   onJoin,
   onUnread,
@@ -924,6 +1053,7 @@ function Thread({
   mentionable: Person[];
   me: string;
   canModerate: boolean;
+  canPin: boolean;
   posting: ReturnType<typeof posting>;
   onJoin: () => void;
   onUnread?: (m: Message) => void;
@@ -951,6 +1081,7 @@ function Thread({
         people={people}
         me={me}
         canModerate={canModerate}
+        canPin={canPin}
         loading={first.isLoading || replies.isLoading}
         error={first.error ?? replies.error}
         hasMore={false}
@@ -1067,25 +1198,77 @@ function NewDirect({ onClose }: { onClose: () => void }) {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const people = usePeople().data?.users ?? [];
-  const me = useMe().data?.user.email.toLowerCase();
-  const open = async (p: Person) => {
+  const me = useMe().data?.user.email.toLowerCase() ?? "";
+  const [chosen, setChosen] = useState<Person[]>([]);
+  const [busy, setBusy] = useState(false);
+  const full = chosen.length >= MAX_DIRECT_OTHERS;
+  const go = (id: string) => {
+    void qc.invalidateQueries({ queryKey: keys.channels });
+    onClose();
+    navigate(`${base}/${id}`);
+  };
+  // The conversation these people already have, else a new one through the channel's own create; when someone else
+  // made it at the same moment (a conflict), theirs.
+  const find = async (list: Person[]) =>
+    (await api.get<{ channel: Channel | null }>(`${CHAT}/direct`, { members: list.map((p) => p.email).join(",") })).channel;
+  const start = async (list: Person[]) => {
+    setBusy(true);
     try {
-      const c = await api.post<Channel>(`${CHAT}/direct`, { user: p.email });
-      void qc.invalidateQueries({ queryKey: keys.channels });
-      onClose();
-      navigate(`${base}/${c.id}`);
+      const found = await find(list);
+      if (found) return go(found.id);
+      const members = [me, ...list.map((p) => p.email.toLowerCase())].map((member) => ({ member }));
+      try {
+        const made = await api.post<{ id: string }>(docPath("ChatChannel"), { channel_type: "Direct", members }, { idempotencyKey: newKey() });
+        go(made.id);
+      } catch (e) {
+        const again = (e as { status?: number }).status === 409 ? await find(list) : null;
+        if (!again) throw e;
+        go(again.id);
+      }
     } catch (e) {
       toast(errorMessage(e), "error");
+    } finally {
+      setBusy(false);
     }
+  };
+  const pick = (p: Person) => {
+    if (chosen.some((c) => c.email === p.email) || full) return;
+    setChosen([...chosen, p]);
   };
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{tr("New direct message")}</DialogTitle>
-          <DialogDescription>{tr("Pick the person to talk to. They are told of each message.")}</DialogDescription>
+          <DialogDescription>{tr("Pick one to eight people. They are told of each message, and the same people always share one conversation.")}</DialogDescription>
         </DialogHeader>
-        <PeoplePicker people={people.filter((p) => p.email.toLowerCase() !== me)} onPick={(p) => void open(p)} onClose={onClose} />
+        {chosen.length > 0 && (
+          <ul className="flex flex-wrap gap-1" aria-label={tr("Chosen people")}>
+            {chosen.map((p) => (
+              <li key={p.email}>
+                <Badge variant="secondary" className="gap-1">
+                  {isolate(p.full_name || p.email)}
+                  <button type="button" aria-label={tr("Remove {name}", { name: p.full_name || p.email })} onClick={() => setChosen(chosen.filter((c) => c.email !== p.email))}>
+                    <X className="size-3" />
+                  </button>
+                </Badge>
+              </li>
+            ))}
+          </ul>
+        )}
+        {full ? (
+          <p className="text-sm text-muted-foreground">{tr("A conversation holds at most nine people.")}</p>
+        ) : (
+          <PeoplePicker people={people.filter((p) => p.email.toLowerCase() !== me && !chosen.some((c) => c.email === p.email))} onPick={pick} onClose={onClose} />
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            {tr("Cancel")}
+          </Button>
+          <Button disabled={!chosen.length || busy} onClick={() => void start(chosen)}>
+            {busy ? tr("Opening…") : tr("Start")}
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

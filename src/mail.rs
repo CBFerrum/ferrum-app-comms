@@ -318,6 +318,40 @@ fn is_outgoing_email(doc: &Doc) -> bool {
     s(doc, "channel") == Some("Email") && s(doc, "direction") != Some("Received")
 }
 
+/// The fields a new outgoing mail answers and threads by, however it is made (Mail's screen, another app through the
+/// record's create, `outbound::send`): checked and written in one form before threading reads them.
+async fn checked_reply_fields(hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
+    let shown = |v: &str| util::cut(&util::clean_line(v, 80), 80);
+    if let Some(v) = s(doc, "reply_to_address").map(str::to_string) {
+        let one = v.parse::<Mailbox>().map_err(|_| Error::field("reply_to_address", format!("'{}' is not one address", shown(&v))))?;
+        doc.insert("reply_to_address".into(), json!(one.to_string()));
+    }
+    if let Some(v) = s(doc, "in_reply_to").map(str::to_string) {
+        let bare = crate::outbound::message_id(&v).map_err(|e| Error::field("in_reply_to", e.to_string()))?;
+        doc.insert("in_reply_to".into(), json!(bare));
+    }
+    if let Some(v) = s(doc, "mail_references").map(str::to_string) {
+        let ids =
+            v.split_whitespace().map(crate::outbound::message_id).collect::<Result<Vec<_>>>().map_err(|e| Error::field("mail_references", e.to_string()))?;
+        if ids.len() > 50 {
+            return Err(Error::field("mail_references", "at most 50 message ids"));
+        }
+        doc.insert("mail_references".into(), if ids.is_empty() { Value::Null } else { json!(ids.join(" ")) });
+    }
+    if let Some(v) = s(doc, "envelope_sender").map(str::to_string) {
+        let bare =
+            v.trim().parse::<lettre::Address>().map_err(|_| Error::field("envelope_sender", "must be one plain address"))?.to_string().to_ascii_lowercase();
+        if !crate::outbound::on_workspace_domain(hc.kernel, hc.tx, hc.ctx.tenant, &bare).await? {
+            return Err(Error::field(
+                "envelope_sender",
+                "must be on a domain of the workspace (its mail domain while it is proven, or an outgoing email account's)",
+            ));
+        }
+        doc.insert("envelope_sender".into(), json!(bare));
+    }
+    Ok(())
+}
+
 /// The company of the record a mail is sent from, to pick that company's account.
 async fn reference_company(hc: &mut HookCtx<'_>, doc: &Doc) -> Option<Uuid> {
     let (e, r) = (s(doc, "reference_entity")?, id(doc, "reference_id")?);
@@ -369,6 +403,7 @@ impl DocHook for CommunicationHook {
         if !is_outgoing_email(doc) {
             return Ok(());
         }
+        checked_reply_fields(hc, doc).await?;
         // Threading by the message ids an app gives (it answers mail it received, or one of its own): the
         // thread and the record are the message's they name, when Mail has it.
         if id(doc, "reply_to").is_none()
@@ -507,6 +542,17 @@ impl DocHook for CommunicationHook {
         }
         if !hc.ctx.is_system && !doc.contains_key("created_at") {
             check_user_input(hc, doc, None).await?;
+        }
+        Ok(())
+    }
+
+    /// What a mail answers is given when it is made: it does not change after (only the system, filing, writes it then).
+    async fn validate_change(&self, hc: &mut HookCtx<'_>, old: Option<&Doc>, doc: &Doc) -> Result<()> {
+        if let Some(old) = old
+            && !hc.ctx.is_system
+            && let Some(f) = ["in_reply_to", "mail_references", "reply_to_address"].into_iter().find(|f| old.get(*f) != doc.get(*f))
+        {
+            return Err(Error::field(f, "is set when the mail is made and does not change"));
         }
         Ok(())
     }

@@ -58,7 +58,7 @@ pub fn message_id(v: &str) -> Result<String> {
 }
 
 /// The domain of `address` (lower case) when it is on, or under, a domain of the workspace.
-async fn on_workspace_domain(k: &Kernel, tx: &mut Tx, tenant: Uuid, address: &str) -> Result<bool> {
+pub(crate) async fn on_workspace_domain(k: &Kernel, tx: &mut Tx, tenant: Uuid, address: &str) -> Result<bool> {
     let Some((_, domain)) = address.rsplit_once('@') else { return Ok(false) };
     let domain = domain.to_ascii_lowercase();
     Ok(crate::routes::domains(k, tx, tenant).await?.iter().any(|d| domain == *d || domain.ends_with(&format!(".{d}"))))
@@ -70,32 +70,10 @@ pub async fn send(k: &Kernel, ctx: &Ctx, tx: &mut Tx, m: &Message) -> Result<Sen
     if !ctx.is_system {
         ctx.require("Communication", Action::Create)?;
     }
-    let one_address = |field: &str, v: &str| -> Result<String> {
-        let mailbox = v
-            .parse::<lettre::message::Mailbox>()
-            .map_err(|_| Error::field(field, format!("'{}' is not an address", util::cut(&util::clean_line(v, 80), 80))))?;
-        Ok(mailbox.to_string())
-    };
-    let reply_to = m.reply_to.as_deref().map(|v| one_address("reply_to", v)).transpose()?;
-    let in_reply_to = m.in_reply_to.as_deref().map(message_id).transpose()?;
-    let references = m.references.iter().map(|r| message_id(r)).collect::<Result<Vec<_>>>()?;
-    if references.len() > 50 {
-        return Err(Error::field("references", "at most 50 message ids"));
-    }
-    let envelope = match m.envelope_sender.as_deref() {
-        Some(v) => {
-            let bare =
-                v.trim().parse::<lettre::Address>().map_err(|_| Error::field("envelope_sender", "must be one plain address"))?.to_string().to_ascii_lowercase();
-            if !on_workspace_domain(k, tx, ctx.tenant, &bare).await? {
-                return Err(Error::field(
-                    "envelope_sender",
-                    "must be on a domain of the workspace (its mail domain while it is proven, or an outgoing email account's)",
-                ));
-            }
-            Some(bare)
-        }
-        None => None,
-    };
+    // The reply and threading fields are checked by the Communication's hook, as for every other way a mail is made
+    // (the record's own create, which other apps and agents use).
+    let (reply_to, envelope, in_reply_to) = (&m.reply_to, &m.envelope_sender, &m.in_reply_to);
+    let references = &m.references;
     let mut doc = Doc::new();
     let mut put = |f: &str, v: Value| {
         doc.insert(f.to_string(), v);

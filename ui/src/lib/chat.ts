@@ -32,6 +32,21 @@ export interface ChannelSummary {
   last_message?: { id: string; sender: string; body: string; posted_at: string } | null;
   /** A direct conversation's other person is about (active in the last ten minutes). */
   active?: boolean | null;
+  /** A two-person direct conversation's other person's status, while it lasts. */
+  status?: Status | null;
+}
+
+/** What someone says of themselves in Chat, while it lasts. */
+export interface Status {
+  emoji?: string | null;
+  text?: string | null;
+  until?: string | null;
+}
+
+/** The caller's own status record (`GET /chat/status`), expired or not. */
+export interface MyStatus extends Status {
+  id: string;
+  version: number;
 }
 
 export interface Member {
@@ -41,6 +56,7 @@ export interface Member {
   last_read_at?: string | null;
   /** About: active in the last ten minutes. Only that is known, never when they were last seen. */
   active?: boolean;
+  status?: Status | null;
 }
 
 export interface Channel extends Omit<ChannelSummary, "unread" | "unread_mentions" | "last_message"> {
@@ -61,6 +77,21 @@ export interface Message {
   edited_at?: string | null;
   reply_count?: number;
   last_reply_at?: string | null;
+  /** Emoji to the addresses of the members who reacted with it. */
+  reactions?: Record<string, string[]>;
+  /** When it was pinned in its channel. */
+  pinned_at?: string | null;
+}
+
+/** The emoji the reaction palette offers. */
+export const REACTIONS = ["👍", "👎", "❤️", "😂", "😮", "😢", "🎉", "🙏", "👏", "🔥", "✅", "❌", "👀", "🚀", "💯", "🤔", "😀", "😍", "🙌", "💪", "⭐", "☕", "📌", "➕"];
+
+/** A message's reactions as chips, in the order they were first given, with whether the reader is among them. */
+export function reactionChips(reactions: Record<string, string[]> | null | undefined, me: string): { emoji: string; count: number; mine: boolean }[] {
+  const who = me.toLowerCase();
+  return Object.entries(reactions ?? {})
+    .filter(([, people]) => Array.isArray(people) && people.length > 0)
+    .map(([emoji, people]) => ({ emoji, count: people.length, mine: people.some((p) => p.toLowerCase() === who) }));
 }
 
 /** A file on a message, as the server lists it. */
@@ -201,7 +232,8 @@ export function posting(c: Pick<ChannelSummary, "archived" | "role" | "post_poli
 }
 
 /** Who reads and who posts, in a sentence for the channel's details. */
-export function accessText(c: Pick<ChannelSummary, "type" | "post_policy" | "archived">): string {
+export function accessText(c: Pick<ChannelSummary, "type" | "post_policy" | "archived"> & { members?: unknown[] }): string {
+  if (c.type === "Direct" && (c.members?.length ?? 2) > 2) return t("Only the {n} of you can read this conversation.", { n: c.members!.length });
   if (c.type === "Direct") return t("Only the two of you can read this conversation.");
   const reads = c.type === "Private" ? t("Only its members can read it.") : t("Anyone in the workspace can read it and join.");
   if (c.archived) return t("{reads} It is archived, so nobody can post.", { reads });
@@ -327,11 +359,12 @@ export const keys = {
   messages: (id: string, around?: string | null) => (around ? (["chat", "messages", id, "around", around] as const) : (["chat", "messages", id] as const)),
   thread: (id: string) => ["chat", "thread", id] as const,
   message: (id: string) => ["chat", "message", id] as const,
+  pins: (id: string) => ["chat", "pins", id] as const,
 };
 
 /** Fetches again whatever shows messages, but not the files they carry (an image would flicker). */
 export function refreshMessages(qc: { invalidateQueries(o: { queryKey: readonly unknown[] }): unknown }) {
-  for (const queryKey of [["chat", "messages"], ["chat", "thread"], ["chat", "message"], ["chat", "channels"]]) void qc.invalidateQueries({ queryKey });
+  for (const queryKey of [["chat", "messages"], ["chat", "thread"], ["chat", "message"], ["chat", "channels"], ["chat", "pins"]]) void qc.invalidateQueries({ queryKey });
 }
 
 const graphemes = (s: string): string[] => (typeof Intl.Segmenter === "function" ? Array.from(new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(s), (g) => g.segment) : Array.from(s));
@@ -385,4 +418,45 @@ export function ruleFor(rules: RetentionRule[], channel: string): { channel?: Re
 export function keptDays(text: string): number | null {
   const n = /^\s*\d+\s*$/.test(text) ? Number(text) : NaN;
   return n >= 1 && n <= 36500 ? n : null;
+}
+
+/** People one direct conversation holds besides the one who starts it. */
+export const MAX_DIRECT_OTHERS = 8;
+
+/** Who is typing, in words: one or two names, then "several people". */
+export function typingLine(names: string[]): string | null {
+  if (!names.length) return null;
+  if (names.length === 1) return t("{name} is typing…", { name: names[0]! });
+  if (names.length === 2) return t("{a} and {b} are typing…", { a: names[0]!, b: names[1]! });
+  return t("Several people are typing…");
+}
+
+/** Whether the composer tells the others it is typing now: never for an empty box, at most once every 4 seconds. */
+export function shouldSignalTyping(text: string, last: number, now: number): boolean {
+  return text.trim().length > 0 && now - last >= 4000;
+}
+
+export type UntilChoice = "never" | "30m" | "1h" | "4h" | "today" | "week";
+
+/** When a status clears itself. */
+export const UNTIL_CHOICES: { value: UntilChoice; label: string }[] = [
+  { value: "never", get label() { return t("Don't clear"); } },
+  { value: "30m", get label() { return t("30 minutes"); } },
+  { value: "1h", get label() { return t("1 hour"); } },
+  { value: "4h", get label() { return t("4 hours"); } },
+  { value: "today", get label() { return t("Today"); } },
+  { value: "week", get label() { return t("This week"); } },
+];
+
+/** The time a choice clears the status, from `now` (local midnight for today, the end of Sunday for the week); null: never. */
+export function untilFor(choice: UntilChoice, now: Date): string | null {
+  const minutes = { "30m": 30, "1h": 60, "4h": 240 }[choice as "30m" | "1h" | "4h"];
+  if (minutes) return new Date(now.getTime() + minutes * 60_000).toISOString();
+  if (choice === "today" || choice === "week") {
+    const end = new Date(now);
+    end.setHours(24, 0, 0, 0);
+    if (choice === "week") end.setDate(end.getDate() + ((7 - now.getDay()) % 7));
+    return end.toISOString();
+  }
+  return null;
 }

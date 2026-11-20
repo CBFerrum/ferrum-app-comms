@@ -9,7 +9,7 @@ import { Button, Input, Textarea } from "@ferrum/kit/primitives";
 import { cn, toast } from "@ferrum/kit";
 import { errorMessage, newKey, uploadFile, type StoredFile, api, t as tr, isolate } from "@ferrum/client";
 import { useMe } from "@ferrum/records";
-import { CHAT, MAX_FILES, bodyTooLong, completeMention, draftKey, fileSize, matchPeople, mentionAt, mentionsIn, readDraft, refreshMessages, writeDraft, type Person } from "./lib/chat";
+import { CHAT, MAX_FILES, bodyTooLong, completeMention, draftKey, fileSize, matchPeople, mentionAt, mentionsIn, readDraft, refreshMessages, shouldSignalTyping, writeDraft, type Person } from "./lib/chat";
 
 /** A file picked for the next message: uploading, uploaded (`stored`) or refused (`error`). */
 interface Pending {
@@ -51,6 +51,13 @@ export function Composer({
   const tooLong = bodyTooLong(body);
   const uploading = files.some((f) => !f.stored && !f.error);
   const ready = files.filter((f) => f.stored);
+  // The others see that this person is typing (a signal: nothing is stored, a failure is not shown).
+  const typedAt = useRef(-Infinity);
+  const typing = (text: string) => {
+    if (!shouldSignalTyping(text, typedAt.current, Date.now())) return;
+    typedAt.current = Date.now();
+    api.post(`${CHAT}/channels/${channel}/typing`, parent ? { parent } : {}).catch(() => undefined);
+  };
 
   // The draft is kept a moment after the last key, and again when leaving.
   useEffect(() => {
@@ -202,6 +209,7 @@ export function Composer({
           value={body}
           onChange={(e) => {
             setBody(e.target.value);
+            typing(e.target.value);
             setCaret(e.target.selectionStart);
             setPick(0);
             setClosed(false);

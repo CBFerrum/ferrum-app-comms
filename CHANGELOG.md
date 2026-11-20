@@ -1,5 +1,67 @@
 # Changelog
 
+## 0.32.0
+
+No database change, no interface change. The package `comms` is 0.10.0.
+
+**Mail for other apps through the gate.** Sending a mail as a Communication with its reply and threading fields is
+now the record's own create operation, `comms.communication.create`, which another app declares in its `uses` and
+calls with `Kernel::call_tx` (CRM's sequences and Helpdesk's replies, which compile against `outbound::send` today), and
+which a person's agent invokes: `reply_to_address`, `in_reply_to` and `mail_references` are given when the mail is
+made (they are no longer read-only) and do not change after; an app's envelope sender and headers stay for apps. The
+checks that `outbound::send` made (one Reply-To address, real message ids, at most 50 references, an envelope sender on
+a domain of the workspace) are now the Communication's own, so they hold however a mail is made. The result is the
+stored record, with its `message_id`. A repeat under the same key sends nothing more.
+
+## 0.31.0
+
+Database change: a new entity, Chat Status (a new table; nothing to migrate). Interface change: a status button in
+Chat's list header, and statuses beside people's names. The package `comms` is 0.9.0.
+
+**Custom status.** A person sets a short status: an emoji, up to 100 characters, and optionally a time it clears
+itself (30 minutes, an hour, four hours, today, this week). Colleagues see it beside the person's name in a channel's
+members, and in a direct conversation's header and list row, until its time (a filter when reading: nothing runs to
+clear it). It is a record of the person's own, one per person, made, changed and cleared through its own operations
+(`comms.chat_status.create`, `.update`, `.delete`), which a person's agent uses too; nobody changes another person's
+status (a Chat Admin may moderate). It is in the person's copy of their data and goes with their erasure.
+
+## 0.30.0
+
+No database change (the meaning of `direct_key` widens; existing conversations are untouched). Interface change: the
+new direct message dialog takes one to eight people, and a conversation shows who is typing. The package `comms` is 0.8.0.
+
+**Group direct messages.** Two to nine people have one direct conversation between them, whoever opens it and however
+often. A conversation of three or more is keyed by the SHA-256 of its people's sorted addresses (`g:` and the hex), so
+the same people always land in the same conversation; two people opening it at the same moment get one (the unique
+key decides, the other is answered `conflict` and finds it). Its title is the other people's names. Like a two-person
+conversation it keeps its people.
+
+**Made through the channel's own create.** A Comms User may create a Chat Channel through the platform
+(`comms.chat_channel.create`): a conversation they are in, or a channel they own; anything else is refused. The
+screen finds the conversation first (`GET /api/app/comms/chat/direct?members=`) and creates it only when there is
+none. Everyone added is told, whichever way it was made.
+
+**Who is typing.** While someone types, the others in the conversation see "{name} is typing…" for a few seconds
+(`POST /api/app/comms/chat/channels/{id}/typing`, a signal limited per person: nothing is stored).
+
+## 0.29.0
+
+Database change: Chat Message gains `reactions` and `pinned_at` (both empty on existing messages). Interface change:
+reactions, pins and a Pinned tab in a channel's details. The package `comms` is 0.7.0.
+
+**Reactions and pinned messages.** A member reacts to a message with an emoji and takes it back; everyone in the
+channel sees the counts at once. A channel's owners, a Chat Admin, or either person of a direct conversation pin up to
+50 messages, listed newest first in the channel's details (`GET /api/app/comms/chat/channels/{id}/pins`). Deleting a
+message drops its pin and reactions. Who reacted is in that person's copy of their data and goes with their erasure.
+
+**Chat's first operations.** React, Remove Reaction, Pin and Unpin are actions of Chat Message with contracts
+(`comms.chat_message.react`, `.unreact`, `.pin`, `.unpin`), pressed by the screen through the platform's action route
+with an idempotency key, so a member's agent does exactly what the button does. A repeat under the same key changes
+nothing. For the gate to reach them, a Comms User now reads the channels they are a member of and those channels'
+messages through the generic API, search and MCP (and nothing else).
+
+**For tests.** The interface's route table is exported from `ui/src/routes.tsx`, so a test mounts the real routes.
+
 ## 0.28.0
 
 No database change. Interface change: a channel's details have a section for administrators.

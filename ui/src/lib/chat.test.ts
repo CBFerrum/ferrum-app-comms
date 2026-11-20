@@ -21,6 +21,10 @@ import {
   mentionsIn,
   mentionsMe,
   posting,
+  shouldSignalTyping,
+  typingLine,
+  untilFor,
+  reactionChips,
   ruleFor,
   readDraft,
   showMentions,
@@ -250,5 +254,48 @@ describe("keeping unsent text", () => {
   it("takes a whole number of days from 1 to 36500", () => {
     expect([" 30 ", "1", "36500"].map(keptDays)).toEqual([30, 1, 36500]);
     expect(["0", "36501", "1.5", "-3", "", "ten"].map(keptDays)).toEqual([null, null, null, null, null, null]);
+  });
+  it("turns reactions into chips, marking mine and dropping empty ones", () => {
+    expect(reactionChips({ "👍": ["a@x.test", "Me@x.test"], "🎉": [], "❤️": ["b@x.test"] }, "me@x.test")).toEqual([
+      { emoji: "👍", count: 2, mine: true },
+      { emoji: "❤️", count: 1, mine: false },
+    ]);
+    expect(reactionChips(undefined, "me@x.test")).toEqual([]);
+  });
+  it("says who is typing in words", () => {
+    expect(typingLine([])).toBeNull();
+    expect(typingLine(["Ann"])).toBe("Ann is typing…");
+    expect(typingLine(["Ann", "Bo"])).toBe("Ann and Bo are typing…");
+    expect(typingLine(["Ann", "Bo", "Cy"])).toBe("Several people are typing…");
+  });
+  it("signals typing at most once every 4 seconds, never for an empty box", () => {
+    const clock = { now: 10_000 };
+    let last = -Infinity;
+    const sent: number[] = [];
+    const type = (text: string) => {
+      if (shouldSignalTyping(text, last, clock.now)) {
+        last = clock.now;
+        sent.push(clock.now);
+      }
+    };
+    type("h");
+    clock.now += 1000;
+    type("he");
+    clock.now += 2999;
+    type("hel");
+    clock.now += 1;
+    type("hell");
+    clock.now += 5000;
+    type("   ");
+    expect(sent).toEqual([10_000, 14_000]);
+  });
+  it("works out when a status clears itself", () => {
+    const now = new Date(2026, 10, 18, 15, 10); // a Wednesday, 15:10 local
+    expect(untilFor("never", now)).toBeNull();
+    expect(untilFor("30m", now)).toBe(new Date(2026, 10, 18, 15, 40).toISOString());
+    expect(untilFor("4h", now)).toBe(new Date(2026, 10, 18, 19, 10).toISOString());
+    expect(untilFor("today", now)).toBe(new Date(2026, 10, 19, 0, 0).toISOString());
+    expect(untilFor("week", now)).toBe(new Date(2026, 10, 23, 0, 0).toISOString());
+    expect(untilFor("week", new Date(2026, 10, 22, 9, 0))).toBe(new Date(2026, 10, 23, 0, 0).toISOString());
   });
 });

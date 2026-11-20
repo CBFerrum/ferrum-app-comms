@@ -7,7 +7,7 @@
 
 <br>
 
-[![Version](https://img.shields.io/badge/version-0.28.0-2563eb?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.32.0-2563eb?style=flat-square)](CHANGELOG.md)
 [![Licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![Ferrum platform](https://img.shields.io/badge/runs%20on-Ferrum-2f5bea?style=flat-square)](https://github.com/CBFerrum/Ferrum)
 [![CI](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml/badge.svg)](https://github.com/CBFerrum/ferrum-app-comms/actions/workflows/ci.yml)
@@ -41,7 +41,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 | | |
 |---|---|
-| 📦 **Version** | 0.28.0 |
+| 📦 **Version** | 0.32.0 |
 | 🖥️ **Kind** | Its own interface: four shell apps at `/mail/`, `/chat/`, `/calendar/` and `/meet/` |
 | ➕ **What it adds** | 19 entities in one package, 3 roles, 2 reports, 4 launcher apps, 3 intents, a side panel, bar search, 10 kinds of notification, 2 public pages |
 | 🧱 **Depends on** | The platform's `core` and `contacts` packages. Nothing else is required |
@@ -277,7 +277,7 @@ chat tool and a video meeting service, and it keeps every message about a record
 - **Consent respected.** A communication has a Purpose, Transactional or Marketing. As mail goes out, each recipient is checked as they stand: marketing skips anyone who withdrew consent in any app, and nothing goes to anyone whose processing is restricted. If no one is left the email is Withheld, saying who and why.
 - **Extra headers for bulk senders.** Apps that queue mail can set `List-Unsubscribe`, `List-Id`, `Precedence`, `Auto-Submitted`, `Feedback-ID` and `X-` headers from an allow-list.
 - **Received mail keeps its headers.** Message-ID, In-Reply-To, References, Reply-To, delivered-to, Auto-Submitted, List-Id, Return-Path, the auto-reply and bounce markers, and the sender check result are stored with each received message and erased with the sender. No `x-ferrum-` header a sender wrote is kept; Mail's own verdict `x-ferrum-auth` is always written.
-- **Mail for other apps.** An app can send with Reply-To, threading headers and an envelope sender on a workspace domain, and get the Message-ID back. It can register an address or pattern (`ticket-*@`, plus-addressing) to take inbound mail once, behind a savepoint, so a failing handler loses nothing. Hosted mail can raise `MailMessage.received` and `MailMessage.sent` events (ids, addresses, thread, subject, never the body) once per message, off until the owner turns it on and never for a mailbox a manager marks private.
+- **Mail for other apps.** An app (or a person's agent) sends a mail as a Communication through the record's own create, `comms.communication.create`, declared in its `uses`: with `reply_to_address`, `in_reply_to` and `mail_references` (and, for an app, an envelope sender on a workspace domain and allow-listed headers), checked the same way whoever sends, fixed once made, and it gets the Message-ID back in the record. The Rust `outbound::send` does the same for apps that still link Comms. It can register an address or pattern (`ticket-*@`, plus-addressing) to take inbound mail once, behind a savepoint, so a failing handler loses nothing. Hosted mail can raise `MailMessage.received` and `MailMessage.sent` events (ids, addresses, thread, subject, never the body) once per message, off until the owner turns it on and never for a mailbox a manager marks private.
 
 ### 📅 Calendar: views and events
 
@@ -312,13 +312,15 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 ### 💬 Chat
 
-- **Channels.** Public channels everyone can find and join, private channels that do not exist for non-members, and one direct conversation per pair of people. Names are unique. Archive a channel to end it.
+- **Channels.** Public channels everyone can find and join, private channels that do not exist for non-members, and one direct conversation per set of two to nine people, whoever opens it (the channel's own create, `comms.chat_channel.create`, for people and agents alike). Names are unique. While someone types, the others in the conversation see so (a signal: nothing is stored). Archive a channel to end it.
 - **Messages.** Markdown messages up to 4 KB, with `@` completion to mention people (in a private conversation, only those who can read it). Edit your own messages; delete your own, or any as a channel owner or Chat Admin (the text and files are erased and the message stays as deleted).
+- **Reactions and pins.** Members react with an emoji and take it back, and everyone in the channel sees the counts at once. Owners (either person of a direct conversation) pin up to 50 messages, listed in the channel's details. Both are the message's actions (`comms.chat_message.react`, `.unreact`, `.pin`, `.unpin`), so a member's agent does the same through the platform.
 - **Threads.** Reply in a thread; a thread shows the message it belongs to; replies to a reply join the thread.
 - **Files.** Attach files from your computer, up to 25 MB, that channel members can download.
 - **Unread that is right.** Counts include replies in threads you started or answered, mentions are counted apart, and someone who joins a channel starts with nothing unread. A conversation opens at its first unread message, marks itself read only when you reach the bottom, and any message can be marked unread again. "Mark everything as read" is in the list's menu, and the bar shows how much waits.
 - **How loud a channel is.** Every message, mentions and replies to you, or nothing (muted, with no count, though a mention still marks it). Direct messages notify, replies notify the people of their thread.
 - **Channel details.** Name and topic, who can find it, who can post (every member, or only owners start posts while members reply in threads), your notification level, leaving, and members that owners add, remove and make owners. The last owner cannot be demoted.
+- **Status.** Each person may say what they are up to: an emoji and up to 100 characters, cleared after a time they choose or when they change it. Everyone with a Comms role sees it beside the person's name (in members, a direct conversation's header and list row). It is a record of the person's own (`comms.chat_status.create`, `.update`, `.delete`), goes with their erasure, and nobody else changes it.
 - **Presence.** A green dot and "Active now" show whether a person made a request in the last ten minutes, and never when they were last seen.
 - **Search.** The bar's search finds messages in public channels and your own, and Chat can search one conversation on its own, each result opening in its place.
 - **Drafts are kept.** Unsent text is kept for each conversation and thread in the browser. A message that cannot be sent says why and stays.
@@ -355,9 +357,9 @@ chat tool and a video meeting service, and it keeps every message about a record
 
 ### 🔐 Permissions, privacy and accessibility
 
-- **Roles.** Comms User, Comms Manager and Chat Admin (below). Private channels and conversations answer "not found" to non-members.
+- **Roles.** Comms User, Comms Manager and Chat Admin (below). Private channels and conversations answer "not found" to non-members. A Comms User reads, through the generic API, search and MCP, the channels they are a member of and those channels' messages, and nothing else; of the other members this shows when they last read and how loud the channel is for them.
 - **Row-level security and audit** come from the platform: every record, including through the REST and MCP APIs, follows the same rules and audit trail.
-- **Personal data.** A person's request for their data reaches the messages they sent, chat messages, mailing lists they are on, calendar feeds and meeting captions and attendance; an erasure blanks them.
+- **Personal data.** A person's request for their data reaches the messages they sent, chat messages and their reactions, their chat status, mailing lists they are on, calendar feeds and meeting captions and attendance; an erasure blanks them.
 - **Languages and direction.** English, Arabic and Hindi, including the names of reports; right-to-left mirrors the screens.
 - **Accessibility.** Controls are named for assistive technology and every action has a key. A screen-reader audit has not been done yet.
 
@@ -542,7 +544,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 |---|:-:|:-:|:-:|:-:|:-:|
 | Public and private channels | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Direct messages | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Group direct messages | ❌ | ✅ | ✅ | ✅ | ✅ |
+| Group direct messages | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Threads | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Mentions with notifications | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Per-channel notification level | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -550,11 +552,11 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 | Edit and delete | ✅ | ✅ | ✅ | ✅ | ✅ |
 | File sharing | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Search | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Emoji reactions | ❌ | ✅ | ✅ | ✅ | ✅ |
-| Pinned messages | ❌ | ✅ | ✅ | ✅ | 🟡 |
-| Typing indicator | ❌ | ✅ | ✅ | ✅ | ✅ |
+| Emoji reactions | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Pinned messages | ✅ | ✅ | ✅ | ✅ | 🟡 |
+| Typing indicator | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Link previews | ❌ | ✅ | ✅ | ✅ | ✅ |
-| Custom status | ❌ | ✅ | ✅ | ✅ | ✅ |
+| Custom status | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Guest access to chat | ❌ | ✅ | ✅ | ✅ | ✅ |
 | Message retention rules | ✅ ¹ | ✅ | ✅ | ✅ | ✅ |
 | Bots, apps and incoming webhooks | ❌ | ✅ | ✅ | ✅ | ✅ |
@@ -605,7 +607,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 
 - 📱 Native mobile apps and offline use. Comms is a web interface that adapts to a phone.
 - 🤖 AI help inside Mail, Chat and Calendar.
-- 💬 Chat depth: reactions, pins, typing indicators, link previews, group direct messages, guests, bots and custom status; files of messages removed by a retention rule stay in storage.
+- 💬 Chat depth: link previews, guests and bots; files of messages removed by a retention rule stay in storage.
 - 🎥 Meeting controls: raise hand, waiting room, host controls, breakout rooms, background blur and dial-in.
 - ✉️ Mail extras: attachment virus scanning, read receipts, importance, mailbox delegation and read-only shared mailboxes.
 - ✅ Tasks and a public holiday calendar built in.
@@ -618,6 +620,10 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 ### ✅ Recently shipped
 
 - [x] **0.27.0**: Upkeep runs one workspace at a time, on whichever replica is free; a failure is kept for the workspace's administrators.
+- [x] **0.32.0**: Other apps and agents send mail as a Communication through the record's own create, with reply and threading fields checked wherever they come from.
+- [x] **0.31.0**: Custom status in Chat: an emoji and a short text, until a time.
+- [x] **0.30.0**: Group direct messages of up to nine people, one conversation per set of people, and who is typing.
+- [x] **0.29.0**: Emoji reactions and pinned messages in chat, as the message's own operations for people and their agents.
 - [x] **0.28.0**: Administrators set how long chat messages are kept, for one channel and for every channel; a thread is never lost with its first message.
 - [x] **0.27.1**: Mail whose sender stopped mid-send is not sent again on its own: it is marked Failed, may have been delivered, and its author is told.
 - [x] **0.26.0**: The Mail Domain is a claim the workspace proved under Administration → Addresses; unproven, nothing is made or changed in it.
@@ -654,9 +660,7 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 - [ ] A room's own calendar view, and a room that declines when there are too many people.
 
 **Chat**
-- [ ] Emoji reactions and pinned messages.
-- [ ] Typing indicators and link previews.
-- [ ] Group direct messages.
+- [ ] Link previews.
 
 **Meet**
 - [ ] Raise hand, a waiting room and host controls (mute others, remove, end for all).
@@ -685,7 +689,6 @@ Mail and Calendar are compared with Gmail and Google Calendar in Google Workspac
 **Chat**
 - [ ] Guest access, bots and incoming webhooks.
 - [ ] Removing the attached files of messages a retention rule deletes.
-- [ ] Custom status and statuses beyond "Active now".
 - [ ] Scheduled messages.
 
 **Meet**
@@ -785,7 +788,7 @@ CHANGELOG.md          what changed in each version
 
 ## 📜 Changelog
 
-Every release is described in [CHANGELOG.md](CHANGELOG.md). The latest is **0.28.0**.
+Every release is described in [CHANGELOG.md](CHANGELOG.md). The latest is **0.32.0**.
 
 ## 🤝 Contributing
 

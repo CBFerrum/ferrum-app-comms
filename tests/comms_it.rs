@@ -34,6 +34,7 @@ fn uid(v: &Value) -> Uuid {
 }
 
 /// A refusal of the expected kind.
+#[track_caller]
 fn refused<T: std::fmt::Debug>(r: Result<T, Error>, kind: &str) {
     let ok = matches!(
         (&r, kind),
@@ -985,7 +986,8 @@ async fn scenario() {
     }
     assert!(t.ok(carol, "GET", "/chat/search", &[("q", "Globex")], Value::Null).await["messages"].as_array().unwrap().is_empty());
     assert_eq!(t.ok(bob, "GET", "/chat/search", &[("q", "globex")], Value::Null).await["messages"].as_array().unwrap().len(), 1);
-    refused(k.get(carol, "ChatMessage", hello_id, false).await, "forbidden");
+    // A Comms User reads the messages of their own channels only: another channel's is not there for her (comms-2).
+    refused(k.get(carol, "ChatMessage", hello_id, false).await, "not found");
     let unread = |v: &Value, id: Uuid| v["channels"].as_array().unwrap().iter().find(|c| c["id"] == json!(id)).map(|c| c["unread"].clone());
     assert_eq!(unread(&t.ok(bob, "GET", "/chat/channels", &[], Value::Null).await, deals_id), Some(json!(1)));
     t.ok(bob, "POST", &format!("/chat/channels/{deals_id}/read"), &[], Value::Null).await;
@@ -1018,9 +1020,12 @@ async fn scenario() {
     let fetch = |who: &Ctx| t.raw(t.request(Some(who), "GET", &format!("/attachments/{plan}"), &[], vec![], ""));
     assert_eq!(fetch(bob).await.unwrap().body, b"PNG plan");
     refused(fetch(carol).await, "not found");
-    refused(k.read_file(bob, plan).await, "forbidden");
+    // A member reads his channel's messages, so the platform's file route gives him the file too; nobody else.
+    assert_eq!(k.read_file(bob, plan).await.unwrap().2, b"PNG plan");
+    assert!(k.read_file(carol, plan).await.is_err(), "not a member");
+    // Someone who cannot read the file cannot attach it anywhere (a member may: he reads it already).
     refused(
-        t.call(Some(bob), "POST", &format!("/chat/channels/{deals_id}/messages"), &[], json!({"body": "again", "attachments": [{"id": plan}]})).await,
+        t.call(Some(carol), "POST", &format!("/chat/channels/{general}/messages"), &[], json!({"body": "again", "attachments": [{"id": plan}]})).await,
         "invalid",
     );
     t.ok(alice, "DELETE", &format!("/chat/messages/{}", uid(&with_file)), &[], Value::Null).await;
@@ -1602,7 +1607,17 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     assert_eq!((totals["sent"].clone(), totals["received"].clone(), totals["failed"].clone()), (json!(15), json!(5), json!(4)), "{activity}");
     let chats = report(&admin, "chat_activity").await.unwrap();
     assert!(chats["rows"].as_array().unwrap().iter().any(|r| r["channel"] == json!("#general") && r["messages"] == json!(6)), "{chats}");
-    refused(report(alice, "chat_activity").await, "forbidden");
+    // A member's report counts the channels she is in, and no other (comms-2: members read their own channels).
+    let hers = report(alice, "chat_activity").await.unwrap();
+    for row in hers["rows"].as_array().unwrap() {
+        let id: Uuid = row["channel_id"].as_str().unwrap().parse().unwrap();
+        let member: bool = t
+            .scalar("select exists (select 1 from e_chat_channel__members where tenant_id = $1 and parent_id = $2 and member = 'alice@acme.test')", Some(id))
+            .await;
+        assert!(member, "{row}");
+    }
+    assert!(hers["rows"].as_array().unwrap().len() < chats["rows"].as_array().unwrap().len(), "{hers}");
+    refused(report(dave, "chat_activity").await, "forbidden");
 
     // Nothing is left in the outbox that failed.
     let dead: i64 = t.scalar("select count(*) from outbox where tenant_id = $1 and (dead or last_error is not null) and $2::uuid is null", None).await;
@@ -1615,6 +1630,10 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     calendar_proposals(&t, &users, &smtp).await;
     calendar_rooms(&t, &users).await;
     chat_retention(&t, &admin, &users).await;
+    chat_reactions_and_pins(&t, &admin, &users).await;
+    chat_groups(&t, &users).await;
+    chat_status(&t, &admin, &users).await;
+    interapp_mail(&t, &users).await;
     hosted_mail(&t, &admin, &users, &imap).await;
 
     // What meetings keep of a person, in Comms' own table: in their copy, and gone with their erasure,
@@ -1707,6 +1726,320 @@ async fn chat_retention(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>) {
     assert_eq!(k.retention_preview(admin, id).await.unwrap()["reaches"], json!(1), "only this channel's old message");
     refused(k.retention_preview(bob, id).await, "forbidden");
     k.delete_retention_rule(admin, id).await.unwrap();
+}
+
+/// Reactions and pins are actions on the message, through the platform's gate: a member reacts once per emoji and
+/// takes it back; owners (either person of a direct conversation) pin. Members read their own channels and messages
+/// through the generic API, and nothing else.
+async fn chat_reactions_and_pins(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>) {
+    use ferrum_kernel::ListQuery;
+    use ferrum_kernel::capability::Invocation;
+    let (k, alice, bob, carol, dave) = (&t.k, &users["alice"], &users["bob"], &users["carol"], &users["dave"]);
+    let room = uid(&t.ok(alice, "POST", "/chat/channels", &[], json!({"name": "reacts", "type": "Private", "members": ["bob@acme.test"]})).await);
+    let open = uid(&t.ok(alice, "POST", "/chat/channels", &[], json!({"name": "open-reacts"})).await);
+    let say = |who: &'static str, channel: Uuid, body: &'static str| async move {
+        uid(&t.ok(&users[who], "POST", &format!("/chat/channels/{channel}/messages"), &[], json!({"body": body})).await)
+    };
+    async fn act(k: &Kernel, who: &Ctx, action: &str, id: Uuid, params: Value, key: &str) -> Result<ferrum_kernel::capability::Receipt, Error> {
+        k.invoke(who, Invocation::new(format!("comms.chat_message.{action}"), json!({"id": id, "params": params})).key(key.to_string())).await
+    }
+    let reactions = |id: Uuid| async move {
+        t.scalar::<Value>("select coalesce(reactions, '{}'::jsonb) from e_chat_message where tenant_id = $1 and id = $2", Some(id)).await
+    };
+    let m = say("alice", room, "react to this").await;
+
+    // a_member_reacts_once_and_takes_it_back
+    let done = act(k, alice, "react", m, json!({"emoji": "👍"}), "r1").await.expect("alice reacts");
+    assert_eq!(done.result["reactions"], json!({"👍": ["alice@acme.test"]}), "{:?}", done.result);
+    assert_eq!(reactions(m).await, json!({"👍": ["alice@acme.test"]}));
+    act(k, alice, "react", m, json!({"emoji": "👍"}), "r1b").await.expect("again, under another key");
+    assert_eq!(reactions(m).await, json!({"👍": ["alice@acme.test"]}), "once per person");
+    act(k, alice, "unreact", m, json!({"emoji": "👍"}), "u1").await.expect("alice takes it back");
+    assert_eq!(reactions(m).await, json!({}), "an emptied emoji is dropped");
+    refused(act(k, alice, "react", m, json!({"emoji": "ok"}), "bad").await, "invalid");
+    refused(act(k, alice, "react", m, json!({"emoji": "<b>"}), "bad2").await, "invalid");
+
+    // the_same_key_reacts_once
+    let first = act(k, bob, "react", m, json!({"emoji": "🎉"}), "same").await.unwrap();
+    let again = act(k, bob, "react", m, json!({"emoji": "🎉"}), "same").await.unwrap();
+    assert!(!first.repeated && again.repeated);
+    assert_eq!(reactions(m).await["🎉"], json!(["bob@acme.test"]));
+
+    // two_reactions_at_once_are_both_kept
+    let (a, b) = tokio::join!(act(k, alice, "react", m, json!({"emoji": "❤️"}), "ja"), act(k, bob, "react", m, json!({"emoji": "❤️"}), "jb"));
+    a.unwrap();
+    b.unwrap();
+    let mut both: Vec<String> = serde_json::from_value(reactions(m).await["❤️"].clone()).unwrap();
+    both.sort();
+    assert_eq!(both, ["alice@acme.test", "bob@acme.test"]);
+    let listed = t.ok(bob, "GET", &format!("/chat/channels/{room}/messages"), &[], Value::Null).await;
+    let row = listed["messages"].as_array().unwrap().iter().find(|r| uid(r) == m).unwrap().clone();
+    assert_eq!(row["reactions"]["🎉"], json!(["bob@acme.test"]), "{row}");
+
+    // a_non_member_cannot_react: a private channel's message is not found; a public one she has not joined is not hers either.
+    refused(act(k, carol, "react", m, json!({"emoji": "👍"}), "c1").await, "not found");
+    let public = say("alice", open, "public news").await;
+    refused(act(k, carol, "react", public, json!({"emoji": "👍"}), "c2").await, "not found");
+    // Without a Comms role the operation is not his to use.
+    refused(act(k, dave, "react", m, json!({"emoji": "👍"}), "d1").await, "forbidden");
+
+    // only_an_owner_pins_in_a_channel_and_either_person_in_a_direct_conversation
+    refused(act(k, bob, "pin", m, json!({}), "p0").await, "forbidden");
+    let pinned = act(k, alice, "pin", m, json!({}), "p1").await.unwrap();
+    assert!(pinned.result["pinned_at"].is_string(), "{:?}", pinned.result);
+    let pins = t.ok(bob, "GET", &format!("/chat/channels/{room}/pins"), &[], Value::Null).await;
+    assert_eq!(pins["messages"].as_array().unwrap().iter().map(uid).collect::<Vec<_>>(), [m]);
+    refused(t.call(Some(carol), "GET", &format!("/chat/channels/{room}/pins"), &[], Value::Null).await, "not found");
+    let unpinned = act(k, alice, "unpin", m, json!({}), "p2").await.unwrap();
+    assert_eq!(unpinned.result["pinned_at"], Value::Null);
+    let direct = uid(&t.ok(bob, "POST", "/chat/direct", &[], json!({"user": "carol@acme.test"})).await);
+    let dm = say("carol", direct, "pin me").await;
+    act(k, bob, "pin", dm, json!({}), "p3").await.expect("either person of a direct conversation pins");
+    act(k, carol, "unpin", dm, json!({}), "p4").await.expect("and unpins");
+
+    // a_deleted_message_loses_its_pin_and_reactions
+    act(k, alice, "pin", m, json!({}), "p5").await.unwrap();
+    t.ok(alice, "DELETE", &format!("/chat/messages/{m}"), &[], Value::Null).await;
+    assert_eq!(reactions(m).await, json!({}));
+    assert!(t.scalar::<bool>("select pinned_at is null from e_chat_message where tenant_id = $1 and id = $2", Some(m)).await);
+    refused(act(k, bob, "react", m, json!({"emoji": "👍"}), "gone").await, "invalid");
+
+    // a_member_reads_only_their_channels_through_the_generic_api
+    let channels: Vec<Uuid> = k
+        .list(carol, "ChatChannel", &ListQuery { limit: Some(500), ..Default::default() })
+        .await
+        .expect("carol lists her channels")
+        .rows
+        .iter()
+        .map(|r| uid(&Value::Object(r.clone())))
+        .collect();
+    assert!(channels.contains(&direct) && !channels.contains(&room) && !channels.contains(&open), "{channels:?}");
+    let messages: Vec<Uuid> = k
+        .list(carol, "ChatMessage", &ListQuery { limit: Some(500), ..Default::default() })
+        .await
+        .expect("carol lists her messages")
+        .rows
+        .iter()
+        .map(|r| uid(&Value::Object(r.clone())))
+        .collect();
+    assert!(messages.contains(&dm) && !messages.contains(&public) && !messages.contains(&m), "{messages:?}");
+
+    // erasing_a_person_takes_their_reactions
+    let gina = k.create_user(admin, "gina@acme.test", "Gina Gone", Some(PASSWORD), &["Comms User".to_string()], false).await.expect("user");
+    let gina = k.load_ctx(t.tenant, gina, None, "it".into()).await.unwrap();
+    t.ok(alice, "POST", &format!("/chat/channels/{room}/members"), &[], json!({"add": ["gina@acme.test"]})).await;
+    let n = say("alice", room, "for gina").await;
+    act(k, &gina, "react", n, json!({"emoji": "👋"}), "g1").await.unwrap();
+    act(k, alice, "react", n, json!({"emoji": "👋"}), "g2").await.unwrap();
+    let copy = k.personal_data(admin, "gina@acme.test").await.unwrap();
+    assert!(copy.to_string().contains("👋"), "her reactions are in her copy: {copy}");
+    k.erase_personal_data(admin, "gina@acme.test", "Request 12").await.unwrap();
+    assert_eq!(reactions(n).await, json!({"👋": ["alice@acme.test"]}));
+}
+
+/// Two to nine people have one direct conversation between them, made through the channel's own create operation
+/// (the screen's and an agent's), found again by its people; typing tells the others and stores nothing.
+async fn chat_groups(t: &T, users: &HashMap<String, Ctx>) {
+    use ferrum_kernel::capability::Invocation;
+    let (k, alice, bob, carol) = (&t.k, &users["alice"], &users["bob"], &users["carol"]);
+    async fn create(k: &Kernel, who: &Ctx, values: Value, key: &str) -> Result<ferrum_kernel::capability::Receipt, Error> {
+        k.invoke(who, Invocation::new("comms.chat_channel.create", json!({"values": values})).key(key.to_string())).await
+    }
+    let direct = |people: &[&str]| json!({"channel_type": "Direct", "members": people.iter().map(|m| json!({"member": m})).collect::<Vec<_>>()});
+    let found = |who: &'static str, people: &'static str| async move {
+        t.ok(&users[who], "GET", "/chat/direct", &[("members", people)], Value::Null).await["channel"].clone()
+    };
+
+    // three_people_get_one_conversation_whoever_opens_it
+    let made = create(k, alice, direct(&["alice@acme.test", "bob@acme.test", "carol@acme.test"]), "g1").await.expect("alice opens a group");
+    let group = uid(&made.result);
+    refused(create(k, bob, direct(&["carol@acme.test", "ALICE@acme.test", "bob@acme.test"]), "g2").await, "conflict");
+    assert_eq!(uid(&found("carol", "alice@acme.test,bob@acme.test").await), group, "carol finds it by its people");
+    assert_eq!(uid(&found("bob", "alice@acme.test,bob@acme.test,carol@acme.test").await), group, "naming yourself changes nothing");
+    assert_ne!(uid(&found("bob", "alice@acme.test").await), group, "their pair is another conversation (made earlier)");
+    let key: String = t.scalar("select direct_key from e_chat_channel where tenant_id = $1 and id = $2", Some(group)).await;
+    assert!(key.starts_with("g:") && key.len() == 66, "{key}");
+    let listed = k
+        .invoke(carol, Invocation::new("comms.chat_channel.list", json!({"filters": [["direct_key", "=", key]]})))
+        .await
+        .expect("carol finds it through the list operation");
+    assert!(listed.result.to_string().contains(&group.to_string()), "{:?}", listed.result);
+
+    // two_people_opening_the_same_group_get_one_conversation
+    let trio = ["alice@acme.test", "bob@acme.test", "mgr@acme.test"];
+    let (a, b) = tokio::join!(create(k, alice, direct(&trio), "t1"), create(k, bob, direct(&trio), "t2"));
+    assert_eq!([a.is_ok(), b.is_ok()].iter().filter(|ok| **ok).count(), 1, "{a:?} {b:?}");
+    refused(if a.is_ok() { b } else { a }, "conflict");
+    let rows: i64 = t
+        .scalar(
+            "select count(*) from e_chat_channel c where c.tenant_id = $1 and c.channel_type = 'Direct' and $2::uuid is null \
+             and (select array_agg(m.member::text order by m.member) from e_chat_channel__members m where m.tenant_id = c.tenant_id and m.parent_id = c.id) \
+                 = array['alice@acme.test', 'bob@acme.test', 'mgr@acme.test']",
+            None,
+        )
+        .await;
+    assert_eq!(rows, 1);
+
+    // an_existing_two_person_conversation_is_still_found
+    let pair = uid(&t.ok(alice, "POST", "/chat/direct", &[], json!({"user": "carol@acme.test"})).await);
+    assert_eq!(uid(&found("alice", "carol@acme.test").await), pair);
+
+    // a_member_cannot_create_a_channel_they_are_not_in_or_do_not_own
+    refused(create(k, alice, direct(&["bob@acme.test", "carol@acme.test"]), "x1").await, "forbidden");
+    let theirs = json!({"channel_name": "not-mine", "channel_type": "Public", "members": [{"member": "alice@acme.test", "role": "Member"}, {"member": "bob@acme.test", "role": "Owner"}]});
+    refused(create(k, alice, theirs, "x2").await, "forbidden");
+    let mine = json!({"channel_name": "mine-too", "channel_type": "Private", "members": [{"member": "alice@acme.test", "role": "Owner"}, {"member": "bob@acme.test", "role": "Member"}]});
+    create(k, alice, mine, "x3").await.expect("a channel she owns");
+
+    // a_direct_conversation_has_two_to_nine_people
+    refused(create(k, alice, direct(&["alice@acme.test"]), "n1").await, "invalid");
+    let ten: Vec<String> = std::iter::once("alice@acme.test".to_string()).chain((1..10).map(|i| format!("p{i}@acme.test"))).collect();
+    let ten: Vec<&str> = ten.iter().map(String::as_str).collect();
+    refused(create(k, alice, direct(&ten), "n2").await, "invalid");
+
+    // everyone_in_a_group_hears_a_message_and_the_title_names_the_others
+    t.ok(alice, "POST", &format!("/chat/channels/{group}/messages"), &[], json!({"body": "hello all three"})).await;
+    for who in [bob, carol] {
+        let mine = t.ok(who, "GET", "/chat/channels", &[], Value::Null).await;
+        let row = mine["channels"].as_array().unwrap().iter().find(|c| uid(c) == group).cloned().expect("in their list");
+        assert_eq!(row["unread"], json!(1), "{row}");
+    }
+    assert_eq!(t.ok(carol, "GET", &format!("/chat/channels/{group}"), &[], Value::Null).await["title"], json!("Alice Rao, Bob Shah"));
+
+    // typing_reaches_the_other_members_and_stores_nothing
+    let mut live = sqlx::postgres::PgListener::connect_with(&k.db.pool).await.unwrap();
+    live.listen(ferrum_kernel::notify::LIVE_CHANNEL).await.unwrap();
+    let before: i64 = t.scalar("select count(*) from e_chat_message where tenant_id = $1 and channel = $2", Some(group)).await;
+    let r = t.raw(t.request(Some(alice), "POST", &format!("/chat/channels/{group}/typing"), &[], b"{}".to_vec(), "application/json")).await.unwrap();
+    assert_eq!(r.status, 204);
+    let mut pushes = Vec::new();
+    while let Ok(Ok(n)) = tokio::time::timeout(Duration::from_millis(300), live.recv()).await {
+        pushes.push(serde_json::from_str::<Value>(n.payload()).unwrap());
+    }
+    let typing_to = |who: &Ctx| pushes.iter().any(|p| p["user"] == json!(who.user) && p["push"]["data"]["event"] == json!("typing"));
+    assert!(typing_to(bob) && typing_to(carol) && !typing_to(alice), "{pushes:?}");
+    assert_eq!(t.scalar::<i64>("select count(*) from e_chat_message where tenant_id = $1 and channel = $2", Some(group)).await, before);
+
+    // typing_is_refused_to_a_non_member
+    let hall = uid(&t.ok(alice, "POST", "/chat/channels", &[], json!({"name": "typing-hall"})).await);
+    refused(t.call(Some(carol), "POST", &format!("/chat/channels/{hall}/typing"), &[], json!({})).await, "forbidden");
+    refused(t.call(Some(&users["mgr"]), "POST", &format!("/chat/channels/{group}/typing"), &[], json!({})).await, "not found");
+}
+
+/// A person's status is a record of their own, set, changed and cleared through its three record operations; it shows
+/// beside their name until its time and goes with their erasure.
+async fn chat_status(t: &T, admin: &Ctx, users: &HashMap<String, Ctx>) {
+    use ferrum_kernel::capability::Invocation;
+    let (k, alice, bob, dave) = (&t.k, &users["alice"], &users["bob"], &users["dave"]);
+    async fn op(k: &Kernel, who: &Ctx, what: &str, input: Value, key: &str) -> Result<ferrum_kernel::capability::Receipt, Error> {
+        k.invoke(who, Invocation::new(format!("comms.chat_status.{what}"), input).key(key.to_string())).await
+    }
+    let mine = |who: &'static str| async move { t.ok(&users[who], "GET", "/chat/status", &[], Value::Null).await["status"].clone() };
+
+    // a_person_sets_changes_and_clears_their_status
+    assert_eq!(mine("alice").await, Value::Null);
+    refused(op(k, alice, "create", json!({"values": {"emoji": "🌴", "text": "On leave\u{7}"}}), "s0").await, "invalid");
+    let made = op(k, alice, "create", json!({"values": {"emoji": "🌴", "text": "  On leave "}}), "s1").await.expect("alice sets a status");
+    let id = uid(&made.result);
+    assert_eq!((made.result["person"].clone(), made.result["text"].clone()), (json!("alice@acme.test"), json!("On leave")), "{:?}", made.result);
+    op(k, alice, "update", json!({"id": id, "values": {"text": "Back Monday"}}), "s2").await.expect("and changes it");
+    assert_eq!(mine("alice").await["text"], json!("Back Monday"));
+
+    // a_second_status_for_the_same_person_is_a_conflict
+    refused(op(k, alice, "create", json!({"values": {"text": "again"}}), "s3").await, "conflict");
+
+    // nobody_changes_another_persons_status
+    for (what, input) in [("update", json!({"id": id, "values": {"text": "hacked"}})), ("delete", json!({"id": id}))] {
+        let r = op(k, bob, what, input, &format!("b-{what}")).await;
+        assert!(matches!(r, Err(Error::Forbidden(_) | Error::NotFound(_))), "{what}: {r:?}");
+    }
+    assert_eq!(mine("alice").await["text"], json!("Back Monday"));
+    refused(op(k, dave, "create", json!({"values": {"text": "no role"}}), "d1").await, "forbidden");
+
+    // a_status_needs_an_emoji_or_a_text_and_a_future_time
+    refused(op(k, bob, "create", json!({"values": {}}), "v1").await, "invalid");
+    refused(op(k, bob, "create", json!({"values": {"text": "late", "until": "2000-01-01T00:00:00Z"}}), "v2").await, "invalid");
+    refused(op(k, bob, "create", json!({"values": {"emoji": "abc"}}), "v3").await, "invalid");
+
+    // a_status_shows_to_channel_members_until_its_time
+    let room = uid(&t.ok(bob, "POST", "/chat/channels", &[], json!({"name": "status-room", "type": "Private", "members": ["alice@acme.test"]})).await);
+    let shown = |c: Uuid| async move {
+        let ch = t.ok(bob, "GET", &format!("/chat/channels/{c}"), &[], Value::Null).await;
+        ch["members"].as_array().unwrap().iter().find(|m| m["email"] == json!("alice@acme.test")).unwrap()["status"].clone()
+    };
+    assert_eq!(shown(room).await["text"], json!("Back Monday"));
+    let pair = t.ok(bob, "POST", "/chat/direct", &[], json!({"user": "alice@acme.test"})).await;
+    assert_eq!(pair["status"]["emoji"], json!("🌴"), "the other person's status heads a direct conversation: {pair}");
+    let listed = t.ok(bob, "GET", "/chat/channels", &[], Value::Null).await;
+    let row = listed["channels"].as_array().unwrap().iter().find(|c| uid(c) == uid(&pair)).cloned().unwrap();
+    assert_eq!(row["status"]["text"], json!("Back Monday"), "{row}");
+    t.exec("update e_chat_status set until = now() - interval '1 minute' where tenant_id = $1 and person = 'alice@acme.test' and $2::uuid is null", None).await;
+    assert_eq!(shown(room).await, Value::Null, "gone after its time");
+    assert_eq!(mine("alice").await["text"], json!("Back Monday"), "her own, expired, is still hers to change");
+
+    // ... and cleared
+    op(k, alice, "delete", json!({"id": id}), "s4").await.expect("alice clears it");
+    assert_eq!(mine("alice").await, Value::Null);
+
+    // erasing_a_person_takes_their_status
+    let hank = k.create_user(admin, "hank@acme.test", "Hank Hill", Some(PASSWORD), &["Comms User".to_string()], false).await.expect("user");
+    let hank = k.load_ctx(t.tenant, hank, None, "it".into()).await.unwrap();
+    op(k, &hank, "create", json!({"values": {"emoji": "🔥", "text": "Grilling"}}), "h1").await.unwrap();
+    k.erase_personal_data(admin, "hank@acme.test", "Request 13").await.unwrap();
+    let left: i64 = t
+        .scalar("select count(*) from e_chat_status where tenant_id = $1 and (person = 'hank@acme.test' or text = 'Grilling') and $2::uuid is null", None)
+        .await;
+    assert_eq!(left, 0);
+}
+
+/// Another app (CRM's sequences, Helpdesk's replies) or an agent sends a mail as a Communication through the record's own
+/// create, with its reply and threading fields; Comms checks them wherever they come from, and they do not change after.
+async fn interapp_mail(t: &T, users: &HashMap<String, Ctx>) {
+    use ferrum_kernel::capability::Invocation;
+    let (k, alice, dave) = (&t.k, &users["alice"], &users["dave"]);
+    async fn send(k: &Kernel, who: &Ctx, values: Value, key: &str) -> Result<ferrum_kernel::capability::Receipt, Error> {
+        k.invoke(who, Invocation::new("comms.communication.create", json!({"values": values})).key(key.to_string())).await
+    }
+    let reply = json!({
+        "recipients": "pat@customer.test", "subject": "Re: your order 77", "content": "<p>On its way</p>",
+        "in_reply_to": "<order-77@customer.test>", "mail_references": "<start-77@customer.test> <order-77@customer.test>",
+        "reply_to_address": "Acme Help <help@acme.test>",
+    });
+
+    // a_reply_goes_out_as_a_communication_with_its_threading
+    let sent = send(k, alice, reply.clone(), "mail-77").await.expect("alice's reply is queued");
+    let id = uid(&sent.result);
+    assert!(sent.result["message_id"].as_str().is_some_and(|m| m.contains('@')), "{:?}", sent.result);
+    let stored = k.get(alice, "Communication", id, false).await.unwrap();
+    assert_eq!(stored["in_reply_to"], json!("order-77@customer.test"));
+    assert_eq!(stored["mail_references"], json!("start-77@customer.test order-77@customer.test"));
+    assert_eq!(stored["reply_to_address"], json!("Acme Help <help@acme.test>"));
+    assert_eq!(stored["thread_key"], json!("order-77@customer.test"), "a thread Mail does not have starts at the message answered");
+
+    // the_same_key_sends_once
+    let again = send(k, alice, reply.clone(), "mail-77").await.unwrap();
+    assert!(again.repeated && uid(&again.result) == id);
+    let count: i64 = t.scalar("select count(*) from e_communication where tenant_id = $1 and subject = 'Re: your order 77' and $2::uuid is null", None).await;
+    assert_eq!(count, 1);
+
+    // threading_fields_are_checked_wherever_they_come_from
+    let with = |field: &str, v: Value| {
+        let mut m = reply.as_object().unwrap().clone();
+        m.insert(field.into(), v);
+        Value::Object(m)
+    };
+    refused(send(k, alice, with("in_reply_to", json!("not an id")), "bad-1").await, "invalid");
+    refused(send(k, alice, with("reply_to_address", json!("a@x.test, b@y.test")), "bad-2").await, "invalid");
+    let many: Vec<String> = (0..51).map(|i| format!("<r{i}@customer.test>")).collect();
+    refused(send(k, alice, with("mail_references", json!(many.join(" "))), "bad-3").await, "invalid");
+    let sys = Ctx::system(t.tenant, k.registry.schema(t.tenant).await.unwrap());
+    let elsewhere = with("envelope_sender", json!("bounce@elsewhere.test"));
+    refused(k.insert(&sys, "Communication", elsewhere.as_object().unwrap().clone()).await, "invalid");
+    refused(send(k, dave, reply.clone(), "no-role").await, "forbidden");
+
+    // they_do_not_change_afterwards
+    refused(k.update(alice, "Communication", id, obj(json!({"in_reply_to": "other@customer.test"})), None).await, "invalid");
+    assert_eq!(k.get(alice, "Communication", id, false).await.unwrap()["in_reply_to"], json!("order-77@customer.test"));
 }
 
 /// Mail's sockets go where the platform's guard lets outbound calls go: an account whose SMTP or IMAP host is

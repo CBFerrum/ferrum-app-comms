@@ -10,27 +10,29 @@ import { useNavigate } from "react-router";
 import { Badge, Button, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, Input, Label, Textarea } from "@ferrum/kit/primitives";
 import { cn, confirmDialog, FormSkeleton, TabPanel, Tabs, toast } from "@ferrum/kit";
 import { Failure } from "./States";
-import { api, bootstrap, errorMessage, t as tr, isolate } from "@ferrum/client";
+import { api, bootstrap, errorMessage, relativeTime, t as tr, isolate } from "@ferrum/client";
 import { useMe, usePeople } from "@ferrum/records";
-import { CHAT, LOUDNESS, SIDE_PANEL, accessText, addable, initials, keys, loudness, memberRows, type Channel, type Loud, type Member } from "./lib/chat";
+import { CHAT, LOUDNESS, SIDE_PANEL, accessText, addable, initials, keys, loudness, memberRows, type Channel, type Loud, type Member, type Message } from "./lib/chat";
 import { Base } from "./chatBase";
 import { ChatRetention } from "./ChatRetention";
+import { StatusMark } from "./ChatStatus";
 
-export type DetailsTab = "general" | "personal" | "members";
+export type DetailsTab = "general" | "personal" | "members" | "pinned";
 
 const TABS: { id: DetailsTab; label: string }[] = [
   { id: "general", get label() { return tr("General"); } },
   { id: "personal", get label() { return tr("Notifications"); } },
   { id: "members", get label() { return tr("Members"); } },
+  { id: "pinned", get label() { return tr("Pinned"); } },
 ];
 
 export function ChannelDetails({ id, tab, onTab, onClose }: { id: string; tab: DetailsTab; onTab: (t: DetailsTab) => void; onClose: () => void }) {
   const channel = useQuery({ queryKey: keys.channel(id), queryFn: ({ signal }) => api.get<Channel>(`${CHAT}/channels/${id}`, undefined, signal) });
   const c = channel.data;
   const direct = c?.type === "Direct";
-  // A direct message has its two people and one setting.
-  const tabs = direct ? TABS.filter((t) => t.id === "personal") : TABS;
-  const shown = direct ? "personal" : tab;
+  // A direct message has its two people, one setting and what they pinned.
+  const tabs = direct ? TABS.filter((t) => t.id === "personal" || t.id === "pinned") : TABS;
+  const shown = direct && tab !== "pinned" ? "personal" : tab;
   return (
     <aside className={SIDE_PANEL} aria-label={tr("Channel details")} onKeyDown={(e) => e.key === "Escape" && onClose()}>
       <header className="flex items-center gap-2 border-b px-3 py-2">
@@ -55,8 +57,9 @@ export function ChannelDetails({ id, tab, onTab, onClose }: { id: string; tab: D
                 {shown === "general" && <General c={c} />}
                 {shown === "personal" && <Personal c={c} />}
                 {shown === "members" && <Members c={c} />}
+                {shown === "pinned" && <Pinned c={c} />}
                 {/* For administrators; the platform refuses anyone else, whatever is shown. */}
-                {bootstrap()?.person?.admin && (shown === "general" || direct) && <ChatRetention channel={c.id} />}
+                {bootstrap()?.person?.admin && (shown === "general" || (direct && shown === "personal")) && <ChatRetention channel={c.id} />}
               </div>
             </TabPanel>
           </>
@@ -206,6 +209,26 @@ function General({ c }: { c: Channel }) {
   );
 }
 
+/** What is pinned in the conversation, newest pin first. */
+function Pinned({ c }: { c: Channel }) {
+  const pins = useQuery({ queryKey: keys.pins(c.id), queryFn: ({ signal }) => api.get<{ messages: Message[] }>(`${CHAT}/channels/${c.id}/pins`, undefined, signal) });
+  if (pins.error) return <Failure error={pins.error} onRetry={() => void pins.refetch()} />;
+  if (!pins.data) return <FormSkeleton fields={3} />;
+  if (!pins.data.messages.length) return <p className="text-sm text-muted-foreground">{tr("Nothing is pinned here")}</p>;
+  return (
+    <ul className="grid gap-2 text-sm" aria-label={tr("Pinned messages")}>
+      {pins.data.messages.map((m) => (
+        <li key={m.id} className="rounded-md border p-2">
+          <p className="text-xs text-muted-foreground">
+            {isolate(m.sender_name || m.sender)} · <time dateTime={m.posted_at}>{isolate(relativeTime(m.posted_at))}</time>
+          </p>
+          <p className="line-clamp-3 whitespace-pre-wrap [overflow-wrap:anywhere]">{isolate(m.body)}</p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function Personal({ c }: { c: Channel }) {
   const qc = useQueryClient();
   const navigate = useNavigate();
@@ -266,6 +289,7 @@ function Personal({ c }: { c: Channel }) {
           </Button>
         )}
       </fieldset>
+      {direct && <p className="rounded-md bg-muted px-3 py-2 text-muted-foreground">{isolate(accessText(c))}</p>}
       {!direct && (
         <div className="border-t pt-3">
           <Button variant="outline" onClick={() => void leave()}>
@@ -361,6 +385,7 @@ function Members({ c }: { c: Channel }) {
                 <span className="block truncate font-medium">
                   {m.full_name || m.email}
                   {you && <span className="font-normal text-muted-foreground"> {tr("(you)")}</span>}
+                  <StatusMark status={m.status} className="ms-1" />
                 </span>
                 {(m.full_name || m.active) && (
                   <span className="block truncate text-xs text-muted-foreground">{isolate([m.active && tr("Active now"), m.full_name && m.email].filter(Boolean).join(" · "))}</span>

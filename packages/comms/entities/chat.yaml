@@ -20,7 +20,7 @@
     - {name: members, type: table, of: ChatChannelMember}
     - {name: archived, type: check, in_list: true, in_filter: true}
     - {name: post_policy, type: select, options: [Members, Owners], default: Members, in_filter: true, description: "Who starts posts: every member, or only the owners (members still reply in threads)"}
-    - {name: direct_key, type: data, unique: true, read_only: true, hidden: true, no_copy: true}
+    - {name: direct_key, type: data, unique: true, read_only: true, hidden: true, no_copy: true, description: "A direct conversation's people: two addresses, lower-case, sorted and joined by |; three to nine, g: and the SHA-256 (hex) of that same list. One conversation per set of people"}
     - {name: last_message_at, type: datetime, read_only: true, no_copy: true, in_list: true}
   list: {columns: [channel_name, channel_type, archived, last_message_at], sort: channel_name asc}
 
@@ -40,5 +40,64 @@
     - {name: posted_at, type: datetime, read_only: true, no_copy: true, in_list: true}
     - {name: edited_at, type: datetime, read_only: true, no_copy: true}
     - {name: deleted, type: check, read_only: true, in_filter: true}
-  indexes: [[channel, posted_at], [parent_message, posted_at]]
+    - {name: reactions, type: json, read_only: true, no_copy: true, description: "{emoji: [addresses of the members who reacted with it]}; changed only by the React and Remove Reaction actions"}
+    - {name: pinned_at, type: datetime, read_only: true, no_copy: true, in_filter: true, description: "When it was pinned in its channel; empty when it is not"}
+  indexes: [[channel, posted_at], [parent_message, posted_at], [channel, pinned_at]]
   list: {columns: [posted_at, channel, sender, body], sort: posted_at desc}
+  # Chat's own buttons (hidden from the generic record page), and operations for a member's agent. A member reads
+  # their own channels' messages (package.yaml, Comms User), and the handler checks membership again (src/chat.rs).
+  actions:
+    - name: react
+      label: React
+      permission: read
+      hidden: true
+      params:
+        - {name: emoji, label: Emoji, type: data, required: true, description: "One emoji, at most 32 bytes"}
+      contract:
+        effect: transactional_action
+        completion: The caller's reaction is on the message and the channel's members were told
+        compensate_with: unreact
+        returns: {type: object, properties: {id: {type: string, format: uuid, x-ferrum-link: ChatMessage}, reactions: {type: object}}}
+    - name: unreact
+      label: Remove Reaction
+      permission: read
+      hidden: true
+      params:
+        - {name: emoji, label: Emoji, type: data, required: true, description: "The emoji to take back"}
+      contract:
+        effect: transactional_action
+        completion: The caller's reaction with that emoji is gone and the channel's members were told
+        compensate_with: react
+        returns: {type: object, properties: {id: {type: string, format: uuid, x-ferrum-link: ChatMessage}, reactions: {type: object}}}
+    - name: pin
+      label: Pin
+      permission: read
+      hidden: true
+      contract:
+        effect: transactional_action
+        completion: The message is pinned in its channel and the channel's members were told
+        compensate_with: unpin
+        returns: {type: object, properties: {id: {type: string, format: uuid, x-ferrum-link: ChatMessage}, pinned_at: {type: [string, "null"]}}}
+    - name: unpin
+      label: Unpin
+      permission: read
+      hidden: true
+      contract:
+        effect: transactional_action
+        completion: The message is no longer pinned and the channel's members were told
+        compensate_with: pin
+        returns: {type: object, properties: {id: {type: string, format: uuid, x-ferrum-link: ChatMessage}, pinned_at: {type: [string, "null"]}}}
+
+- name: ChatStatus
+  label: Chat Status
+  label_plural: Chat Statuses
+  kind: master
+  module: communication
+  title_field: person
+  description: "What a person says of themselves in Chat: an emoji, a short text and until when. One per person; it is shown to everyone who chats with them."
+  fields:
+    - {name: person, type: email, required: true, unique: true, read_only: true, in_list: true, description: "Filled from whoever sets it"}
+    - {name: emoji, type: data, max_length: 32}
+    - {name: text, type: data, max_length: 100, in_list: true}
+    - {name: until, type: datetime, in_list: true, description: "Shown until then; empty: until it is changed"}
+  list: {columns: [person, emoji, text, until], sort: person asc}
