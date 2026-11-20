@@ -529,6 +529,15 @@ impl DocHook for MessageHook {
         let body = s(doc, "body").unwrap_or_default();
         let edited = old.is_some_and(|o| s(o, "body").unwrap_or_default() != body);
         if !util::b(doc, "deleted") && ((old.is_none() && body.contains("://")) || edited) {
+            if edited {
+                // A card never outlives the text it describes: the edit takes the old cards in its own transaction, not
+                // whenever the job gets to it (which may be never, if it is refused or fails).
+                sqlx::query("update e_chat_message set previews = null where tenant_id = $1 and id = $2 and previews is not null")
+                    .bind(hc.ctx.tenant)
+                    .bind(util::doc_id(doc)?)
+                    .execute(&mut **hc.tx)
+                    .await?;
+            }
             crate::preview::queue(hc.tx, hc.ctx.tenant, util::doc_id(doc)?, body).await?;
         }
         Ok(())

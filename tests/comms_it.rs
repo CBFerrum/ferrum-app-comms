@@ -2188,6 +2188,52 @@ async fn chat_previews(t: &T, users: &HashMap<String, Ctx>) {
     assert_eq!(cards(w).await, json!([]), "no card describes a text the message no longer has");
     assert!(preview::write_cards(k, t.tenant, w, "changed meanwhile", &[card]).await.unwrap(), "the text it was made from takes it");
 
+    // an_edit_takes_the_old_cards_at_once: a card never outlives its text, not even until the job has run
+    let kept = post(format!("again {link}")).await;
+    run().await;
+    assert_eq!(cards(kept).await.as_array().unwrap().len(), 1);
+    t.ok(alice, "PATCH", &format!("/chat/messages/{kept}"), &[], json!({"body": format!("again, edited {link}")})).await;
+    assert_eq!(cards(kept).await, json!([]), "the edit's own transaction took the card of the old text");
+    run().await;
+    assert_eq!(cards(kept).await.as_array().unwrap().len(), 1, "and the job wrote the card of the new text");
+
+    // an_edit_while_the_page_is_fetched_leaves_no_card_of_the_old_text: the first job has read the text and its request
+    // reached the page (waited for, not slept for); the text changes then; its card is not written onto the new text.
+    site.page("/held", 200, &html, br#"<title>Held</title>"#.to_vec(), 1500);
+    let held = format!("{base}/held");
+    run().await;
+    let m2 = post(format!("slow one {held}")).await;
+    let first_job = tokio::spawn({
+        let k = k.clone();
+        async move { k.run_jobs_once(4).await.unwrap() }
+    });
+    let waited = std::time::Instant::now();
+    while !site.asked().iter().any(|p| p == "/held") {
+        assert!(waited.elapsed() < Duration::from_secs(30), "the job never asked the page");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    t.ok(alice, "PATCH", &format!("/chat/messages/{m2}"), &[], json!({"body": format!("slow two {held}")})).await;
+    first_job.await.unwrap();
+    assert_eq!(cards(m2).await, json!([]), "the card made from the old text is not written onto the new one");
+    run().await;
+    assert_eq!(cards(m2).await[0]["title"], json!("Held"), "the job of the new text wrote its own card");
+    // ... and when the edit takes the link away, no card is written at all
+    let m3 = post(format!("slow three {held}")).await;
+    let asked_before = site.asked().iter().filter(|p| *p == "/held").count();
+    let removing = tokio::spawn({
+        let k = k.clone();
+        async move { k.run_jobs_once(4).await.unwrap() }
+    });
+    let waited = std::time::Instant::now();
+    while site.asked().iter().filter(|p| *p == "/held").count() == asked_before {
+        assert!(waited.elapsed() < Duration::from_secs(30), "the job never asked the page");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    t.ok(alice, "PATCH", &format!("/chat/messages/{m3}"), &[], json!({"body": "slow three, no link now"})).await;
+    removing.await.unwrap();
+    run().await;
+    assert_eq!(cards(m3).await, json!([]));
+
     // previews_off_fetches_nothing
     let settings = k.list(mgr, "CommsSettings", &ferrum_kernel::ListQuery::default()).await.unwrap().rows[0].clone();
     let settings_id = uid(&Value::Object(settings));
