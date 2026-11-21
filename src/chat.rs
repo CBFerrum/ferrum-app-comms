@@ -111,6 +111,30 @@ impl DocHook for ChannelHook {
         }
     }
 
+    /// Post a Message (`comms.chat_channel.post`): what Chat's post route does for a text, for a member's agent.
+    async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
+        if name != "post" {
+            return Ok(None);
+        }
+        let channel = util::doc_id(doc)?;
+        let c = readable_channel(hc.tx, hc.ctx, channel).await?;
+        let text = body_text(params.as_object().unwrap_or(&Map::new()))?;
+        if text.trim().is_empty() {
+            return Err(Error::field("body", "write a message"));
+        }
+        let parent = id(params.as_object().unwrap_or(&Map::new()), "parent");
+        let root = may_post(hc.tx, hc.ctx, &c, parent).await?;
+        let mentioned = mentioned(hc.tx, hc.ctx.tenant, &c, &text, None, &hc.ctx.email).await?;
+        let message = deliver(hc.kernel, hc.tx, hc.ctx, &c, None, &text, root, mentioned, json!([])).await?;
+        let posted: String =
+            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("select {} from e_chat_message where tenant_id = $1 and id = $2", iso("posted_at"))))
+                .bind(hc.ctx.tenant)
+                .bind(message)
+                .fetch_one(&mut **hc.tx)
+                .await?;
+        Ok(Some(json!({"id": message, "channel": channel, "posted_at": posted})))
+    }
+
     async fn after_save(&self, hc: &mut HookCtx<'_>, doc: &Doc, old: Option<&Doc>) -> Result<()> {
         if let Some(old) = old
             && (s(old, "channel_type") == Some("Direct")) != (s(doc, "channel_type") == Some("Direct"))
@@ -136,6 +160,99 @@ impl DocHook for ChannelHook {
 }
 
 pub struct MessageHook;
+
+/// An incoming webhook (`ChatWebhook`): made, changed and removed by a channel's owners or a Chat Admin, never in a
+/// direct conversation, and its channel never changes. Its New Address action makes the secret address, shown once.
+pub struct WebhookHook;
+
+async fn webhook_owner(hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+    let c = match id(doc, "channel") {
+        Some(channel) => load_channel(hc.tx, hc.ctx.tenant, channel).await?,
+        None => None,
+    }
+    .ok_or_else(|| Error::field("channel", "choose a channel"))?;
+    if c.kind == "Direct" {
+        return Err(Error::field("channel", "incoming webhooks are for channels"));
+    }
+    if hc.ctx.is_system { Ok(()) } else { owner_or_admin(&c, hc.ctx) }
+}
+
+#[async_trait]
+impl DocHook for WebhookHook {
+    async fn before_validate(&self, _hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
+        if let Some(name) = s(doc, "webhook_name").map(|n| util::clean_line(n, 80)) {
+            doc.insert("webhook_name".into(), json!(name));
+        }
+        Ok(())
+    }
+
+    async fn validate(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        if s(doc, "webhook_name").is_none_or(str::is_empty) {
+            return Err(Error::field("webhook_name", "give it a name"));
+        }
+        webhook_owner(hc, doc).await
+    }
+
+    async fn validate_change(&self, _hc: &mut HookCtx<'_>, old: Option<&Doc>, doc: &Doc) -> Result<()> {
+        match old {
+            Some(old) if id(old, "channel") != id(doc, "channel") => Err(Error::field("channel", "a webhook stays in its channel")),
+            _ => Ok(()),
+        }
+    }
+
+    async fn before_delete(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> Result<()> {
+        webhook_owner(hc, doc).await
+    }
+
+    async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, _params: &Value) -> Result<Option<Value>> {
+        if name != "rotate_token" {
+            return Ok(None);
+        }
+        webhook_owner(hc, doc).await?;
+        let hook = util::doc_id(doc)?;
+        let secret = util::new_token();
+        hc.kernel.update_tx(&util::sys(hc.ctx), hc.tx, "ChatWebhook", hook, util::obj(json!({"token": secret})), None).await?;
+        let token = util::record_token(hook, &secret);
+        let (path, url) = util::public_url(hc.kernel, hc.tx, hc.ctx.tenant, &format!("/chat/hook/{token}"), util::For::Services).await?;
+        Ok(Some(json!({
+            "token": token,
+            "path": path,
+            "url": url,
+            "note": "POST {\"text\": \"...\"} as JSON here. The address is shown only now; make a new one if it is lost.",
+        })))
+    }
+}
+
+/// `POST /api/site/{tenant}/comms/chat/hook/{token}` `{"text"}`: an outside program posts to the webhook's own
+/// channel under its name. A wrong token, a switched-off webhook and an archived channel all answer the same "not
+/// found"; nothing about the workspace is told. At most 60 posts a minute a webhook.
+pub(crate) async fn webhook_post(k: &Kernel, tenant: Uuid, token: &str, body: &[u8]) -> Result<SiteResponse> {
+    let gone = || Error::NotFound("webhook".into());
+    let Some(hook) = util::check_token(k, tenant, "ChatWebhook", "token", token).await? else { return Err(gone()) };
+    k.rate_limit(&format!("comms.hook|{tenant}|{hook}"), std::time::Duration::from_secs(60), 60, "this webhook posts too often").await?;
+    let v: Value = serde_json::from_slice(body).map_err(|_| Error::field("text", r#"send {"text": "..."} as JSON"#))?;
+    let text = v
+        .get("text")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|t| !t.is_empty() && t.len() <= MAX_BODY)
+        .ok_or_else(|| Error::field("text", format!("1 to {MAX_BODY} bytes of text")))?;
+    let sys = Ctx::system(tenant, k.registry.schema(tenant).await?);
+    let mut tx = k.db.tenant_tx(tenant).await?;
+    let row: Option<(String, Uuid, bool)> =
+        sqlx::query_as("select webhook_name, channel, coalesce(enabled, false) from e_chat_webhook where tenant_id = $1 and id = $2")
+            .bind(tenant)
+            .bind(hook)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some((name, channel, true)) = row else { return Err(gone()) };
+    let Some(c) = load_channel(&mut tx, tenant, channel).await?.filter(|c| !c.archived) else { return Err(gone()) };
+    let mentioned = mentioned(&mut tx, tenant, &c, text, None, "").await?;
+    let message = deliver(k, &mut tx, &sys, &c, Some((hook, &name)), text, None, mentioned, json!([])).await?;
+    sqlx::query("update e_chat_webhook set last_used_at = now() where tenant_id = $1 and id = $2").bind(tenant).bind(hook).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(SiteResponse::json(201, &json!({"id": message})))
+}
 
 /// Different emoji on one message.
 const MAX_REACTIONS: usize = 20;
@@ -265,7 +382,9 @@ impl ferrum_kernel::privacy::PersonalHeld for Reactions {
 impl DocHook for MessageHook {
     async fn before_validate(&self, hc: &mut HookCtx<'_>, doc: &mut Doc) -> Result<()> {
         if !doc.contains_key("created_at") {
-            if s(doc, "sender").is_none() || !hc.ctx.is_system {
+            // A webhook's message has no sender: it names its webhook (only the system sets that field).
+            let by_webhook = hc.ctx.is_system && id(doc, "webhook").is_some();
+            if !by_webhook && (s(doc, "sender").is_none() || !hc.ctx.is_system) {
                 doc.insert("sender".into(), json!(hc.ctx.email.to_lowercase()));
             }
             doc.insert("posted_at".into(), json!(util::ts(util::now())));
@@ -401,10 +520,27 @@ impl DocHook for MessageHook {
         Ok(Some(out))
     }
 
-    async fn after_save(&self, hc: &mut HookCtx<'_>, doc: &Doc, _old: Option<&Doc>) -> Result<()> {
+    async fn after_save(&self, hc: &mut HookCtx<'_>, doc: &Doc, old: Option<&Doc>) -> Result<()> {
         // Uploads attached to nothing yet join the message (members download them through
         // /api/app/comms/attachments, which checks membership).
-        util::attach_files(hc.tx, hc.ctx.tenant, doc.get("attachments"), "ChatMessage", util::doc_id(doc)?).await
+        util::attach_files(hc.tx, hc.ctx.tenant, doc.get("attachments"), "ChatMessage", util::doc_id(doc)?).await?;
+        // Its links' cards, by a job after the commit: for a new text with an address in it, and for an edit (which
+        // may also take the cards of links it removed away).
+        let body = s(doc, "body").unwrap_or_default();
+        let edited = old.is_some_and(|o| s(o, "body").unwrap_or_default() != body);
+        if !util::b(doc, "deleted") && ((old.is_none() && body.contains("://")) || edited) {
+            if edited {
+                // A card never outlives the text it describes: the edit takes the old cards in its own transaction, not
+                // whenever the job gets to it (which may be never, if it is refused or fails).
+                sqlx::query("update e_chat_message set previews = null where tenant_id = $1 and id = $2 and previews is not null")
+                    .bind(hc.ctx.tenant)
+                    .bind(util::doc_id(doc)?)
+                    .execute(&mut **hc.tx)
+                    .await?;
+            }
+            crate::preview::queue(hc.tx, hc.ctx.tenant, util::doc_id(doc)?, body).await?;
+        }
+        Ok(())
     }
 }
 
@@ -521,6 +657,14 @@ async fn push(tx: &mut Tx, tenant: Uuid, emails: &[String], data: Value) -> Resu
     Ok(())
 }
 
+/// Pushes a chat event to the members of a channel (at commit), for work that has only its id (a job).
+pub(crate) async fn push_to_channel(tx: &mut Tx, tenant: Uuid, channel: Uuid, data: Value) -> Result<()> {
+    if let Some(c) = load_channel(tx, tenant, channel).await? {
+        push(tx, tenant, &member_emails(&c), data).await?;
+    }
+    Ok(())
+}
+
 fn member_emails(c: &Channel) -> Vec<String> {
     c.members.iter().map(|m| m.email.clone()).collect()
 }
@@ -571,7 +715,7 @@ const ACTIVE: &str = "exists (select 1 from user_session s where s.tenant_id = u
 /// What counts as unread for the member `$2` of channel `c` whose member row is `me`: messages
 /// from others after the read marker, and replies from others in threads they started or
 /// answered in (a reply in a thread of someone else's, which they never joined, is not theirs).
-const UNREAD: &str = "from e_chat_message x where x.tenant_id = c.tenant_id and x.channel = c.id and not x.deleted and x.sender <> $2 \
+const UNREAD: &str = "from e_chat_message x where x.tenant_id = c.tenant_id and x.channel = c.id and not x.deleted and x.sender is distinct from $2 \
     and x.posted_at > coalesce(me.last_read_at, '-infinity'::timestamptz) \
     and (x.parent_message is null or exists (select 1 from e_chat_message t where t.tenant_id = x.tenant_id and t.channel = x.channel and t.sender = $2 \
         and (t.id = x.parent_message or t.parent_message = x.parent_message)))";
@@ -588,7 +732,7 @@ async fn list_channels(k: &Kernel, ctx: &Ctx, include_public: bool) -> Result<Va
             and lower(u.email::text) = o.member where o.tenant_id = c.tenant_id and o.parent_id = c.id and o.member <> $2 and {ACTIVE}) end, \
          'unread', case when me.id is null then 0 else (select count(*) {UNREAD}) end, \
          'unread_mentions', case when me.id is null then 0 else (select count(*) {UNREAD} and x.mentions @> to_jsonb($2::text)) end, \
-         'last_message', (select jsonb_build_object('id', x.id, 'sender', x.sender, 'body', left(x.body, 200), 'posted_at', {posted}) \
+         'last_message', (select jsonb_build_object('id', x.id, 'sender', coalesce(x.sender, x.sender_label, ''), 'body', left(x.body, 200), 'posted_at', {posted}) \
             from e_chat_message x where x.tenant_id = c.tenant_id and x.channel = c.id and x.parent_message is null and not x.deleted \
             order by x.posted_at desc limit 1)) \
          from e_chat_channel c left join {MEMBERS} me on me.tenant_id = c.tenant_id and me.parent_id = c.id and me.member = $2 \
@@ -747,6 +891,15 @@ async fn set_members(k: &Kernel, ctx: &Ctx, tx: &mut Tx, channel: Uuid, change: 
     Ok(())
 }
 
+/// Whether `ctx` hosts a call of this channel: an owner or a Chat Admin, or either person of a direct conversation.
+pub(crate) async fn channel_host(tx: &mut Tx, ctx: &Ctx, channel: Uuid) -> Result<bool> {
+    Ok(match load_channel(tx, ctx.tenant, channel).await? {
+        Some(c) if c.kind == "Direct" => c.role(&ctx.email).is_some(),
+        Some(c) => owner_or_admin(&c, ctx).is_ok(),
+        None => false,
+    })
+}
+
 fn owner_or_admin(c: &Channel, ctx: &Ctx) -> Result<()> {
     if c.role(&ctx.email) == Some("Owner") || ctx.has_role("Chat Admin") {
         Ok(())
@@ -887,10 +1040,11 @@ async fn leave(k: &Kernel, ctx: &Ctx, channel: Uuid) -> Result<Value> {
 
 fn message_sql(filter: &str) -> String {
     format!(
-        "select jsonb_build_object('id', x.id, 'channel', x.channel, 'sender', x.sender, 'sender_name', coalesce(nullif(u.full_name, ''), x.sender), \
+        "select jsonb_build_object('id', x.id, 'channel', x.channel, 'sender', coalesce(x.sender, ''), 'sender_name', coalesce(nullif(u.full_name, ''), x.sender, x.sender_label, ''), 'webhook', x.webhook is not null, \
          'body', case when x.deleted then '' else x.body end, 'parent', x.parent_message, 'mentions', coalesce(x.mentions, '[]'::jsonb), \
          'attachments', case when x.deleted then '[]'::jsonb else coalesce(x.attachments, '[]'::jsonb) end, 'deleted', x.deleted, \
          'reactions', case when x.deleted then '{{}}'::jsonb else coalesce(x.reactions, '{{}}'::jsonb) end, 'pinned_at', {pinned}, \
+         'previews', case when x.deleted then '[]'::jsonb else coalesce(x.previews, '[]'::jsonb) end, \
          'posted_at', {posted}, 'edited_at', {edited}, \
          'reply_count', (select count(*) from e_chat_message r where r.tenant_id = x.tenant_id and r.parent_message = x.id and not r.deleted), \
          'last_reply_at', (select {reply} from e_chat_message r where r.tenant_id = x.tenant_id and r.parent_message = x.id and not r.deleted order by r.posted_at desc limit 1)) \
@@ -1034,24 +1188,36 @@ async fn post(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, Value>) ->
     let text = body_text(&body)?;
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     let c = readable_channel(&mut tx, ctx, channel).await?;
+    let parent: Option<Uuid> =
+        body.get("parent").and_then(Value::as_str).map(|p| p.parse()).transpose().map_err(|_| Error::field("parent", "must be a message id"))?;
+    let root = may_post(&mut tx, ctx, &c, parent).await?;
+    let mentioned = mentioned(&mut tx, ctx.tenant, &c, &text, body.get("mentions"), &ctx.email).await?;
+    let attachments = util::check_files(k, &mut tx, ctx, body.get("attachments")).await?;
+    let message = deliver(k, &mut tx, ctx, &c, None, &text, root, mentioned, attachments).await?;
+    let out = message_json(&mut tx, ctx.tenant, message).await?;
+    tx.commit().await?;
+    Ok(out)
+}
+
+/// What a member's post must pass, by the route or the operation: a member of a channel that is not archived, a
+/// thread of this channel, and the owners-only rule for new posts. The thread's first message, for a reply.
+async fn may_post(tx: &mut Tx, ctx: &Ctx, c: &Channel, parent: Option<Uuid>) -> Result<Option<Uuid>> {
     if c.role(&ctx.email).is_none() {
         return Err(Error::Forbidden("join the channel to post".into()));
     }
     if c.archived {
         return Err(Error::invalid("this channel is archived"));
     }
-    let parent: Option<Uuid> =
-        body.get("parent").and_then(Value::as_str).map(|p| p.parse()).transpose().map_err(|_| Error::field("parent", "must be a message id"))?;
     // Replies to replies join the thread's first message.
     let root = match parent {
         Some(p) => {
             let row: Option<(Uuid, Option<Uuid>)> = sqlx::query_as("select channel, parent_message from e_chat_message where tenant_id = $1 and id = $2")
                 .bind(ctx.tenant)
                 .bind(p)
-                .fetch_optional(&mut *tx)
+                .fetch_optional(&mut **tx)
                 .await?;
             match row {
-                Some((ch, up)) if ch == channel => Some(up.unwrap_or(p)),
+                Some((ch, up)) if ch == c.id => Some(up.unwrap_or(p)),
                 _ => return Err(Error::field("parent", "is not a message of this channel")),
             }
         }
@@ -1060,36 +1226,66 @@ async fn post(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, Value>) ->
     if c.owners_post && root.is_none() && c.role(&ctx.email) != Some("Owner") {
         return Err(Error::Forbidden("only the channel's owners start posts here; members can reply in threads".into()));
     }
-    let me = ctx.email.to_lowercase();
-    let mut mentioned: BTreeSet<String> = emails(body.get("mentions")).into_iter().collect();
-    mentioned.extend(MENTION.captures_iter(&text).map(|m| m[1].to_lowercase()));
-    mentioned.remove(&me);
+    Ok(root)
+}
+
+/// The people a text mentions (`<@address>`, and an explicit list), the poster aside, of those who can read the channel.
+async fn mentioned(tx: &mut Tx, tenant: Uuid, c: &Channel, text: &str, extra: Option<&Value>, me: &str) -> Result<Vec<String>> {
+    let mut mentioned: BTreeSet<String> = emails(extra).into_iter().collect();
+    mentioned.extend(MENTION.captures_iter(text).map(|m| m[1].to_lowercase()));
+    mentioned.remove(&me.to_lowercase());
     // Only people who can read the channel learn about the message.
-    let mentioned: Vec<String> = if c.kind == "Public" {
-        util::users(&mut tx, ctx.tenant, &mentioned.into_iter().collect::<Vec<_>>()).await?.into_iter().map(|u| u.email).collect()
+    Ok(if c.kind == "Public" {
+        util::users(tx, tenant, &mentioned.into_iter().collect::<Vec<_>>()).await?.into_iter().map(|u| u.email).collect()
     } else {
         mentioned.into_iter().filter(|m| c.role(m).is_some()).collect()
-    };
-    let attachments = util::check_files(k, &mut tx, ctx, body.get("attachments")).await?;
-    let doc = util::obj(json!({"channel": channel, "body": text, "parent_message": root, "mentions": mentioned, "attachments": attachments}));
-    let saved = k.insert_tx(&util::elevated(ctx), &mut tx, "ChatMessage", doc).await?;
+    })
+}
+
+/// Stores a message in a channel and tells its people, as every post does: by a member (`ctx`, the person), or by an
+/// incoming webhook (`webhook`: its id and name; `ctx` is then the system). A webhook's mentions are shown but
+/// notify nobody by name.
+#[allow(clippy::too_many_arguments)]
+async fn deliver(
+    k: &Kernel,
+    tx: &mut Tx,
+    ctx: &Ctx,
+    c: &Channel,
+    webhook: Option<(Uuid, &str)>,
+    text: &str,
+    root: Option<Uuid>,
+    mentioned: Vec<String>,
+    attachments: Value,
+) -> Result<Uuid> {
+    let channel = c.id;
+    let mut doc = util::obj(json!({"channel": channel, "body": text, "parent_message": root, "mentions": mentioned, "attachments": attachments}));
+    if let Some((id, name)) = webhook {
+        doc.insert("webhook".into(), json!(id));
+        doc.insert("sender_label".into(), json!(name));
+    }
+    let saved = k.insert_tx(&util::elevated(ctx), tx, "ChatMessage", doc).await?;
     let message = util::doc_id(&saved)?;
-    sqlx::query("update e_chat_channel set last_message_at = now() where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(channel).execute(&mut *tx).await?;
-    if root.is_none() {
+    sqlx::query("update e_chat_channel set last_message_at = now() where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(channel).execute(&mut **tx).await?;
+    let me = if webhook.is_some() { String::new() } else { ctx.email.to_lowercase() };
+    if root.is_none() && webhook.is_none() {
         sqlx::query(sqlx::AssertSqlSafe(format!("update {MEMBERS} set last_read_at = now() where tenant_id = $1 and parent_id = $2 and member = $3")))
             .bind(ctx.tenant)
             .bind(channel)
             .bind(&me)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
     }
-    push(&mut tx, ctx.tenant, &member_emails(&c), json!({"event": "message", "channel": channel, "message": message, "parent": root, "sender": me})).await?;
-    let who = if ctx.full_name.trim().is_empty() { ctx.email.clone() } else { ctx.full_name.clone() };
-    let snippet = util::cut(&text, 200);
+    push(tx, ctx.tenant, &member_emails(c), json!({"event": "message", "channel": channel, "message": message, "parent": root, "sender": me})).await?;
+    let who = match webhook {
+        Some((_, name)) => name.to_string(),
+        None if ctx.full_name.trim().is_empty() => ctx.email.clone(),
+        None => ctx.full_name.clone(),
+    };
+    let snippet = util::cut(text, 200);
     let snippet = if snippet.trim().is_empty() { "Sent a file".to_string() } else { snippet };
     // Each person hears once, of the most direct thing: a mention, then what the conversation is
     // to them (a direct message, a thread they are in, a channel they chose to hear in full).
-    let mut hears: BTreeMap<String, &str> = mentioned.iter().map(|m| (m.clone(), "mention")).collect();
+    let mut hears: BTreeMap<String, &str> = if webhook.is_some() { BTreeMap::new() } else { mentioned.iter().map(|m| (m.clone(), "mention")).collect() };
     match root {
         _ if c.kind == "Direct" => {
             for m in c.members.iter().filter(|m| m.email != me && c.loud(&m.email) != Loud::Nothing) {
@@ -1097,7 +1293,7 @@ async fn post(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, Value>) ->
             }
         }
         Some(r) => {
-            for p in thread_people(&mut tx, ctx.tenant, r).await? {
+            for p in thread_people(tx, ctx.tenant, r).await? {
                 if p != me && c.member(&p).is_some() && c.loud(&p) != Loud::Nothing {
                     hears.entry(p).or_insert("thread");
                 }
@@ -1110,7 +1306,7 @@ async fn post(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, Value>) ->
         }
     }
     let wanted: Vec<String> = hears.keys().cloned().collect();
-    let users: BTreeMap<String, Uuid> = util::users(&mut tx, ctx.tenant, &wanted).await?.into_iter().map(|u| (u.email, u.id)).collect();
+    let users: BTreeMap<String, Uuid> = util::users(tx, ctx.tenant, &wanted).await?.into_iter().map(|u| (u.email, u.id)).collect();
     for (email, by) in hears {
         let Some(user) = users.get(&email) else { continue };
         let title = match by {
@@ -1119,22 +1315,10 @@ async fn post(k: &Kernel, ctx: &Ctx, channel: Uuid, body: Map<String, Value>) ->
             "thread" => format!("{who} replied in a thread in {}", c.label()),
             _ => format!("{who} in {}", c.label()),
         };
-        notify::send_kind(
-            &mut tx,
-            ctx.tenant,
-            *user,
-            &format!("comms.{by}"),
-            "inapp",
-            &util::cut(&title, 200),
-            Some(&snippet),
-            Some("ChatMessage"),
-            Some(message),
-        )
-        .await?;
+        notify::send_kind(tx, ctx.tenant, *user, &format!("comms.{by}"), "inapp", &util::cut(&title, 200), Some(&snippet), Some("ChatMessage"), Some(message))
+            .await?;
     }
-    let out = message_json(&mut tx, ctx.tenant, message).await?;
-    tx.commit().await?;
-    Ok(out)
+    Ok(message)
 }
 
 /// The message and its channel, when the caller can read them.
@@ -1193,7 +1377,7 @@ async fn delete(k: &Kernel, ctx: &Ctx, message: Uuid) -> Result<Value> {
     if !own && c.role(&ctx.email) != Some("Owner") && !ctx.has_role("Chat Admin") {
         return Err(Error::Forbidden("you can only delete your own messages".into()));
     }
-    let patch = util::obj(json!({"deleted": true, "body": "", "attachments": [], "mentions": [], "reactions": null, "pinned_at": null}));
+    let patch = util::obj(json!({"deleted": true, "body": "", "attachments": [], "mentions": [], "reactions": null, "pinned_at": null, "previews": null}));
     k.update_tx(&util::elevated(ctx), &mut tx, "ChatMessage", message, patch, None).await?;
     push(&mut tx, ctx.tenant, &member_emails(&c), json!({"event": "deleted", "channel": c.id, "message": message})).await?;
     tx.commit().await?;

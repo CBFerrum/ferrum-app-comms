@@ -1,5 +1,5 @@
 package: comms
-version: 0.10.0
+version: 0.13.0
 label: Communication
 description: Mail (accounts, threaded communications on any record, templates, inbound mail), team chat and calendars with ICS.
 # The people mail goes to and the address book calendar and contacts apps read (Ferrum
@@ -11,7 +11,7 @@ modules:
     label: Communication
     icon: mail
     order: 40
-    items: [Communication, CalendarEvent, EmailTemplate, EmailAccount, EmailGroup, EmailGroupMember, ChatChannel, ChatMessage, ChatStatus,
+    items: [Communication, CalendarEvent, EmailTemplate, EmailAccount, EmailGroup, EmailGroupMember, ChatChannel, ChatMessage, ChatStatus, ChatWebhook, Meeting,
             CommsSettings, HostedMailbox, SharedMailbox, report:email_activity, report:chat_activity]
 
 # What a personal-data request exports and erases for a person (their email): the messages they
@@ -37,12 +37,17 @@ roles:
       # Everyone who chats sees everyone's status (its purpose); each person sets only their own.
       - {entity: ChatStatus, read: true}
       - {entity: ChatStatus, read: true, write: true, create: true, delete: true, if_owner: true}
+      # The incoming webhooks of their channels: everyone in sees them; only owners make and change them (the hook says so).
+      - {entity: ChatWebhook, read: true, write: true, create: true, delete: true, via: channel.members.member}
+      # A call's settings (no title, no people); its controls check that the caller is a host.
+      - {entity: Meeting, read: true}
       # The shared address book, for mail and contacts apps (CRM's roles edit it).
       - {entity: Contact, read: true}
       - {entity: Address, read: true}
   - name: Comms Manager
     description: Email accounts and their credentials, templates, mailing lists and every communication.
     permissions:
+      - {entity: Meeting, read: true}
       - {entity: Communication, read: true, write: true, create: true, delete: true, export: true}
       - {entity: EmailAccount, read: true, write: true, create: true, delete: true}
       - {entity: EmailTemplate, read: true, write: true, create: true, delete: true, export: true, import: true}
@@ -58,4 +63,5 @@ roles:
       - {entity: ChatChannel, read: true, write: true, create: true, delete: true, export: true}
       - {entity: ChatMessage, read: true, write: true, create: true, delete: true, export: true}
       - {entity: ChatStatus, read: true, write: true, delete: true}
-export_tables: [comms_reminder_log, comms_meeting, comms_mail_route, comms_mail_filing]
+      - {entity: ChatWebhook, read: true, write: true, create: true, delete: true}
+export_tables: [comms_reminder_log, comms_meeting, comms_mail_route, comms_mail_filing, comms_meeting_denied]

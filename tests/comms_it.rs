@@ -29,8 +29,10 @@ fn obj(v: Value) -> Doc {
     v.as_object().cloned().unwrap()
 }
 
+#[track_caller]
 fn uid(v: &Value) -> Uuid {
-    v["id"].as_str().unwrap_or_else(|| panic!("no id in {v}")).parse().unwrap()
+    let Some(id) = v["id"].as_str() else { panic!("no id in {v}") };
+    id.parse().unwrap()
 }
 
 /// A refusal of the expected kind.
@@ -105,6 +107,13 @@ impl Egress {
                             "/twirp/livekit.Egress/StartRoomCompositeEgress" => (200, json!({"egress_id": "EG_one", "room_name": room})),
                             "/twirp/livekit.RoomService/ListParticipants" => (200, json!({"participants": h.lock().unwrap().clone()})),
                             "/twirp/livekit.RoomService/DeleteRoom" => (200, json!({})),
+                            // A person with a microphone and a camera (TrackType AUDIO is the enum's first value: protojson leaves it out).
+                            "/twirp/livekit.RoomService/GetParticipant" => (
+                                200,
+                                json!({"identity": body["identity"], "tracks": [{"sid": "TR_mic", "muted": false}, {"sid": "TR_cam", "type": "VIDEO", "muted": false}]}),
+                            ),
+                            "/twirp/livekit.RoomService/MutePublishedTrack" => (200, json!({"track": {"sid": body["track_sid"], "muted": true}})),
+                            "/twirp/livekit.RoomService/RemoveParticipant" => (200, json!({})),
                             "/twirp/livekit.Egress/StopEgress" => {
                                 s.store(true, Ordering::SeqCst);
                                 (200, json!({"egress_id": body["egress_id"], "status": "EGRESS_ENDING"}))
@@ -351,6 +360,8 @@ async fn fresh_kernel(mailer: TestMailer) -> (Arc<Kernel>, ferrum_kernel::vault:
     let mut comms = None;
     hooks.app("comms", &[], |h| {
         ferrum_app_comms::register(h);
+        // Link previews may reach this machine's stand-in, for the first request of a link only.
+        h.add_job_handler(Arc::new(ferrum_app_comms::preview::LinkPreviews { stand_in: true }));
         comms = Some(h.vault());
     });
     hooks.own("comms", &ferrum_app_comms::packages().unwrap().iter().map(|p| p.name().to_string()).collect::<Vec<_>>());
@@ -1547,6 +1558,7 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     refused(join(bob, "event", event_id).await, "invalid");
     livekit.refuse.store(false, std::sync::atomic::Ordering::SeqCst);
     app_meetings(&t, &users, &livekit).await;
+    meet_hosts(&t, &users, &livekit).await;
     // ───────────── LiveKit's key and secret from Comms' vault ─────────────
     let signed_with = |token: &str, secret: &str| {
         use hmac::Mac;
@@ -1634,6 +1646,8 @@ BEGIN:VEVENT\r\nUID:ext-2@example.com\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:2
     chat_groups(&t, &users).await;
     chat_status(&t, &admin, &users).await;
     interapp_mail(&t, &users).await;
+    chat_previews(&t, &users).await;
+    chat_webhooks(&t, &users).await;
     hosted_mail(&t, &admin, &users, &imap).await;
 
     // What meetings keep of a person, in Comms' own table: in their copy, and gone with their erasure,
@@ -2040,6 +2054,412 @@ async fn interapp_mail(t: &T, users: &HashMap<String, Ctx>) {
     // they_do_not_change_afterwards
     refused(k.update(alice, "Communication", id, obj(json!({"in_reply_to": "other@customer.test"})), None).await, "invalid");
     assert_eq!(k.get(alice, "Communication", id, false).await.unwrap()["in_reply_to"], json!("order-77@customer.test"));
+}
+
+/// A web server on this machine for link previews: each path answers as set, after a delay, and every path asked is noted.
+#[derive(Clone, Default)]
+struct Site {
+    pages: Arc<Mutex<HashMap<String, (u16, Vec<(String, String)>, Vec<u8>, u64)>>>,
+    asked: Arc<Mutex<Vec<String>>>,
+}
+
+impl Site {
+    async fn start() -> (Site, String) {
+        let site = Site::default();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let s = site.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((sock, _)) = listener.accept().await else { return };
+                let s = s.clone();
+                tokio::spawn(async move {
+                    let mut reader = BufReader::new(sock);
+                    let mut line = String::new();
+                    let _ = reader.read_line(&mut line).await;
+                    loop {
+                        let mut h = String::new();
+                        if reader.read_line(&mut h).await.unwrap_or(0) == 0 || h.trim_end().is_empty() {
+                            break;
+                        }
+                    }
+                    let path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
+                    s.asked.lock().unwrap().push(path.clone());
+                    let page = s.pages.lock().unwrap().get(&path).cloned();
+                    let (status, headers, body, delay) = page.unwrap_or((404, vec![], vec![], 0));
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                    let mut head = format!("HTTP/1.1 {status} X\r\ncontent-length: {}\r\nconnection: close\r\n", body.len());
+                    for (n, v) in &headers {
+                        head.push_str(&format!("{n}: {v}\r\n"));
+                    }
+                    head.push_str("\r\n");
+                    let mut sock = reader.into_inner();
+                    let _ = sock.write_all(head.as_bytes()).await;
+                    let _ = sock.write_all(&body).await;
+                });
+            }
+        });
+        (site, base)
+    }
+
+    fn page(&self, path: &str, status: u16, headers: &[(&str, &str)], body: Vec<u8>, delay_ms: u64) {
+        let headers = headers.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect();
+        self.pages.lock().unwrap().insert(path.to_string(), (status, headers, body, delay_ms));
+    }
+
+    fn asked(&self) -> Vec<String> {
+        self.asked.lock().unwrap().clone()
+    }
+}
+
+/// Link previews: the server fetches what is posted, through the platform's vetted client, and never a private address
+/// at any hop (the stand-in on this machine is allowed for a link's first request only, and only in tests).
+async fn chat_previews(t: &T, users: &HashMap<String, Ctx>) {
+    use ferrum_app_comms::preview;
+    let (k, alice, mgr) = (&t.k, &users["alice"], &users["mgr"]);
+    let (site, base) = Site::start().await;
+    let html = [("content-type", "text/html; charset=utf-8")];
+    site.page("/a", 200, &html, br#"<html><head><title>Plain</title><meta property="og:title" content="Q3 plan &amp; notes"><meta name="description" content="What ships next"></head></html>"#.to_vec(), 0);
+    let room = uid(&t.ok(alice, "POST", "/chat/channels", &[], json!({"name": "links", "type": "Private", "members": ["bob@acme.test"]})).await);
+    let post = |body: String| async move { uid(&t.ok(alice, "POST", &format!("/chat/channels/{room}/messages"), &[], json!({"body": body})).await) };
+    let run = || async { while t.k.run_jobs_once(4).await.unwrap() > 0 {} };
+    let cards = |m: Uuid| async move {
+        t.scalar::<Value>("select coalesce(previews, '[]'::jsonb) from e_chat_message where tenant_id = $1 and id = $2", Some(m)).await
+    };
+
+    // a_posted_link_gets_a_card_after_its_job_ran
+    let link = format!("{base}/a");
+    let m = post(format!("the plan: {link}.")).await;
+    assert_eq!(cards(m).await, json!([]), "nothing before the job");
+    run().await;
+    assert_eq!(cards(m).await, json!([{"url": link, "title": "Q3 plan & notes", "description": "What ships next", "site": "127.0.0.1"}]));
+    let listed = t.ok(&users["bob"], "GET", &format!("/chat/channels/{room}/messages"), &[], Value::Null).await;
+    assert_eq!(listed["messages"].as_array().unwrap().iter().find(|r| uid(r) == m).unwrap()["previews"][0]["title"], json!("Q3 plan & notes"));
+
+    // a_link_to_a_private_address_gets_no_card: with the stand-in flag off, refused before any connection.
+    let before = site.asked().len();
+    for refused_link in [format!("{base}/a"), "https://localhost/a".to_string(), "https://127.0.0.1/a".to_string(), "https://[::1]/a".to_string()] {
+        assert_eq!(preview::fetch_preview(k, &refused_link, false).await, (None, 0), "{refused_link}");
+    }
+    assert_eq!(site.asked().len(), before, "the stand-in saw no request");
+
+    // a_link_that_redirects_to_a_private_address_gets_no_card: the first hop may reach the stand-in, the next may not.
+    let port = base.rsplit(':').next().unwrap().to_string();
+    for (path, to) in
+        [("/r1", format!("{base}/a")), ("/r2", format!("https://localhost:{port}/a")), ("/r3", "https://127.0.0.1/a".to_string()), ("/r4", "/a".to_string())]
+    {
+        site.page(path, 302, &[("location", &to)], vec![], 0);
+        let before = site.asked().len();
+        assert_eq!(preview::fetch_preview(k, &format!("{base}{path}"), true).await, (None, 1), "{path} -> {to}");
+        assert_eq!(site.asked()[before..], [path.to_string()], "only the first hop reached this machine");
+    }
+
+    // a_page_larger_than_the_cap_is_read_only_up_to_it
+    let mut big = br#"<html><head><title>Big page</title>"#.to_vec();
+    big.extend(std::iter::repeat_n(b' ', preview::MAX_PAGE + 1000));
+    big.extend_from_slice(br#"<meta name="description" content="past the cap"></head>"#);
+    big.extend(std::iter::repeat_n(b'x', 4 << 20));
+    site.page("/big", 200, &html, big, 0);
+    let (card, _) = preview::fetch_preview(k, &format!("{base}/big"), true).await;
+    let card = card.expect("a card from what was read");
+    assert_eq!((card.title.as_str(), card.description.as_deref()), ("Big page", None));
+
+    // a_page_that_is_not_html_gets_no_card
+    site.page("/json", 200, &[("content-type", "application/json")], br#"<title>not a page</title>"#.to_vec(), 0);
+    assert_eq!(preview::fetch_preview(k, &format!("{base}/json"), true).await.0, None);
+
+    // a_slow_page_gets_no_card_within_the_time_limit
+    site.page("/slow", 200, &html, br#"<title>Too late</title>"#.to_vec(), 12_000);
+    let started = std::time::Instant::now();
+    assert_eq!(preview::fetch_preview(k, &format!("{base}/slow"), true).await.0, None);
+    assert!(started.elapsed() < Duration::from_secs(8), "{:?}", started.elapsed());
+
+    // an_edit_that_removes_the_link_removes_the_card
+    t.ok(alice, "PATCH", &format!("/chat/messages/{m}"), &[], json!({"body": "the plan: later"})).await;
+    run().await;
+    assert_eq!(cards(m).await, json!([]));
+
+    // a_card_is_not_written_onto_a_changed_message: the text changed after the job read it.
+    let w = post("see nothing yet".to_string()).await;
+    run().await;
+    t.exec("update e_chat_message set body = 'changed meanwhile' where tenant_id = $1 and id = $2", Some(w)).await;
+    let card = json!({"url": link, "title": "Stale", "description": null, "site": "127.0.0.1"});
+    assert!(!preview::write_cards(k, t.tenant, w, "see nothing yet", std::slice::from_ref(&card)).await.unwrap());
+    assert_eq!(cards(w).await, json!([]), "no card describes a text the message no longer has");
+    assert!(preview::write_cards(k, t.tenant, w, "changed meanwhile", &[card]).await.unwrap(), "the text it was made from takes it");
+
+    // an_edit_takes_the_old_cards_at_once: a card never outlives its text, not even until the job has run
+    let kept = post(format!("again {link}")).await;
+    run().await;
+    assert_eq!(cards(kept).await.as_array().unwrap().len(), 1);
+    t.ok(alice, "PATCH", &format!("/chat/messages/{kept}"), &[], json!({"body": format!("again, edited {link}")})).await;
+    assert_eq!(cards(kept).await, json!([]), "the edit's own transaction took the card of the old text");
+    run().await;
+    assert_eq!(cards(kept).await.as_array().unwrap().len(), 1, "and the job wrote the card of the new text");
+
+    // an_edit_while_the_page_is_fetched_leaves_no_card_of_the_old_text: the first job has read the text and its request
+    // reached the page (waited for, not slept for); the text changes then; its card is not written onto the new text.
+    site.page("/held", 200, &html, br#"<title>Held</title>"#.to_vec(), 1500);
+    let held = format!("{base}/held");
+    run().await;
+    let m2 = post(format!("slow one {held}")).await;
+    let first_job = tokio::spawn({
+        let k = k.clone();
+        async move { k.run_jobs_once(4).await.unwrap() }
+    });
+    let waited = std::time::Instant::now();
+    while !site.asked().iter().any(|p| p == "/held") {
+        assert!(waited.elapsed() < Duration::from_secs(30), "the job never asked the page");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    t.ok(alice, "PATCH", &format!("/chat/messages/{m2}"), &[], json!({"body": format!("slow two {held}")})).await;
+    first_job.await.unwrap();
+    assert_eq!(cards(m2).await, json!([]), "the card made from the old text is not written onto the new one");
+    run().await;
+    assert_eq!(cards(m2).await[0]["title"], json!("Held"), "the job of the new text wrote its own card");
+    // ... and when the edit takes the link away, no card is written at all
+    let m3 = post(format!("slow three {held}")).await;
+    let asked_before = site.asked().iter().filter(|p| *p == "/held").count();
+    let removing = tokio::spawn({
+        let k = k.clone();
+        async move { k.run_jobs_once(4).await.unwrap() }
+    });
+    let waited = std::time::Instant::now();
+    while site.asked().iter().filter(|p| *p == "/held").count() == asked_before {
+        assert!(waited.elapsed() < Duration::from_secs(30), "the job never asked the page");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    t.ok(alice, "PATCH", &format!("/chat/messages/{m3}"), &[], json!({"body": "slow three, no link now"})).await;
+    removing.await.unwrap();
+    run().await;
+    assert_eq!(cards(m3).await, json!([]));
+
+    // previews_off_fetches_nothing
+    let settings = k.list(mgr, "CommsSettings", &ferrum_kernel::ListQuery::default()).await.unwrap().rows[0].clone();
+    let settings_id = uid(&Value::Object(settings));
+    k.update(mgr, "CommsSettings", settings_id, obj(json!({"chat_link_previews": "Off"})), None).await.unwrap();
+    let before = site.asked().len();
+    let off = post(format!("quiet {base}/a")).await;
+    run().await;
+    assert_eq!((cards(off).await, site.asked().len()), (json!([]), before));
+    k.update(mgr, "CommsSettings", settings_id, obj(json!({"chat_link_previews": "On"})), None).await.unwrap();
+}
+
+/// Posting is an operation (`comms.chat_channel.post`), and an incoming webhook posts to its own channel through a
+/// secret address shown once, under its own name, told and counted as any message.
+async fn chat_webhooks(t: &T, users: &HashMap<String, Ctx>) {
+    use ferrum_kernel::capability::Invocation;
+    let (k, alice, bob, carol) = (&t.k, &users["alice"], &users["bob"], &users["carol"]);
+    async fn op(k: &Kernel, who: &Ctx, cap: &str, input: Value, key: &str) -> Result<ferrum_kernel::capability::Receipt, Error> {
+        k.invoke(who, Invocation::new(cap, input).key(key.to_string())).await
+    }
+    let ch = uid(&t.ok(alice, "POST", "/chat/channels", &[], json!({"name": "deploys", "type": "Private", "members": ["bob@acme.test"]})).await);
+    let count = || async move { t.scalar::<i64>("select count(*) from e_chat_message where tenant_id = $1 and channel = $2", Some(ch)).await };
+
+    // posting_is_an_operation_and_behaves_as_the_route
+    let told = t.notifications(bob, "Alice Rao mentioned you in #deploys").await;
+    let post = json!({"id": ch, "params": {"body": "ship it <@bob@acme.test>"}});
+    let first = op(k, alice, "comms.chat_channel.post", post.clone(), "post-1").await.expect("alice posts through the gate");
+    let m = uid(&first.result);
+    assert_eq!(first.result["channel"], json!(ch.to_string()), "{:?}", first.result);
+    let again = op(k, alice, "comms.chat_channel.post", post, "post-1").await.unwrap();
+    // A repeat answers as the platform does for an action: the record it ran on as the caller may read it now.
+    assert!(again.repeated, "{:?}", again.result);
+    assert_eq!(count().await, 1, "one message for one key");
+    assert_eq!(t.notifications(bob, "Alice Rao mentioned you in #deploys").await, told + 1);
+    let reply = op(k, bob, "comms.chat_channel.post", json!({"id": ch, "params": {"body": "done", "parent": m}}), "post-2").await.unwrap();
+    assert_eq!(t.scalar::<Option<Uuid>>("select parent_message from e_chat_message where tenant_id = $1 and id = $2", Some(uid(&reply.result))).await, Some(m));
+    refused(op(k, carol, "comms.chat_channel.post", json!({"id": ch, "params": {"body": "let me in"}}), "post-3").await, "not found");
+
+    // only_owners_make_webhooks_and_not_in_direct_conversations
+    refused(k.insert(bob, "ChatWebhook", obj(json!({"webhook_name": "Mine", "channel": ch}))).await, "forbidden");
+    let direct = uid(&t.ok(alice, "POST", "/chat/direct", &[], json!({"user": "bob@acme.test"})).await);
+    refused(k.insert(alice, "ChatWebhook", obj(json!({"webhook_name": "DM", "channel": direct}))).await, "invalid");
+
+    // an_owner_makes_a_webhook_and_its_address_is_shown_once
+    let hook = uid(&Value::Object(k.insert(alice, "ChatWebhook", obj(json!({"webhook_name": "CI", "channel": ch}))).await.expect("alice's webhook")));
+    let rotate = |key: &'static str| async move { op(k, alice, "comms.chat_webhook.rotate_token", json!({"id": hook}), key).await };
+    let shown = rotate("rot-1").await.unwrap();
+    let token = shown.result["token"].as_str().expect("the address, once").to_string();
+    assert!(shown.result["path"].as_str().is_some_and(|p| p.ends_with(&format!("/chat/hook/{token}"))), "{:?}", shown.result);
+    let repeat = rotate("rot-1").await.unwrap();
+    assert!(repeat.repeated && repeat.result.get("token").is_none(), "a repeat does not show it again: {:?}", repeat.result);
+    refused(op(k, bob, "comms.chat_webhook.rotate_token", json!({"id": hook}), "rot-bob").await, "forbidden");
+
+    // a_post_to_the_address_appears_under_the_webhooks_name, and a_webhooks_message_counts_as_unread
+    t.ok(bob, "POST", &format!("/chat/channels/{ch}/read"), &[], Value::Null).await;
+    let hit = |token: String, body: Value| async move { t.call(None, "POST", &format!("/chat/hook/{token}"), &[], body).await };
+    let posted = uid(&hit(token.clone(), json!({"text": "build 42 passed <@bob@acme.test>"})).await.expect("the webhook posts"));
+    let listed = t.ok(bob, "GET", &format!("/chat/channels/{ch}/messages"), &[], Value::Null).await;
+    let row = listed["messages"].as_array().unwrap().iter().find(|r| uid(r) == posted).cloned().unwrap();
+    assert_eq!((row["sender"].clone(), row["sender_name"].clone(), row["webhook"].clone()), (json!(""), json!("CI"), json!(true)), "{row}");
+    let mine = t.ok(bob, "GET", "/chat/channels", &[], Value::Null).await;
+    let unread = mine["channels"].as_array().unwrap().iter().find(|c| uid(c) == ch).unwrap()["unread"].clone();
+    assert_eq!(unread, json!(1), "a webhook's message counts as unread");
+    assert_eq!(t.notifications(bob, "CI mentioned you in #deploys").await, 0, "a webhook's mention notifies nobody by name");
+
+    // the_old_address_stops_when_a_new_one_is_made
+    let token2 = rotate("rot-2").await.unwrap().result["token"].as_str().unwrap().to_string();
+    refused(hit(token.clone(), json!({"text": "old"})).await, "not found");
+    hit(token2.clone(), json!({"text": "new address"})).await.expect("the new address posts");
+
+    // a_disabled_webhook_and_an_archived_channel_answer_not_found
+    k.update(alice, "ChatWebhook", hook, obj(json!({"enabled": false})), None).await.unwrap();
+    refused(hit(token2.clone(), json!({"text": "off"})).await, "not found");
+    k.update(alice, "ChatWebhook", hook, obj(json!({"enabled": true})), None).await.unwrap();
+    t.ok(alice, "PATCH", &format!("/chat/channels/{ch}"), &[], json!({"archived": true})).await;
+    refused(hit(token2.clone(), json!({"text": "archived"})).await, "not found");
+    t.ok(alice, "PATCH", &format!("/chat/channels/{ch}"), &[], json!({"archived": false})).await;
+
+    // a_wrong_token_learns_nothing
+    let wrong = format!("{}.{}", hook.simple(), "x".repeat(43));
+    let missing = format!("{}.{}", Uuid::now_v7().simple(), "x".repeat(43));
+    let a = hit(wrong, json!({"text": "guess"})).await.unwrap_err().to_string();
+    let b = hit(missing, json!({"text": "guess"})).await.unwrap_err().to_string();
+    assert_eq!(a, b);
+
+    // a_body_over_the_cap_or_without_text_is_refused
+    for bad in [json!({"text": ""}), json!({"text": "   "}), json!({"words": "hi"}), json!({"text": "x".repeat(4097)}), json!(["text"])] {
+        refused(hit(token2.clone(), bad.clone()).await, "invalid");
+    }
+    let huge = t.raw(t.request(None, "POST", &format!("/chat/hook/{token2}"), &[], vec![b'a'; 20 << 10], "application/json")).await;
+    assert!(huge.is_err() || huge.as_ref().is_ok_and(|r| r.status >= 400), "a body over the cap is refused");
+
+    // a_webhook_posts_at_most_sixty_times_a_minute
+    let burst = uid(&Value::Object(k.insert(alice, "ChatWebhook", obj(json!({"webhook_name": "Burst", "channel": ch}))).await.unwrap()));
+    let burst_token =
+        op(k, alice, "comms.chat_webhook.rotate_token", json!({"id": burst}), "rot-burst").await.unwrap().result["token"].as_str().unwrap().to_string();
+    for i in 0..60 {
+        hit(burst_token.clone(), json!({"text": format!("tick {i}")})).await.unwrap_or_else(|e| panic!("post {i}: {e:?}"));
+    }
+    assert!(matches!(hit(burst_token.clone(), json!({"text": "one too many"})).await, Err(Error::TooManyRequests(_))));
+
+    // the_token_is_nowhere_in_plain
+    let secret = token2.split_once('.').unwrap().1.to_string();
+    assert!(plain_anywhere(k, &secret).await.is_empty(), "the webhook's secret is kept only in the vault");
+}
+
+/// Meet's hosts and their controls: a Meeting record per call, made on the first join; hosts worked out from the room,
+/// event or channel; mute, remove and end queued as jobs that call the meeting server after the commit; who may record.
+async fn meet_hosts(t: &T, users: &HashMap<String, Ctx>, livekit: &Egress) {
+    use ferrum_kernel::capability::Invocation;
+    let (k, alice, bob) = (&t.k, &users["alice"], &users["bob"]);
+    async fn control(k: &Kernel, who: &Ctx, action: &str, meeting: Uuid, params: Value, key: &str) -> Result<ferrum_kernel::capability::Receipt, Error> {
+        k.invoke(who, Invocation::new(format!("comms.meeting.{action}"), json!({"id": meeting, "params": params})).key(key.to_string())).await
+    }
+    let join = |who: &'static str, kind: &'static str, id: Uuid| async move {
+        t.call(Some(&users[who]), "POST", &format!("/meet/{kind}/{id}/token"), &[], Value::Null).await
+    };
+    let run = || async { while t.k.run_jobs_once(4).await.unwrap() > 0 {} };
+    let calls = |method: &str| livekit.calls.lock().unwrap().iter().filter(|(p, _, _)| p.ends_with(method)).map(|(_, _, b)| b.clone()).collect::<Vec<_>>();
+    let room = uid(&t.ok(alice, "POST", "/meet/rooms", &[], json!({"title": "Standup"})).await);
+
+    // the_first_join_makes_one_meeting_record, with passes short-lived (DECISIONS: enough to connect)
+    let (a, b) = tokio::join!(join("alice", "room", room), join("bob", "room", room));
+    let (a, b) = (a.unwrap(), b.unwrap());
+    assert_eq!(a["meeting"], b["meeting"], "{a} {b}");
+    let meeting: Uuid = a["meeting"].as_str().unwrap().parse().unwrap();
+    let rows: i64 = t.scalar("select count(*) from e_meeting where tenant_id = $1 and room like '%' || replace($2::text, '-', '')", Some(room)).await;
+    assert_eq!(rows, 1);
+    let part = b["token"].as_str().unwrap().split('.').nth(1).unwrap().to_string();
+    let pass: Value = serde_json::from_slice(&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(part).unwrap()).unwrap();
+    let life = pass["exp"].as_i64().unwrap() - pass["nbf"].as_i64().unwrap();
+    assert!(life <= 6 * 60, "a pass lasts minutes, not hours: {life} s");
+
+    // a_rooms_creator_an_events_organizer_and_a_channels_owner_are_hosts
+    assert_eq!((a["host"].clone(), b["host"].clone(), a["recording_by"].clone()), (json!(true), json!(false), json!("Everyone")));
+    let soon = chrono::Utc::now() + chrono::Duration::hours(2);
+    let iso = |d: chrono::DateTime<chrono::Utc>| d.to_rfc3339();
+    let event = uid(&Value::Object(
+        k.insert(
+            alice,
+            "CalendarEvent",
+            obj(json!({"subject": "Review", "starts_at": iso(soon), "ends_at": iso(soon + chrono::Duration::hours(1)), "visibility": "Public"})),
+        )
+        .await
+        .unwrap(),
+    ));
+    assert_eq!(
+        (join("alice", "event", event).await.unwrap()["host"].clone(), join("bob", "event", event).await.unwrap()["host"].clone()),
+        (json!(true), json!(false))
+    );
+    let ch = uid(&t.ok(alice, "POST", "/chat/channels", &[], json!({"name": "hosts", "type": "Private", "members": ["bob@acme.test"]})).await);
+    assert_eq!(
+        (join("alice", "channel", ch).await.unwrap()["host"].clone(), join("bob", "channel", ch).await.unwrap()["host"].clone()),
+        (json!(true), json!(false))
+    );
+    let dm = uid(&t.ok(bob, "POST", "/chat/direct", &[], json!({"user": "carol@acme.test"})).await);
+    assert_eq!(
+        (join("bob", "channel", dm).await.unwrap()["host"].clone(), join("carol", "channel", dm).await.unwrap()["host"].clone()),
+        (json!(true), json!(true))
+    );
+
+    // a_non_host_is_refused_every_control
+    let bobs = b["identity"].as_str().expect("the pass's identity is told to its holder").to_string();
+    let alices = a["identity"].as_str().unwrap().to_string();
+    for (action, params) in
+        [("mute", json!({"identity": alices})), ("remove", json!({"identity": alices})), ("end", json!({})), ("set_recording", json!({"by": "Hosts"}))]
+    {
+        refused(control(k, bob, action, meeting, params, &format!("bob-{action}")).await, "forbidden");
+    }
+    refused(control(k, &users["dave"], "end", meeting, json!({}), "dave-end").await, "forbidden");
+
+    // a_host_mutes_another_person: the microphone only
+    let before = calls("MutePublishedTrack").len();
+    assert_eq!(control(k, alice, "mute", meeting, json!({"identity": bobs}), "mute-1").await.unwrap().result, json!({"queued": true}));
+    run().await;
+    let muted = calls("MutePublishedTrack")[before..].to_vec();
+    assert_eq!(muted.len(), 1, "{muted:?}");
+    assert_eq!((muted[0]["identity"].clone(), muted[0]["track_sid"].clone(), muted[0]["muted"].clone()), (json!(bobs), json!("TR_mic"), json!(true)));
+    refused(control(k, alice, "mute", meeting, json!({"identity": "bad identity!"}), "mute-bad").await, "invalid");
+
+    // a_removed_member_gets_no_pass_for_six_hours
+    refused(control(k, alice, "remove", meeting, json!({"identity": alices}), "remove-self").await, "invalid");
+    control(k, alice, "remove", meeting, json!({"identity": bobs}), "remove-1").await.unwrap();
+    run().await;
+    assert!(calls("RemoveParticipant").iter().any(|c| c["identity"] == json!(bobs)));
+    refused(join("bob", "room", room).await, "forbidden");
+    join("alice", "room", room).await.expect("the host still joins");
+    t.exec("update comms_meeting_denied set until = now() - interval '1 minute' where tenant_id = $1 and $2::uuid is null", None).await;
+    join("bob", "room", room).await.expect("a pass again once the denial ended");
+
+    // ending_the_meeting_deletes_the_room_once_for_one_key
+    let deletes = |room_name: &str| calls("DeleteRoom").iter().filter(|c| c["room"] == json!(room_name)).count();
+    let room_name = format!("{}-room-{}", t.tenant.simple(), room.simple());
+    let before = deletes(&room_name);
+    let first = control(k, alice, "end", meeting, json!({}), "end-1").await.unwrap();
+    let again = control(k, alice, "end", meeting, json!({}), "end-1").await.unwrap();
+    assert!(!first.repeated && again.repeated);
+    run().await;
+    assert_eq!(deletes(&room_name) - before, 1);
+
+    // only_hosts_record_when_the_meeting_says_so
+    assert_eq!(control(k, alice, "set_recording", meeting, json!({"by": "Hosts"}), "rec-1").await.unwrap().result, json!({"recording_by": "Hosts"}));
+    refused(t.call(Some(bob), "POST", &format!("/meet/room/{room}/recordings"), &[], Value::Null).await, "forbidden");
+    let rec = t.ok(alice, "POST", &format!("/meet/room/{room}/recordings"), &[], Value::Null).await;
+    t.ok(alice, "POST", &format!("/meet/room/{room}/recordings/{}/stop", uid(&rec)), &[], Value::Null).await;
+
+    // a_meeting_server_that_is_down_is_tried_again
+    livekit.refuse.store(true, std::sync::atomic::Ordering::SeqCst);
+    control(k, alice, "mute", meeting, json!({"identity": bobs}), "mute-down").await.unwrap();
+    t.k.run_jobs_once(4).await.unwrap();
+    let (status, error): (String, Option<String>) = {
+        let mut tx = k.db.tenant_tx(t.tenant).await.unwrap();
+        let row = sqlx::query_as("select status, last_error from job where tenant_id = $1 and kind = 'comms.meet_command' order by created_at desc limit 1")
+            .bind(t.tenant)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        row
+    };
+    assert_eq!(status, "queued", "kept to be tried again: {error:?}");
+    livekit.refuse.store(false, std::sync::atomic::Ordering::SeqCst);
+    t.exec("update job set run_at = now() where tenant_id = $1 and kind = 'comms.meet_command' and status = 'queued' and $2::uuid is null", None).await;
+    run().await;
+    let done: i64 =
+        t.scalar("select count(*) from job where tenant_id = $1 and kind = 'comms.meet_command' and status <> 'done' and $2::uuid is null", None).await;
+    assert_eq!(done, 0, "every command was carried out");
 }
 
 /// Mail's sockets go where the platform's guard lets outbound calls go: an account whose SMTP or IMAP host is

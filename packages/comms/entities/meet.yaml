@@ -1,0 +1,56 @@
+- name: Meeting
+  label: Meeting
+  kind: master
+  module: communication
+  title_field: room
+  description: "A video meeting's own settings: one per call of a channel, an event or a room, made when a member first joins. Who is host is worked out from the channel, the event or the room, never kept here."
+  fields:
+    - {name: room, type: data, required: true, unique: true, read_only: true, max_length: 120, description: "The meeting server's room"}
+    - {name: meeting_kind, type: select, options: [room, channel, event], required: true, read_only: true, in_filter: true}
+    - {name: source, type: data, required: true, read_only: true, max_length: 36, description: "The channel's, event's or room's id"}
+    - {name: recording_by, type: select, options: [Everyone, Hosts], default: Everyone, read_only: true, description: "Who may start and stop a recording"}
+  list: {columns: [room, meeting_kind, recording_by], sort: room asc}
+  # A host's controls, carried out by the meeting server after the commit (a job, tried again when it cannot be
+  # reached): the screen's buttons and a host's agent use the same operations. Who is host is checked by the handler.
+  actions:
+    - name: mute
+      label: Mute
+      permission: read
+      hidden: true
+      params:
+        - {name: identity, label: Participant, type: data, required: true, description: "The participant's identity in the call"}
+      contract:
+        effect: external_effect
+        unknown_outcome: reconcile
+        completion: Queued with this receipt; the meeting server mutes that person's microphone within seconds, tried again if it cannot be reached
+        returns: {type: object, properties: {queued: {type: boolean}}}
+    - name: remove
+      label: Remove
+      permission: read
+      hidden: true
+      params:
+        - {name: identity, label: Participant, type: data, required: true, description: "The participant's identity in the call"}
+      contract:
+        effect: external_effect
+        unknown_outcome: reconcile
+        completion: Queued with this receipt; the meeting server sends that person out of the call within seconds, tried again if it cannot be reached, and they get no new pass for six hours
+        returns: {type: object, properties: {queued: {type: boolean}}}
+    - name: end
+      label: End for Everyone
+      permission: read
+      hidden: true
+      contract:
+        effect: external_effect
+        unknown_outcome: reconcile
+        completion: Queued with this receipt; the meeting server sends everyone out of the call within seconds, tried again if it cannot be reached
+        returns: {type: object, properties: {queued: {type: boolean}}}
+    - name: set_recording
+      label: Who May Record
+      permission: read
+      hidden: true
+      params:
+        - {name: by, label: Who, type: select, options: [Everyone, Hosts], required: true}
+      contract:
+        effect: transactional_action
+        completion: Who may record is changed
+        returns: {type: object, properties: {recording_by: {type: string}}}

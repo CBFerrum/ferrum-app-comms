@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.35.0
+
+Database change: a new entity, Meeting (one per call of a channel, an event or a room, made on the first join), and
+the table `comms_meeting_denied` (`sql/002_meet_hosts.sql`). The package `comms` is 0.13.0. No interface change yet:
+the People panel with the controls is not built in this release.
+
+**Hosts and their controls.** Hosts are worked out, never stored: a room's creator, an event's organizer, a channel's
+owners or a Chat Admin, either person of a direct conversation. A host mutes another person's microphone, removes them
+(they get no new pass for six hours; removing oneself is refused), ends the call for everyone, and sets who may record
+(everyone, or hosts only; recordings obey it). Each is an action of the Meeting record with a contract
+(`comms.meeting.mute`, `.remove`, `.end`, `.set_recording`); mute, remove and end are queued as a job
+(`comms.meet_command`) in the action's transaction and carried out by the meeting server after the commit, tried again
+when it cannot be reached. A host's agent uses the same operations. Joining answers `meeting`, `identity`, `host` and
+`recording_by` beside the pass.
+
+**Passes last minutes.** A pass now lasts five minutes, enough to connect; the meeting server refreshes a connected
+person's pass. A removed member, or a removed named guest of another app's meeting, gets no new one until the removal
+ends; removals are purged by upkeep and go with the person's erasure.
+
+## 0.34.0
+
+Database change: a new entity, Incoming Webhook (`ChatWebhook`); Chat Message gains `webhook` and `sender_label`.
+Interface change: an Integrations tab in a channel's details, and an App marker on a webhook's messages. The package
+`comms` is 0.12.0.
+
+**Incoming webhooks.** A channel's owner (or a Chat Admin) makes a webhook: its New Address action makes a secret
+address, shown once (a repeat of the action under the same key does not show it again), that an outside program posts
+`{"text": "…"}` to (`POST /api/site/{workspace}/comms/chat/hook/{token}`). The message appears in the webhook's own
+channel under its name, with no sender, counted as unread and told as any message (a mention in it notifies nobody
+by name). A new address stops the old one; a switched-off webhook, an archived channel and a wrong address all answer
+the same "not found"; at most 60 posts a minute a webhook, 16 KB a request, 4096 bytes of text. The secret lives in
+the vault only. Making, changing and deleting a webhook are its record's own operations; members of the channel see
+that it exists.
+
+**Posting is an operation.** `comms.chat_channel.post` (a text, and `parent` for a thread) does what Chat's post
+does, through the gate, so a member's agent posts and a repeat under the same key posts once. Chat's own route and
+the webhook route share one function with it, so every message is stored, told and notified the same way. Unread
+counts now compare senders null-safely, so a message without a sender is counted.
+
+## 0.33.0
+
+Database change: Chat Message gains `previews`, Communication Settings gains `chat_link_previews` (empty reads as On).
+Interface change: link cards under messages. The package `comms` is 0.11.0.
+
+**Link previews in Chat.** A message with links shows, a few seconds after it is posted, a card per link (up to
+three) with the page's title, description and site name: text only, no pictures yet (a remote picture would be loaded
+by every reader's browser from the linked site; a stored copy needs the platform's file services). The server fetches
+each page in a background job (`comms.link_preview`), never inside a request or a transaction, through the platform's
+vetted client: HTTPS only, the host resolved once and refused when private, loopback or link-local, the connection
+pinned to the addresses checked. Redirects are followed by Comms, each hop vetted again from the start; at most four
+requests and ten seconds a link, 256 KB a page, 120 fetches a minute a workspace. Nothing from a page is used as
+markup or as an address: the card links to the address as it was posted. An edit that removes a link removes its
+card; a card is written only onto the text it was made from. Logs carry a link's host, never its path or query.
+
+**One switch.** Fetching a link tells the linked site that someone here posted it, and uses up a one-use link. A
+Comms Manager turns previews off for the workspace (Communication Settings, Link Previews in Chat).
+
 ## 0.32.0
 
 No database change, no interface change. The package `comms` is 0.10.0.

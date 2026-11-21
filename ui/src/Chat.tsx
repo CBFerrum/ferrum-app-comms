@@ -67,6 +67,7 @@ import {
   type ChannelSummary,
   type Message,
   type Person,
+  type Preview,
   type Show,
 } from "./lib/chat";
 import { openCall, useMeetAvailable } from "./lib/meet";
@@ -562,7 +563,7 @@ function Conversation({ id, summary }: { id: string; summary?: ChannelSummary })
           onClose={() => patch({ thread: null })}
         />
       )}
-      {side === "details" && <ChannelDetails id={id} tab={(["general", "personal", "members", "pinned"].includes(panel ?? "") ? panel : "general") as DetailsTab} onTab={(t) => patch({ panel: t })} onClose={() => patch({ panel: null })} />}
+      {side === "details" && <ChannelDetails id={id} tab={(["general", "personal", "members", "pinned", "integrations"].includes(panel ?? "") ? panel : "general") as DetailsTab} onTab={(t) => patch({ panel: t })} onClose={() => patch({ panel: null })} />}
       {side === "search" && (
         <ChannelSearch
           channel={id}
@@ -804,6 +805,7 @@ function MessageRow({
         {!compact && (
           <div className="flex flex-wrap items-baseline gap-x-2">
             <span className="text-sm font-semibold">{isolate(name)}</span>
+            {m.webhook && <span className="rounded bg-muted px-1 text-xs font-medium text-muted-foreground">{tr("App")}</span>}
             <time className="text-xs text-muted-foreground" dateTime={m.posted_at}>
               {isolate(time(m.posted_at))}
             </time>
@@ -823,6 +825,7 @@ function MessageRow({
           <>
             {m.body && <Markdown source={showMentions(m.body, people)} />}
             <Attachments files={attachmentsOf(m)} />
+            <LinkCards previews={m.previews} />
             <ReactionChips m={m} react={react} />
           </>
         )}
@@ -924,6 +927,24 @@ function ReactionChips({ m, react }: { m: Message; react: ReturnType<typeof useR
         </button>
       ))}
     </div>
+  );
+}
+
+/** What the pages a message links to say of themselves: text only, each linking to the address as it was posted. */
+function LinkCards({ previews }: { previews?: Preview[] }) {
+  if (!previews?.length) return null;
+  return (
+    <ul className="mt-1 grid max-w-md gap-1" aria-label={tr("Link previews")}>
+      {previews.map((p) => (
+        <li key={p.url} className="rounded-md border-s-4 border-primary/40 bg-muted/40 px-2 py-1">
+          <p className="truncate text-xs text-muted-foreground">{isolate(p.site)}</p>
+          <a className="block truncate text-sm font-medium text-primary hover:underline" href={p.url} target="_blank" rel="noopener noreferrer nofollow">
+            {isolate(p.title)}
+          </a>
+          {p.description && <p className="line-clamp-2 text-xs text-muted-foreground">{isolate(p.description)}</p>}
+        </li>
+      ))}
+    </ul>
   );
 }
 

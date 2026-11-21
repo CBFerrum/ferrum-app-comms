@@ -422,7 +422,7 @@ async fn admin_token(k: &Kernel, server: &Server, room: &str, now: i64) -> ferru
 }
 
 /// One call to LiveKit's server API (Twirp, JSON).
-async fn twirp(k: &Kernel, server: &Server, service: &str, method: &str, body: Value, room: &str) -> ferrum_kernel::Result<Value> {
+pub(crate) async fn twirp(k: &Kernel, server: &Server, service: &str, method: &str, body: Value, room: &str) -> ferrum_kernel::Result<Value> {
     let url = format!("{}/twirp/livekit.{service}/{method}", meet::api_url(server));
     // The operator's own server, usually beside Ferrum: private addresses allowed.
     let (client, parsed) = k.vetted_client(&url, true, Wait::from_secs(20), "Ferrum Comms").await?;
@@ -497,6 +497,14 @@ impl ferrum_kernel::privacy::PersonalHeld for Attendance {
             .bind(emails.iter().map(|e| e.to_lowercase()).collect::<Vec<_>>())
             .execute(&mut **tx)
             .await?;
+        // A removal from a meeting names the person by user id; it lives six hours at most, and goes now.
+        if let Some(account) = account {
+            sqlx::query("delete from comms_meeting_denied where tenant_id = $1 and who = $2")
+                .bind(tenant)
+                .bind(account.simple().to_string())
+                .execute(&mut **tx)
+                .await?;
+        }
         Ok(gone.rows_affected())
     }
 }
